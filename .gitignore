@@ -8,4 +8,5 @@ compile_commands.json
 
 CMakePresets.json
 cmake/sufkitConfig.cmake.in
-/plan
+# Keep the detailed development plan locally; do not publish it in Git.
+/plan/
