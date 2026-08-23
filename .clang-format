@@ -1,0 +1,21 @@
+BasedOnStyle: Google
+Language: Cpp
+Standard: c++17
+ColumnLimit: 80
+ReflowComments: false
+IncludeBlocks: Regroup
+IncludeCategories:
+  - Regex: '^<.*\.h>$'
+    Priority: 1
+  - Regex: '^<[a-z0-9_]+>$'
+    Priority: 2
+  - Regex: '^"(Suffix_Array\.hpp|parlay/parallel\.h|divsufsort(64)?\.h|kseq\.h)"$'
+    Priority: 3
+  - Regex: '^<sdsl/'
+    Priority: 3
+  - Regex: '^<sufkit/'
+    Priority: 4
+  - Regex: '^".*"$'
+    Priority: 4
+  - Regex: '.*'
+    Priority: 5

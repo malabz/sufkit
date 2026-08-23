@@ -15,6 +15,7 @@ under [`zh-CN/`](zh-CN/README.md).
 | Understand the algorithms | [Algorithm overview](concepts/algorithm-overview.md) | [Algorithm contracts](development/algorithm-contracts.md) |
 | Reduce standalone-SA resident size | [Sampled suffix arrays](concepts/sampled-suffix-arrays.md) | [Exact search](user-guide/exact-search.md), [sampled-SA results](benchmarks/results/unreleased-sampled-sa.md) |
 | Add a backend or search algorithm | [Architecture](development/architecture.md) | [Extending sufkit](development/extending-sufkit.md) |
+| Contribute C++ or migrate a 0.1.x caller | [C++ style](development/cpp-style.md) | [0.2.0 naming migration](development/api-naming-migration-0.2.0.md) |
 | Interpret performance claims | [Benchmark summary](benchmarks/README.md) | [Methodology](benchmarks/methodology.md), versioned result reports |
 | Understand `.sufidx` | [Persistence guide](user-guide/persistence-and-inspection.md) | [Format reference](reference/index-format-v1.md), [compatibility](reference/compatibility.md) |
 
@@ -53,6 +54,8 @@ under [`zh-CN/`](zh-CN/README.md).
 - [Internal invariants](development/internal-invariants.md)
 - [Detailed algorithm contracts](development/algorithm-contracts.md)
 - [Extending sufkit](development/extending-sufkit.md)
+- [C++ style guide](development/cpp-style.md)
+- [0.2.0 C++ API naming migration](development/api-naming-migration-0.2.0.md)
 - [Testing, releases, and documentation maintenance](development/testing-release-and-docs.md)
 
 ### Benchmarks

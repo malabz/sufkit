@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #pragma once
 
 #include <filesystem>
@@ -20,19 +22,19 @@ namespace sufkit {
  * @return Validated index information.
  * @throws Error for I/O, version, CRC, section, metadata, or backend failure.
  */
-SUFKIT_API IndexInfo inspect_index(const std::filesystem::path& path);
+SUFKIT_API IndexInfo InspectIndex(const std::filesystem::path& path);
 
 /**
  * @ingroup backends
  * @return SA constructor descriptors including auto, divsufsort, and compiled
  *         CaPS availability.
  */
-SUFKIT_API std::vector<BackendDescriptor> available_sa_backends();
+SUFKIT_API std::vector<BackendDescriptor> AvailableSaBackends();
 
 /**
  * @ingroup backends
  * @return Fixed available and reserved SDSL FM backend descriptors.
  */
-SUFKIT_API std::vector<BackendDescriptor> available_fm_backends();
+SUFKIT_API std::vector<BackendDescriptor> AvailableFmBackends();
 
-} // namespace sufkit
+}  // namespace sufkit

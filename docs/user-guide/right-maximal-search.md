@@ -39,8 +39,8 @@ sufkit::RightMaximalResult
 sufkit::RightMaximalSearchAlgorithm
 sufkit::RightMaximalSearchStatistics
 
-SuffixArray::find_right_maximal_matches()
-SuffixArray::for_each_right_maximal_match()
+SuffixArray::FindRightMaximalMatches()
+SuffixArray::ForEachRightMaximalMatch()
 ```
 
 The CLI command is:
@@ -71,16 +71,16 @@ returns no matches. `min_length=0` is invalid.
 
 | Mode | Persisted requirement | Main strategy |
 |---|---|---|
-| `baseline` | SA | Start each query position from a root SA lookup |
-| `lcp` | SA+LCP | Reuse adjacent-suffix prefix information |
-| `child` | SA+LCP+CHILD | Start each position with ESA top-down traversal |
-| `suffix_link` | SA+ISA+LCP | Reuse an interval after deleting a query character |
-| `full` | SA+ISA+LCP+CHILD | Combine suffix-link reuse and explicit CHILD navigation |
+| `RightMaximalSearchAlgorithm::kBaseline` | SA | Start each query position from a root SA lookup |
+| `RightMaximalSearchAlgorithm::kLcp` | SA+LCP | Reuse adjacent-suffix prefix information |
+| `RightMaximalSearchAlgorithm::kChild` | SA+LCP+CHILD | Start each position with ESA top-down traversal |
+| `RightMaximalSearchAlgorithm::kSuffixLink` | SA+ISA+LCP | Reuse an interval after deleting a query character |
+| `RightMaximalSearchAlgorithm::kFull` | SA+ISA+LCP+CHILD | Combine suffix-link reuse and explicit CHILD navigation |
 
 All modes must return the same normalized right-maximal result set. Their
 difference is interval discovery and reuse, not public match semantics.
 
-`auto_select` chooses suffix-link, then LCP, then baseline according to stored
+`kAutoSelect` chooses suffix-link, then LCP, then baseline according to stored
 data. It does not automatically choose CHILD or full.
 
 `RightMaximalOptions::lookup_algorithm` controls root initialization and
@@ -98,11 +98,11 @@ right-maximal result set. This is not a claim that either result is a MEM set.
 
 ## Streaming and bounded vector APIs
 
-`for_each_right_maximal_match()` invokes a callback synchronously for every
+`ForEachRightMaximalMatch()` invokes a callback synchronously for every
 match. It has low result-storage overhead but does not promise enumeration
 order across algorithms. Callback exceptions propagate unchanged.
 
-`find_right_maximal_matches()` returns matches ordered by:
+`FindRightMaximalMatches()` returns matches ordered by:
 
 ```text
 query_position, sequence_id, reference_position, length, strand

@@ -110,7 +110,7 @@ std::vector<std::string> split(const std::string& text) {
     while (begin <= text.size()) {
         const auto end = text.find(',', begin);
         const auto value = text.substr(begin, end == std::string::npos ? std::string::npos : end - begin);
-        if (value.empty()) throw Error(ErrorCode::invalid_input, "empty comma-separated benchmark value");
+        if (value.empty()) throw Error(ErrorCode::kInvalidInput, "empty comma-separated benchmark value");
         result.push_back(value);
         if (end == std::string::npos) break;
         begin = end + 1;
@@ -122,8 +122,8 @@ std::uint64_t parse_number(const std::string& value, const char* name) {
     std::size_t consumed = 0;
     std::uint64_t result = 0;
     try { result = std::stoull(value, &consumed); }
-    catch (...) { throw Error(ErrorCode::invalid_input, std::string(name) + " requires an integer"); }
-    if (consumed != value.size()) throw Error(ErrorCode::invalid_input, std::string(name) + " requires an integer");
+    catch (...) { throw Error(ErrorCode::kInvalidInput, std::string(name) + " requires an integer"); }
+    if (consumed != value.size()) throw Error(ErrorCode::kInvalidInput, std::string(name) + " requires an integer");
     return result;
 }
 
@@ -133,9 +133,9 @@ Options parse(const std::vector<std::string>& arguments) {
         const auto& name = arguments[index];
         if (name == "--workload") {
             if (++index >= arguments.size() || arguments[index] != "right-maximal")
-                throw Error(ErrorCode::invalid_input, "right-maximal exact match benchmark requires --workload right-maximal");
+                throw Error(ErrorCode::kInvalidInput, "right-maximal exact match benchmark requires --workload right-maximal");
         } else {
-            if (++index >= arguments.size()) throw Error(ErrorCode::invalid_input, "missing value for " + name);
+            if (++index >= arguments.size()) throw Error(ErrorCode::kInvalidInput, "missing value for " + name);
             const auto& value = arguments[index];
             if (name == "--profile") result.profile = value;
             else if (name == "--scenarios") result.scenarios = split(value);
@@ -151,41 +151,41 @@ Options parse(const std::vector<std::string>& arguments) {
             else if (name == "--learned-k") {
                 const auto parsed = parse_number(value, "--learned-k");
                 if (parsed == 0 || parsed > 31)
-                    throw Error(ErrorCode::invalid_input, "--learned-k must be in [1,31]");
+                    throw Error(ErrorCode::kInvalidInput, "--learned-k must be in [1,31]");
                 result.learned_k = static_cast<std::uint32_t>(parsed);
             } else if (name == "--learned-memory-bp") {
                 const auto parsed = parse_number(value, "--learned-memory-bp");
                 if (parsed == 0 || parsed > std::numeric_limits<std::uint32_t>::max())
-                    throw Error(ErrorCode::invalid_input, "--learned-memory-bp is out of range");
+                    throw Error(ErrorCode::kInvalidInput, "--learned-memory-bp is out of range");
                 result.learned_memory_overhead_basis_points = static_cast<std::uint32_t>(parsed);
             } else if (name == "--learned-bucket-bits") {
                 const auto parsed = parse_number(value, "--learned-bucket-bits");
                 if (parsed > 31)
-                    throw Error(ErrorCode::invalid_input, "--learned-bucket-bits must be at most 31");
+                    throw Error(ErrorCode::kInvalidInput, "--learned-bucket-bits must be at most 31");
                 result.learned_bucket_bits = static_cast<std::uint32_t>(parsed);
             }
-            else throw Error(ErrorCode::invalid_input, "unknown right-maximal exact match benchmark option: " + name);
+            else throw Error(ErrorCode::kInvalidInput, "unknown right-maximal exact match benchmark option: " + name);
         }
     }
     if (!result.reference && result.profile != "smoke" && result.profile != "quick" &&
         result.profile != "standard")
-        throw Error(ErrorCode::invalid_input, "right-maximal exact match benchmark currently runs smoke, quick, or standard profiles");
+        throw Error(ErrorCode::kInvalidInput, "right-maximal exact match benchmark currently runs smoke, quick, or standard profiles");
     if (result.query_file && !result.reference)
-        throw Error(ErrorCode::invalid_input, "--queries requires --reference");
-    if (result.output_directory.empty()) throw Error(ErrorCode::invalid_input, "--output-dir is required");
+        throw Error(ErrorCode::kInvalidInput, "--queries requires --reference");
+    if (result.output_directory.empty()) throw Error(ErrorCode::kInvalidInput, "--output-dir is required");
     if (result.min_lengths.empty() || std::any_of(result.min_lengths.begin(), result.min_lengths.end(), [](auto value) { return value == 0; }))
-        throw Error(ErrorCode::invalid_input, "right-maximal exact match minimum lengths must be positive");
+        throw Error(ErrorCode::kInvalidInput, "right-maximal exact match minimum lengths must be positive");
     const std::set<std::string> valid_scenarios{
         "mixed", "balanced", "gc-skewed", "repeat-rich", "n-islands", "many-contig"};
     for (const auto& scenario : result.scenarios)
         if (valid_scenarios.count(scenario) == 0)
-            throw Error(ErrorCode::invalid_input, "unknown right-maximal exact match benchmark scenario: " + scenario);
+            throw Error(ErrorCode::kInvalidInput, "unknown right-maximal exact match benchmark scenario: " + scenario);
     const std::set<std::string> valid_methods{
         "right-maximal-baseline", "right-maximal-lcp", "right-maximal-child", "right-maximal-suffix-link", "right-maximal-full",
         "right-maximal-suffix-link-binary", "right-maximal-suffix-link-sapling", "mummer4"};
     for (const auto& method : result.methods) {
-        if (valid_methods.count(method) == 0) throw Error(ErrorCode::invalid_input, "unknown right-maximal exact match benchmark method: " + method);
-        if (method == "mummer4" && !result.mummer4) throw Error(ErrorCode::invalid_input, "mummer4 method requires --mummer4 PATH");
+        if (valid_methods.count(method) == 0) throw Error(ErrorCode::kInvalidInput, "unknown right-maximal exact match benchmark method: " + method);
+        if (method == "mummer4" && !result.mummer4) throw Error(ErrorCode::kInvalidInput, "mummer4 method requires --mummer4 PATH");
     }
     return result;
 }
@@ -292,8 +292,8 @@ Dataset generate_dataset(const Options& options, const std::string& scenario) {
 Dataset load_dataset(const Options& options) {
     Dataset dataset;
     dataset.name = "user-right-maximal-reference";
-    dataset.reference = read_fasta_records(*options.reference);
-    if (dataset.reference.empty()) throw Error(ErrorCode::invalid_input, "reference FASTA contains no records");
+    dataset.reference = ReadFastaRecords(*options.reference);
+    if (dataset.reference.empty()) throw Error(ErrorCode::kInvalidInput, "reference FASTA contains no records");
     std::uint64_t state = options.seed;
     for (auto& record : dataset.reference) {
         for (auto& base : record.sequence) {
@@ -303,7 +303,7 @@ Dataset load_dataset(const Options& options) {
         dataset.total_bases += record.sequence.size();
     }
     if (options.query_file) {
-        dataset.queries = read_fasta_records(*options.query_file);
+        dataset.queries = ReadFastaRecords(*options.query_file);
     } else {
         const std::size_t desired = 1000;
         const std::size_t length = 256;
@@ -324,7 +324,7 @@ Dataset load_dataset(const Options& options) {
             if (!found && dataset.queries.empty()) continue;
         }
     }
-    if (dataset.queries.empty()) throw Error(ErrorCode::invalid_input, "no usable right-maximal exact match benchmark queries");
+    if (dataset.queries.empty()) throw Error(ErrorCode::kInvalidInput, "no usable right-maximal exact match benchmark queries");
     for (const auto& query : dataset.queries) dataset.query_bases += query.sequence.size();
     std::uint64_t fingerprint = 1469598103934665603ULL;
     for (const auto& record : dataset.reference) fingerprint = hash_bytes(fingerprint, record.sequence);
@@ -334,7 +334,7 @@ Dataset load_dataset(const Options& options) {
 
 void write_fasta(const std::filesystem::path& path, const std::vector<SequenceRecord>& records) {
     std::ofstream output(path, std::ios::binary);
-    if (!output) throw Error(ErrorCode::io_error, "cannot create benchmark FASTA: " + path.string());
+    if (!output) throw Error(ErrorCode::kIoError, "cannot create benchmark FASTA: " + path.string());
     for (const auto& record : records) output << '>' << record.name << '\n' << record.sequence << '\n';
 }
 
@@ -365,21 +365,21 @@ void mix_match(std::uint64_t& checksum, const RightMaximalMatch& match) {
 }
 
 SaAcceleration acceleration_for(const std::string& method) {
-    if (method == "right-maximal-baseline") return SaAcceleration::none;
-    if (method == "right-maximal-lcp") return SaAcceleration::lcp;
-    if (method == "right-maximal-child") return SaAcceleration::lcp_child;
+    if (method == "right-maximal-baseline") return SaAcceleration::kNone;
+    if (method == "right-maximal-lcp") return SaAcceleration::kLcp;
+    if (method == "right-maximal-child") return SaAcceleration::kLcpChild;
     if (method == "right-maximal-suffix-link" || method == "right-maximal-suffix-link-binary" ||
-        method == "right-maximal-suffix-link-sapling") return SaAcceleration::lcp_suffix_link;
-    return SaAcceleration::full;
+        method == "right-maximal-suffix-link-sapling") return SaAcceleration::kLcpSuffixLink;
+    return SaAcceleration::kFull;
 }
 
 RightMaximalSearchAlgorithm algorithm_for(const std::string& method) {
-    if (method == "right-maximal-baseline") return RightMaximalSearchAlgorithm::baseline;
-    if (method == "right-maximal-lcp") return RightMaximalSearchAlgorithm::lcp;
-    if (method == "right-maximal-child") return RightMaximalSearchAlgorithm::child;
+    if (method == "right-maximal-baseline") return RightMaximalSearchAlgorithm::kBaseline;
+    if (method == "right-maximal-lcp") return RightMaximalSearchAlgorithm::kLcp;
+    if (method == "right-maximal-child") return RightMaximalSearchAlgorithm::kChild;
     if (method == "right-maximal-suffix-link" || method == "right-maximal-suffix-link-binary" ||
-        method == "right-maximal-suffix-link-sapling") return RightMaximalSearchAlgorithm::suffix_link;
-    return RightMaximalSearchAlgorithm::full;
+        method == "right-maximal-suffix-link-sapling") return RightMaximalSearchAlgorithm::kSuffixLink;
+    return RightMaximalSearchAlgorithm::kFull;
 }
 
 std::uint64_t serialized_size(const std::filesystem::path& path) {
@@ -394,9 +394,9 @@ void benchmark_internal(const Dataset& dataset, const Options& options, const st
     BuildResult build;
     build.dataset = dataset.name;
     build.method = method;
-    build.algorithm = to_string(algorithm_for(method));
-    build.acceleration = to_string(acceleration_for(method));
-    const auto reference = GenomeReference::from_records(dataset.reference);
+    build.algorithm = ToString(algorithm_for(method));
+    build.acceleration = ToString(acceleration_for(method));
+    const auto reference = GenomeReference::FromRecords(dataset.reference);
     SuffixArrayBuildOptions build_options;
     build_options.acceleration = acceleration_for(method);
     if (method == "right-maximal-suffix-link-sapling") {
@@ -409,7 +409,7 @@ void benchmark_internal(const Dataset& dataset, const Options& options, const st
     SuffixArrayBuildStatistics build_statistics;
     build_options.statistics = &build_statistics;
     const auto build_begin = Clock::now();
-    auto index = SuffixArray::build(reference, build_options);
+    auto index = SuffixArray::Build(reference, build_options);
     build.build_seconds = seconds_since(build_begin);
     build.sa_build_seconds = build_statistics.sa_seconds;
     build.isa_build_seconds = build_statistics.isa_seconds;
@@ -418,13 +418,13 @@ void benchmark_internal(const Dataset& dataset, const Options& options, const st
     build.learned_index_build_seconds = build_statistics.learned_index_seconds;
     const auto index_path = scratch / (method + ".sufidx");
     const auto save_begin = Clock::now();
-    index.save(index_path, {true});
+    index.Save(index_path, {true});
     build.save_seconds = seconds_since(save_begin);
     build.serialized_bytes = serialized_size(index_path);
-    build.auxiliary_bytes = index.info().auxiliary_bytes;
-    build.learned_index_bytes = index.info().learned_index_bytes;
+    build.auxiliary_bytes = index.GetInfo().auxiliary_bytes;
+    build.learned_index_bytes = index.GetInfo().learned_index_bytes;
     const auto load_begin = Clock::now();
-    auto loaded = SuffixArray::load(index_path);
+    auto loaded = SuffixArray::Load(index_path);
     build.load_seconds = seconds_since(load_begin);
     build.peak_rss_mb = peak_rss_mb_self();
     builds.push_back(build);
@@ -435,10 +435,10 @@ void benchmark_internal(const Dataset& dataset, const Options& options, const st
         right_maximal_options.min_length = min_length;
         right_maximal_options.algorithm = algorithm_for(method);
         if (method == "right-maximal-suffix-link-binary")
-            right_maximal_options.lookup_algorithm = SaSearchAlgorithm::binary;
+            right_maximal_options.lookup_algorithm = SaSearchAlgorithm::kBinary;
         else if (method == "right-maximal-suffix-link-sapling")
-            right_maximal_options.lookup_algorithm = SaSearchAlgorithm::sapling_pwl;
-        for (const auto& query : dataset.queries) (void)loaded.find_right_maximal_matches(query.sequence, right_maximal_options);
+            right_maximal_options.lookup_algorithm = SaSearchAlgorithm::kSaplingPwl;
+        for (const auto& query : dataset.queries) (void)loaded.FindRightMaximalMatches(query.sequence, right_maximal_options);
         QueryResultRow summary;
         summary.dataset = dataset.name;
         summary.method = method;
@@ -455,7 +455,7 @@ void benchmark_internal(const Dataset& dataset, const Options& options, const st
             for (std::size_t query_id = 0; query_id < dataset.queries.size(); ++query_id) {
                 RightMaximalSearchStatistics search_statistics;
                 right_maximal_options.statistics = &search_statistics;
-                const auto result = loaded.find_right_maximal_matches(dataset.queries[query_id].sequence, right_maximal_options);
+                const auto result = loaded.FindRightMaximalMatches(dataset.queries[query_id].sequence, right_maximal_options);
                 mix(checksum, query_id);
                 mix(checksum, result.total_matches);
                 total += result.total_matches;
@@ -515,7 +515,7 @@ Value read_worker_value(std::istream& input, const char* label) {
     static_assert(std::is_trivially_copyable<Value>::value, "worker value must be POD-like");
     Value value{};
     input.read(reinterpret_cast<char*>(&value), sizeof(value));
-    if (!input) throw Error(ErrorCode::build_failure,
+    if (!input) throw Error(ErrorCode::kBuildFailure,
                             std::string("truncated right-maximal exact match worker field: ") + label);
     return value;
 }
@@ -527,11 +527,11 @@ void write_worker_string(std::ostream& output, const std::string& value) {
 
 std::string read_worker_string(std::istream& input, const char* label) {
     const auto size = read_worker_value<std::uint64_t>(input, label);
-    if (size > 1U << 20) throw Error(ErrorCode::build_failure,
+    if (size > 1U << 20) throw Error(ErrorCode::kBuildFailure,
                                      std::string("invalid right-maximal exact match worker string: ") + label);
     std::string value(static_cast<std::size_t>(size), '\0');
     input.read(value.data(), static_cast<std::streamsize>(value.size()));
-    if (!input) throw Error(ErrorCode::build_failure,
+    if (!input) throw Error(ErrorCode::kBuildFailure,
                             std::string("truncated right-maximal exact match worker string: ") + label);
     return value;
 }
@@ -542,7 +542,7 @@ void write_internal_worker_file(
     const std::vector<QueryResultRow>& queries,
     const std::vector<RawRow>& raw) {
     std::ofstream output(path, std::ios::binary);
-    if (!output) throw Error(ErrorCode::io_error, "cannot create right-maximal exact match worker result");
+    if (!output) throw Error(ErrorCode::kIoError, "cannot create right-maximal exact match worker result");
     write_worker_value(output, static_cast<std::uint64_t>(builds.size()));
     for (const auto& row : builds) {
         write_worker_string(output, row.dataset);
@@ -592,7 +592,7 @@ void write_internal_worker_file(
         write_worker_value(output, row.checksum);
         write_worker_value(output, row.statistics);
     }
-    if (!output) throw Error(ErrorCode::io_error, "cannot finish right-maximal exact match worker result");
+    if (!output) throw Error(ErrorCode::kIoError, "cannot finish right-maximal exact match worker result");
 }
 
 void read_internal_worker_file(
@@ -601,7 +601,7 @@ void read_internal_worker_file(
     std::vector<QueryResultRow>& queries,
     std::vector<RawRow>& raw) {
     std::ifstream input(path, std::ios::binary);
-    if (!input) throw Error(ErrorCode::build_failure, "right-maximal exact match worker result is missing");
+    if (!input) throw Error(ErrorCode::kBuildFailure, "right-maximal exact match worker result is missing");
     const auto build_count = read_worker_value<std::uint64_t>(input, "build count");
     for (std::uint64_t index = 0; index < build_count; ++index) {
         BuildResult row;
@@ -639,7 +639,7 @@ void read_internal_worker_file(
         row.checksum = read_worker_value<std::uint64_t>(input, "query checksum");
         row.statistics = read_worker_value<RightMaximalSearchStatistics>(input, "query statistics");
         const auto repetitions = read_worker_value<std::uint64_t>(input, "query repetitions");
-        if (repetitions > 1000) throw Error(ErrorCode::build_failure,
+        if (repetitions > 1000) throw Error(ErrorCode::kBuildFailure,
                                             "invalid right-maximal exact match worker repetition count");
         row.seconds.reserve(static_cast<std::size_t>(repetitions));
         for (std::uint64_t repetition = 0; repetition < repetitions; ++repetition)
@@ -662,7 +662,7 @@ void read_internal_worker_file(
         raw.push_back(std::move(row));
     }
     if (input.peek() != std::char_traits<char>::eof())
-        throw Error(ErrorCode::build_failure, "right-maximal exact match worker result has trailing bytes");
+        throw Error(ErrorCode::kBuildFailure, "right-maximal exact match worker result has trailing bytes");
 }
 
 void benchmark_internal_isolated(
@@ -676,7 +676,7 @@ void benchmark_internal_isolated(
     const auto result_path = scratch / (method + ".worker.bin");
     const auto error_path = scratch / (method + ".worker.error");
     const pid_t pid = fork();
-    if (pid < 0) throw Error(ErrorCode::io_error, "cannot fork right-maximal exact match benchmark worker");
+    if (pid < 0) throw Error(ErrorCode::kIoError, "cannot fork right-maximal exact match benchmark worker");
     if (pid == 0) {
         try {
             std::vector<BuildResult> worker_builds;
@@ -696,12 +696,12 @@ void benchmark_internal_isolated(
     }
     int status = 0;
     if (waitpid(pid, &status, 0) < 0)
-        throw Error(ErrorCode::io_error, "cannot wait for right-maximal exact match benchmark worker");
+        throw Error(ErrorCode::kIoError, "cannot wait for right-maximal exact match benchmark worker");
     if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
         std::ifstream error_input(error_path);
         std::string message;
         std::getline(error_input, message);
-        throw Error(ErrorCode::build_failure,
+        throw Error(ErrorCode::kBuildFailure,
                     message.empty() ? "right-maximal exact match benchmark worker failed" : message);
     }
     read_internal_worker_file(result_path, builds, queries, raw);
@@ -717,7 +717,7 @@ ProcessResult run_process(const std::vector<std::string>& arguments,
     const std::filesystem::path& stdout_path, const std::filesystem::path& stderr_path) {
     const auto begin = Clock::now();
     const pid_t pid = fork();
-    if (pid < 0) throw Error(ErrorCode::io_error, "cannot fork MUMmer4 benchmark worker");
+    if (pid < 0) throw Error(ErrorCode::kIoError, "cannot fork MUMmer4 benchmark worker");
     if (pid == 0) {
         const int out = open(stdout_path.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
         const int err = open(stderr_path.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
@@ -731,7 +731,7 @@ ProcessResult run_process(const std::vector<std::string>& arguments,
     }
     int status = 0;
     rusage usage{};
-    if (wait4(pid, &status, 0, &usage) < 0) throw Error(ErrorCode::io_error, "cannot wait for MUMmer4 benchmark worker");
+    if (wait4(pid, &status, 0, &usage) < 0) throw Error(ErrorCode::kIoError, "cannot wait for MUMmer4 benchmark worker");
     ProcessResult result;
     result.status = WIFEXITED(status) ? WEXITSTATUS(status) : 128;
     result.seconds = seconds_since(begin);
@@ -745,7 +745,7 @@ std::vector<RightMaximalMatch> parse_mummer_output(const std::filesystem::path& 
     Strand strand,
     std::vector<std::vector<RightMaximalMatch>>& per_query) {
     std::ifstream input(path);
-    if (!input) throw Error(ErrorCode::io_error, "cannot read MUMmer4 output");
+    if (!input) throw Error(ErrorCode::kIoError, "cannot read MUMmer4 output");
     std::string line;
     std::size_t query_id = 0;
     bool have_query = false;
@@ -755,9 +755,9 @@ std::vector<RightMaximalMatch> parse_mummer_output(const std::filesystem::path& 
             std::istringstream header(line.substr(1));
             std::string name;
             header >> name;
-            if (name.size() < 2 || name.front() != 'q') throw Error(ErrorCode::build_failure, "unexpected MUMmer4 query header");
+            if (name.size() < 2 || name.front() != 'q') throw Error(ErrorCode::kBuildFailure, "unexpected MUMmer4 query header");
             query_id = static_cast<std::size_t>(parse_number(name.substr(1), "MUMmer query id"));
-            if (query_id >= per_query.size()) throw Error(ErrorCode::build_failure, "MUMmer4 query id is out of range");
+            if (query_id >= per_query.size()) throw Error(ErrorCode::kBuildFailure, "MUMmer4 query id is out of range");
             have_query = true;
             continue;
         }
@@ -768,11 +768,11 @@ std::vector<RightMaximalMatch> parse_mummer_output(const std::filesystem::path& 
         if (!(row >> reference_name >> reference_position >> query_position >> length)) continue;
         const auto id = reference_ids.find(reference_name);
         if (id == reference_ids.end() || reference_position == 0 || query_position == 0)
-            throw Error(ErrorCode::build_failure, "invalid MUMmer4 match row");
+            throw Error(ErrorCode::kBuildFailure, "invalid MUMmer4 match row");
         const auto zero_query = query_position - 1;
-        if (strand == Strand::reverse_complement && zero_query + length > queries[query_id].sequence.size())
-            throw Error(ErrorCode::build_failure, "MUMmer4 reverse query coordinate is out of range");
-        const auto normalized_query = strand == Strand::reverse_complement
+        if (strand == Strand::kReverseComplement && zero_query + length > queries[query_id].sequence.size())
+            throw Error(ErrorCode::kBuildFailure, "MUMmer4 reverse query coordinate is out of range");
+        const auto normalized_query = strand == Strand::kReverseComplement
             ? queries[query_id].sequence.size() - (zero_query + length) : zero_query;
         RightMaximalMatch match{id->second, reference_position - 1, normalized_query, length, strand};
         per_query[query_id].push_back(match);
@@ -807,7 +807,7 @@ void benchmark_mummer(const Dataset& dataset, const Options& options,
     build_args.insert(build_args.end(), {"-l", std::to_string(min_length), "-save", prefix.string(),
                                          reference_path.string(), nohit_path.string()});
     const auto process = run_process(build_args, build_stdout, build_stderr);
-    if (process.status != 0) throw Error(ErrorCode::build_failure, "MUMmer4 index construction failed");
+    if (process.status != 0) throw Error(ErrorCode::kBuildFailure, "MUMmer4 index construction failed");
     BuildResult build;
     build.dataset = dataset.name;
     build.method = "mummer4";
@@ -820,9 +820,9 @@ void benchmark_mummer(const Dataset& dataset, const Options& options,
     builds.push_back(build);
 
     SuffixArrayBuildOptions verification_build_options;
-    verification_build_options.acceleration = SaAcceleration::none;
-    const auto verification_reference = GenomeReference::from_records(dataset.reference);
-    const auto verification_index = SuffixArray::build(verification_reference, verification_build_options);
+    verification_build_options.acceleration = SaAcceleration::kNone;
+    const auto verification_reference = GenomeReference::FromRecords(dataset.reference);
+    const auto verification_index = SuffixArray::Build(verification_reference, verification_build_options);
 
     const std::uint32_t repetitions = options.profile == "smoke" ? 3 : 5;
     for (const auto length : options.min_lengths) {
@@ -841,10 +841,10 @@ void benchmark_mummer(const Dataset& dataset, const Options& options,
             args.insert(args.end(), {"-l", std::to_string(length), "-load", prefix.string(),
                                      reference_path.string(), query_path.string()});
             const auto measured = run_process(args, output, error);
-            if (measured.status != 0) throw Error(ErrorCode::build_failure, "MUMmer4 query failed");
+            if (measured.status != 0) throw Error(ErrorCode::kBuildFailure, "MUMmer4 query failed");
             std::vector<std::vector<RightMaximalMatch>> per_query(dataset.queries.size());
             (void)parse_mummer_output(output, reference_ids, dataset.queries,
-                                      Strand::forward, per_query);
+                                      Strand::kForward, per_query);
             std::uint64_t checksum = checksum_seed();
             std::uint64_t total = 0;
             for (std::size_t query_id = 0; query_id < per_query.size(); ++query_id) {
@@ -878,25 +878,25 @@ void benchmark_mummer(const Dataset& dataset, const Options& options,
         reverse_args.insert(reverse_args.end(), {"-r", "-l", std::to_string(length), "-load", prefix.string(),
                                                  reference_path.string(), query_path.string()});
         const auto reverse_process = run_process(reverse_args, reverse_output, reverse_error);
-        if (reverse_process.status != 0) throw Error(ErrorCode::build_failure, "MUMmer4 reverse query failed");
+        if (reverse_process.status != 0) throw Error(ErrorCode::kBuildFailure, "MUMmer4 reverse query failed");
         std::vector<std::vector<RightMaximalMatch>> reverse_matches(dataset.queries.size());
         (void)parse_mummer_output(reverse_output, reference_ids, dataset.queries,
-                                  Strand::reverse_complement, reverse_matches);
+                                  Strand::kReverseComplement, reverse_matches);
         std::uint64_t mummer_checksum = checksum_seed();
         std::uint64_t internal_checksum = checksum_seed();
         std::uint64_t mummer_total = 0;
         std::uint64_t internal_total = 0;
         RightMaximalOptions reverse_options;
         reverse_options.min_length = length;
-        reverse_options.strands = StrandMode::reverse_complement;
-        reverse_options.algorithm = RightMaximalSearchAlgorithm::baseline;
+        reverse_options.strands = StrandMode::kReverseComplement;
+        reverse_options.algorithm = RightMaximalSearchAlgorithm::kBaseline;
         for (std::size_t query_id = 0; query_id < dataset.queries.size(); ++query_id) {
             auto& matches = reverse_matches[query_id];
             std::sort(matches.begin(), matches.end(), [](const auto& left, const auto& right) {
                 return std::tie(left.query_position, left.sequence_id, left.reference_position, left.length, left.strand) <
                        std::tie(right.query_position, right.sequence_id, right.reference_position, right.length, right.strand);
             });
-            const auto internal = verification_index.find_right_maximal_matches(dataset.queries[query_id].sequence, reverse_options);
+            const auto internal = verification_index.FindRightMaximalMatches(dataset.queries[query_id].sequence, reverse_options);
             mix(mummer_checksum, query_id);
             mix(mummer_checksum, matches.size());
             mummer_total += matches.size();
@@ -907,7 +907,7 @@ void benchmark_mummer(const Dataset& dataset, const Options& options,
             for (const auto& match : internal.matches) mix_match(internal_checksum, match);
         }
         if (mummer_total != internal_total || mummer_checksum != internal_checksum)
-            throw Error(ErrorCode::build_failure, "MUMmer4 reverse-complement right-maximal exact match correctness mismatch");
+            throw Error(ErrorCode::kBuildFailure, "MUMmer4 reverse-complement right-maximal exact match correctness mismatch");
         queries.push_back(std::move(summary));
     }
 }
@@ -926,7 +926,7 @@ void validate(const std::vector<QueryResultRow>& rows) {
         const auto it = expected.find(key);
         if (it == expected.end()) expected.emplace(key, std::make_pair(row.total_matches, row.checksum));
         else if (it->second != std::make_pair(row.total_matches, row.checksum))
-            throw Error(ErrorCode::build_failure, "right-maximal exact match benchmark correctness mismatch for " + row.dataset +
+            throw Error(ErrorCode::kBuildFailure, "right-maximal exact match benchmark correctness mismatch for " + row.dataset +
                 " min_length=" + std::to_string(row.min_length) + " method=" + row.method);
     }
 }
@@ -1040,7 +1040,7 @@ int run(const std::vector<std::string>& arguments) {
         std::ifstream version_input(version_out);
         std::getline(version_input, options.mummer_version);
         if (version_result.status != 0 || options.mummer_version != "4.0.1")
-            throw Error(ErrorCode::unsupported_backend, "right-maximal exact match benchmark requires MUMmer4 version 4.0.1");
+            throw Error(ErrorCode::kUnsupportedBackend, "right-maximal exact match benchmark requires MUMmer4 version 4.0.1");
         const auto hash_out = scratch / "mummer-sha256.txt";
         const auto hash_err = scratch / "mummer-sha256.err";
         const auto hash_result = run_process(
@@ -1048,7 +1048,7 @@ int run(const std::vector<std::string>& arguments) {
         std::ifstream hash_input(hash_out);
         hash_input >> options.mummer_sha256;
         if (hash_result.status != 0 || options.mummer_sha256.size() != 64)
-            throw Error(ErrorCode::io_error, "cannot fingerprint the MUMmer4 executable");
+            throw Error(ErrorCode::kIoError, "cannot fingerprint the MUMmer4 executable");
     }
     std::vector<Dataset> datasets;
     std::vector<BuildResult> builds;
@@ -1071,7 +1071,7 @@ int run(const std::vector<std::string>& arguments) {
     validate(queries);
     std::error_code cleanup_error;
     std::filesystem::remove_all(scratch, cleanup_error);
-    if (cleanup_error) throw Error(ErrorCode::io_error, "cannot remove right-maximal exact match benchmark scratch directory");
+    if (cleanup_error) throw Error(ErrorCode::kIoError, "cannot remove right-maximal exact match benchmark scratch directory");
     std::cerr << "right-maximal exact match benchmark results written to " << options.output_directory << '\n';
     return 0;
 }

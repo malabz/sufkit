@@ -38,7 +38,7 @@ struct Options {
     std::vector<std::string> methods;
     std::vector<std::uint32_t> threads;
     std::vector<std::uint32_t> sampling_rates;
-    sufkit::SaAcceleration acceleration = sufkit::SaAcceleration::none;
+    sufkit::SaAcceleration acceleration = sufkit::SaAcceleration::kNone;
     std::uint32_t repetitions = 0;
     std::uint64_t seed = 20260822;
 };
@@ -100,7 +100,7 @@ std::vector<std::string> split(const std::string& value) {
     while (begin <= value.size()) {
         const auto end = value.find(',', begin);
         const auto part = value.substr(begin, end == std::string::npos ? std::string::npos : end - begin);
-        if (part.empty()) throw sufkit::Error(sufkit::ErrorCode::invalid_input, "empty list item");
+        if (part.empty()) throw sufkit::Error(sufkit::ErrorCode::kInvalidInput, "empty list item");
         result.push_back(part);
         if (end == std::string::npos) break;
         begin = end + 1;
@@ -112,8 +112,8 @@ std::uint64_t parse_u64(const std::string& value, const char* name) {
     std::size_t consumed = 0;
     unsigned long long parsed = 0;
     try { parsed = std::stoull(value, &consumed); }
-    catch (...) { throw sufkit::Error(sufkit::ErrorCode::invalid_input, std::string("invalid ") + name); }
-    if (consumed != value.size()) throw sufkit::Error(sufkit::ErrorCode::invalid_input, std::string("invalid ") + name);
+    catch (...) { throw sufkit::Error(sufkit::ErrorCode::kInvalidInput, std::string("invalid ") + name); }
+    if (consumed != value.size()) throw sufkit::Error(sufkit::ErrorCode::kInvalidInput, std::string("invalid ") + name);
     return static_cast<std::uint64_t>(parsed);
 }
 
@@ -129,7 +129,7 @@ Options parse_options(int argc, char** argv) {
                 << "  [--repetitions N] [--seed N]\n";
             std::exit(0);
         }
-        if (index + 1 >= argc) throw sufkit::Error(sufkit::ErrorCode::invalid_input, "missing value for " + name);
+        if (index + 1 >= argc) throw sufkit::Error(sufkit::ErrorCode::kInvalidInput, "missing value for " + name);
         const std::string value = argv[++index];
         if (name == "--profile") options.profile = value;
         else if (name == "--reference") options.reference = value;
@@ -139,37 +139,37 @@ Options parse_options(int argc, char** argv) {
             for (const auto& item : split(value)) {
                 const auto parsed = parse_u64(item, "thread count");
                 if (parsed == 0 || parsed > std::numeric_limits<std::uint32_t>::max())
-                    throw sufkit::Error(sufkit::ErrorCode::invalid_input, "thread count is out of range");
+                    throw sufkit::Error(sufkit::ErrorCode::kInvalidInput, "thread count is out of range");
                 options.threads.push_back(static_cast<std::uint32_t>(parsed));
             }
         } else if (name == "--sampling-rates") {
             for (const auto& item : split(value)) {
                 const auto parsed = parse_u64(item, "sampling rate");
                 if (parsed == 0 || parsed > std::numeric_limits<std::uint32_t>::max())
-                    throw sufkit::Error(sufkit::ErrorCode::invalid_input, "sampling rate is out of range");
+                    throw sufkit::Error(sufkit::ErrorCode::kInvalidInput, "sampling rate is out of range");
                 options.sampling_rates.push_back(static_cast<std::uint32_t>(parsed));
             }
         } else if (name == "--acceleration") {
-            if (value == "none") options.acceleration = sufkit::SaAcceleration::none;
-            else if (value == "full") options.acceleration = sufkit::SaAcceleration::full;
-            else throw sufkit::Error(sufkit::ErrorCode::invalid_input, "invalid acceleration");
+            if (value == "none") options.acceleration = sufkit::SaAcceleration::kNone;
+            else if (value == "full") options.acceleration = sufkit::SaAcceleration::kFull;
+            else throw sufkit::Error(sufkit::ErrorCode::kInvalidInput, "invalid acceleration");
         } else if (name == "--repetitions") {
             const auto parsed = parse_u64(value, "repetitions");
             if (parsed == 0 || parsed > std::numeric_limits<std::uint32_t>::max())
-                throw sufkit::Error(sufkit::ErrorCode::invalid_input, "repetitions are out of range");
+                throw sufkit::Error(sufkit::ErrorCode::kInvalidInput, "repetitions are out of range");
             options.repetitions = static_cast<std::uint32_t>(parsed);
         } else if (name == "--seed") options.seed = parse_u64(value, "seed");
-        else throw sufkit::Error(sufkit::ErrorCode::invalid_input, "unknown option: " + name);
+        else throw sufkit::Error(sufkit::ErrorCode::kInvalidInput, "unknown option: " + name);
     }
-    if (options.output_dir.empty()) throw sufkit::Error(sufkit::ErrorCode::invalid_input, "--output-dir is required");
+    if (options.output_dir.empty()) throw sufkit::Error(sufkit::ErrorCode::kInvalidInput, "--output-dir is required");
     if ((!options.profile.empty()) == (!options.reference.empty()))
-        throw sufkit::Error(sufkit::ErrorCode::invalid_input, "specify exactly one of --profile or --reference");
+        throw sufkit::Error(sufkit::ErrorCode::kInvalidInput, "specify exactly one of --profile or --reference");
     if (!options.profile.empty() && options.profile != "smoke" && options.profile != "quick" && options.profile != "standard")
-        throw sufkit::Error(sufkit::ErrorCode::invalid_input, "invalid profile");
+        throw sufkit::Error(sufkit::ErrorCode::kInvalidInput, "invalid profile");
     if (options.methods.empty()) options.methods = {"div32", "caps32"};
     for (const auto& method : options.methods)
         if (method != "div32" && method != "div64" && method != "caps32" && method != "caps64")
-            throw sufkit::Error(sufkit::ErrorCode::invalid_input, "invalid method: " + method);
+            throw sufkit::Error(sufkit::ErrorCode::kInvalidInput, "invalid method: " + method);
     if (options.threads.empty()) {
         if (options.profile == "smoke") options.threads = {1, 2};
         else if (options.profile == "standard") options.threads = {1, 2, 4, 8, 16, 32};
@@ -188,7 +188,7 @@ std::uint64_t profile_bases(const std::string& profile) {
 
 void generate_reference(const std::filesystem::path& path, std::uint64_t total_bases, std::uint64_t seed) {
     std::ofstream output(path, std::ios::binary);
-    if (!output) throw sufkit::Error(sufkit::ErrorCode::io_error, "cannot create generated reference");
+    if (!output) throw sufkit::Error(sufkit::ErrorCode::kIoError, "cannot create generated reference");
     std::uint64_t state = seed;
     constexpr std::array<char, 4> bases{{'A', 'C', 'G', 'T'}};
     const std::string repeat = "ACGTACGTGATTACATTTTCCCCAAAAGGGG";
@@ -212,7 +212,7 @@ void generate_reference(const std::filesystem::path& path, std::uint64_t total_b
         }
         if (column != 0) output.put('\n');
     }
-    if (!output) throw sufkit::Error(sufkit::ErrorCode::io_error, "failed to write generated reference");
+    if (!output) throw sufkit::Error(sufkit::ErrorCode::kIoError, "failed to write generated reference");
 }
 
 void mix(std::uint64_t& hash, std::uint64_t value) {
@@ -223,8 +223,8 @@ void mix(std::uint64_t& hash, std::uint64_t value) {
 std::pair<std::uint64_t, std::uint64_t> sa_checksum(const sufkit::SuffixArray& index) {
     std::uint64_t first = 1469598103934665603ULL;
     std::uint64_t second = 0x6a09e667f3bcc909ULL;
-    for (std::uint64_t row = 0; row < index.info().suffix_count; ++row) {
-        const auto suffix = index.suffix_at(row);
+    for (std::uint64_t row = 0; row < index.GetInfo().suffix_count; ++row) {
+        const auto suffix = index.SuffixAt(row);
         first ^= suffix;
         first *= 1099511628211ULL;
         second ^= suffix + 0x9e3779b97f4a7c15ULL + (second << 7) + (second >> 3);
@@ -235,7 +235,7 @@ std::pair<std::uint64_t, std::uint64_t> sa_checksum(const sufkit::SuffixArray& i
 std::uint64_t exact_checksum(const sufkit::SuffixArray& index) {
     std::uint64_t hash = 0xcbf29ce484222325ULL;
     for (const std::string pattern : {"ACGT", "GATTACA", "TTTTCCCC", "AAAAGGGG", "CGTACGTG"}) {
-        const auto result = index.locate(pattern);
+        const auto result = index.Locate(pattern);
         mix(hash, result.total_hits);
         for (const auto& match : result.hits) {
             mix(hash, match.sequence_id);
@@ -249,8 +249,8 @@ std::uint64_t exact_checksum(const sufkit::SuffixArray& index) {
 std::uint64_t right_maximal_checksum(const sufkit::SuffixArray& index) {
     sufkit::RightMaximalOptions options;
     options.min_length = 12;
-    options.strands = sufkit::StrandMode::both;
-    const auto result = index.find_right_maximal_matches("TTACACGTACGTGATTACATTTTCCCCAAAAGGGGACGT");
+    options.strands = sufkit::StrandMode::kBoth;
+    const auto result = index.FindRightMaximalMatches("TTACACGTACGTGATTACATTTTCCCCAAAAGGGGACGT");
     std::uint64_t hash = 0x243f6a8885a308d3ULL;
     mix(hash, result.total_matches);
     for (const auto& match : result.matches) {
@@ -270,11 +270,11 @@ sufkit::SuffixArrayBuildOptions build_options(
     sufkit::SaAcceleration acceleration) {
     sufkit::SuffixArrayBuildOptions options;
     options.backend = method.rfind("caps", 0) == 0
-        ? sufkit::SaBackend::caps
-        : sufkit::SaBackend::divsufsort;
+        ? sufkit::SaBackend::kCaps
+        : sufkit::SaBackend::kDivsufsort;
     options.coordinate_width = method.size() >= 2 && method.substr(method.size() - 2) == "32"
-        ? sufkit::CoordinateWidth::bits32
-        : sufkit::CoordinateWidth::bits64;
+        ? sufkit::CoordinateWidth::kBits32
+        : sufkit::CoordinateWidth::kBits64;
     options.threads = threads;
     options.sampling_rate = sampling_rate;
     options.acceleration = acceleration;
@@ -295,10 +295,10 @@ WorkerResult run_worker(
     result.sampling_rate = sampling_rate;
     result.repetition = repetition;
     try {
-        const auto reference = sufkit::GenomeReference::from_fasta(reference_path);
+        const auto reference = sufkit::GenomeReference::FromFasta(reference_path);
         const auto usage_begin = usage_now();
         const auto begin = Clock::now();
-        auto index = sufkit::SuffixArray::build(
+        auto index = sufkit::SuffixArray::Build(
             reference,
             build_options(method, threads, sampling_rate, options.acceleration));
         result.build_seconds = std::chrono::duration<double>(Clock::now() - begin).count();
@@ -306,13 +306,13 @@ WorkerResult run_worker(
         result.user_seconds = usage_end.user - usage_begin.user;
         result.system_seconds = usage_end.system - usage_begin.system;
         result.peak_rss_mb = peak_rss_mb();
-        const auto info = index.info();
+        const auto info = index.GetInfo();
         result.text_symbols = info.text_symbols;
         result.suffix_count = info.suffix_count;
         result.fingerprint = info.fingerprint;
         result.coordinate_width = info.coordinate_width;
         result.subproblems = method.rfind("caps", 0) == 0
-            ? sufkit::detail::caps_subproblem_count(info.text_symbols, threads)
+            ? sufkit::detail::CapsSubproblemCount(info.text_symbols, threads)
             : 0;
         copy_text(result.backend, sizeof(result.backend), info.backend);
         copy_text(result.signature, sizeof(result.signature), info.backend_signature);
@@ -320,22 +320,22 @@ WorkerResult run_worker(
         result.sa_hash_1 = hashes.first;
         result.sa_hash_2 = hashes.second;
         result.exact_checksum = exact_checksum(index);
-        result.right_maximal_checksum = options.acceleration == sufkit::SaAcceleration::full
+        result.right_maximal_checksum = options.acceleration == sufkit::SaAcceleration::kFull
             ? right_maximal_checksum(index)
             : 0;
-        index.save(index_path);
+        index.Save(index_path);
         result.serialized_bytes = std::filesystem::file_size(index_path);
-        auto loaded = sufkit::SuffixArray::load(index_path);
+        auto loaded = sufkit::SuffixArray::Load(index_path);
         if (exact_checksum(loaded) != result.exact_checksum ||
-            (options.acceleration == sufkit::SaAcceleration::full &&
+            (options.acceleration == sufkit::SaAcceleration::kFull &&
              right_maximal_checksum(loaded) != result.right_maximal_checksum)) {
-            throw sufkit::Error(sufkit::ErrorCode::build_failure, "save/load checksum mismatch");
+            throw sufkit::Error(sufkit::ErrorCode::kBuildFailure, "save/load checksum mismatch");
         }
         std::filesystem::remove(index_path);
         copy_text(result.status, sizeof(result.status), "ok");
     } catch (const sufkit::Error& error) {
         copy_text(result.status, sizeof(result.status),
-                  std::string(sufkit::to_string(error.code())) + ":" + error.what());
+                  std::string(sufkit::ToString(error.Code())) + ":" + error.what());
     } catch (const std::exception& error) {
         copy_text(result.status, sizeof(result.status), std::string("error:") + error.what());
     }
@@ -373,12 +373,12 @@ WorkerResult isolated_worker(
     std::uint32_t repetition) {
     std::array<int, 2> descriptors{};
     if (pipe(descriptors.data()) != 0)
-        throw sufkit::Error(sufkit::ErrorCode::build_failure, "benchmark pipe failed");
+        throw sufkit::Error(sufkit::ErrorCode::kBuildFailure, "benchmark pipe failed");
     const auto index_path = options.output_dir /
         ("worker-" + method + "-t" + std::to_string(threads) + "-k" +
          std::to_string(sampling_rate) + "-r" + std::to_string(repetition) + ".sufidx");
     const auto child = fork();
-    if (child < 0) throw sufkit::Error(sufkit::ErrorCode::build_failure, "benchmark fork failed");
+    if (child < 0) throw sufkit::Error(sufkit::ErrorCode::kBuildFailure, "benchmark fork failed");
     if (child == 0) {
         close(descriptors[0]);
         const auto result = run_worker(
@@ -394,7 +394,7 @@ WorkerResult isolated_worker(
     int status = 0;
     waitpid(child, &status, 0);
     if (!received || !WIFEXITED(status) || WEXITSTATUS(status) != 0)
-        throw sufkit::Error(sufkit::ErrorCode::build_failure, "benchmark worker failed");
+        throw sufkit::Error(sufkit::ErrorCode::kBuildFailure, "benchmark worker failed");
     return result;
 }
 
@@ -425,7 +425,7 @@ void write_outputs(
     });
     metadata << (options.profile.empty() ? "reference" : options.profile) << '\t'
              << options.seed << '\t' << logical_cpus << '\t'
-             << sufkit::to_string(options.acceleration) << '\t'
+             << sufkit::ToString(options.acceleration) << '\t'
              << (first_ok == results.end() ? 0 : first_ok->text_symbols) << '\t'
              << (first_ok == results.end() ? 0 : first_ok->fingerprint) << '\n';
 
@@ -439,7 +439,7 @@ void write_outputs(
         raw << result.method << '\t' << result.backend << '\t' << result.signature << '\t'
             << static_cast<unsigned>(result.coordinate_width) << '\t' << result.threads << '\t'
             << result.sampling_rate << '\t' << result.suffix_count << '\t'
-            << result.subproblems << '\t' << sufkit::to_string(options.acceleration) << '\t'
+            << result.subproblems << '\t' << sufkit::ToString(options.acceleration) << '\t'
             << result.repetition << '\t' << result.build_seconds << '\t' << result.user_seconds << '\t'
             << result.system_seconds << '\t' << result.peak_rss_mb << '\t'
             << result.serialized_bytes << '\t' << hex_pair(result.sa_hash_1, result.sa_hash_2) << '\t'
@@ -487,7 +487,7 @@ void write_outputs(
         summary << method << '\t' << group.front()->backend << '\t'
                 << static_cast<unsigned>(group.front()->coordinate_width) << '\t' << threads << '\t'
                 << sampling_rate << '\t' << group.front()->suffix_count << '\t'
-                << sufkit::to_string(options.acceleration) << '\t' << group.size() << '\t'
+                << sufkit::ToString(options.acceleration) << '\t' << group.size() << '\t'
                 << median(times) << '\t' << *std::min_element(times.begin(), times.end()) << '\t'
                 << *std::max_element(times.begin(), times.end()) << '\t' << median(rss) << '\t'
                 << group.front()->serialized_bytes << '\t' << speedup << '\t' << efficiency << "\tok\n";
@@ -497,7 +497,7 @@ void write_outputs(
         summary << result.method << '\t' << result.backend << '\t'
                 << static_cast<unsigned>(result.coordinate_width) << '\t' << result.threads << '\t'
                 << result.sampling_rate << '\t' << result.suffix_count << '\t'
-                << sufkit::to_string(options.acceleration) << "\t0\t0\t0\t0\t0\t0\t0\t0\t"
+                << sufkit::ToString(options.acceleration) << "\t0\t0\t0\t0\t0\t0\t0\t0\t"
                 << result.status << '\n';
     }
 }
@@ -517,12 +517,12 @@ void correctness_gate(const std::vector<WorkerResult>& results) {
             (!inserted && (result.sa_hash_1 != same_sampling->sa_hash_1 ||
                            result.sa_hash_2 != same_sampling->sa_hash_2))) {
             throw sufkit::Error(
-                sufkit::ErrorCode::build_failure,
+                sufkit::ErrorCode::kBuildFailure,
                 std::string("correctness mismatch between ") + reference->method + " and " + result.method);
         }
     }
     if (reference == nullptr)
-        throw sufkit::Error(sufkit::ErrorCode::build_failure, "no benchmark method completed successfully");
+        throw sufkit::Error(sufkit::ErrorCode::kBuildFailure, "no benchmark method completed successfully");
 }
 
 int run(int argc, char** argv) {
@@ -530,13 +530,13 @@ int run(int argc, char** argv) {
     std::filesystem::create_directories(options.output_dir);
     for (const char* name : {"run_metadata.tsv", "raw_repetitions.tsv", "build_results.tsv"}) {
         if (std::filesystem::exists(options.output_dir / name))
-            throw sufkit::Error(sufkit::ErrorCode::io_error, "benchmark output already exists");
+            throw sufkit::Error(sufkit::ErrorCode::kIoError, "benchmark output already exists");
     }
     auto reference = options.reference;
     if (!options.profile.empty()) {
         reference = options.output_dir / "generated_reference.fa";
         if (std::filesystem::exists(reference))
-            throw sufkit::Error(sufkit::ErrorCode::io_error, "generated reference already exists");
+            throw sufkit::Error(sufkit::ErrorCode::kIoError, "generated reference already exists");
         generate_reference(reference, profile_bases(options.profile), options.seed);
     }
     const long logical_cpus = std::max<long>(1, sysconf(_SC_NPROCESSORS_ONLN));
@@ -574,7 +574,7 @@ int run(int argc, char** argv) {
 int main(int argc, char** argv) {
     try { return run(argc, argv); }
     catch (const sufkit::Error& error) {
-        std::cerr << sufkit::to_string(error.code()) << ": " << error.what() << '\n';
+        std::cerr << sufkit::ToString(error.Code()) << ": " << error.what() << '\n';
         return 1;
     } catch (const std::exception& error) {
         std::cerr << "error: " << error.what() << '\n';

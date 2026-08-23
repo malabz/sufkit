@@ -1,10 +1,32 @@
 /build/
 /build-*/
 /cmake-build-*/
+CMakeUserPresets.json
+compile_commands.json
+
+# Editor and operating-system artifacts.
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+*.orig
+*.rej
+
+# Compiler profiling and coverage output.
+*.profraw
+*.profdata
+*.gcda
+*.gcno
+
+# A common WSL artifact produced by Windows-style output redirection.
+/NUL
+
 *.sufidx
 *.sufidx.partial.*
 *.tmp
-compile_commands.json
 
 # Keep the detailed development plan locally; do not publish it in Git.
 /plan/

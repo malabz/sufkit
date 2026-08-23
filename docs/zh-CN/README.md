@@ -12,5 +12,6 @@
 6. [英文算法概览](../concepts/algorithm-overview.md)
 7. [英文整体架构](../development/architecture.md)
 8. [英文贡献者扩展指南](../development/extending-sufkit.md)
+9. [0.2.0 C++ API 命名迁移](../development/api-naming-migration-0.2.0.md)
 
 版本说明：`0.1.1` 是已发布的 ESA/right-maximal exact match 基线；当前 `main` 后续合入的 CaPS、balanced/EPR FM-index、FM batch count 和 Sapling PWL 统一标记为 Unreleased。

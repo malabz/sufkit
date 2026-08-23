@@ -36,9 +36,9 @@ SA options:
 one thread and a CaPS-enabled build. Explicit CaPS requires at least 16
 logical symbols. SA options are rejected for FM builds.
 
-For K>1, the stored SA retains text positions divisible by K. `count` and
-`locate` recover complete results; `equal_range` is unavailable and right-maximal exact match
-requires `min_length>=K`.
+For K>1, the stored SA retains text positions divisible by K. C++ `Count` and
+`Locate` recover complete results; `EqualRange` is unavailable and
+right-maximal exact match requires `min_length>=K`.
 
 FM option:
 

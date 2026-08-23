@@ -11,7 +11,7 @@ Plain and gzip FASTA are parsed with kseq/zlib. Input record order defines
 sequence name; the rest of the header is retained as description.
 
 References with zero records, empty or duplicate names, or empty sequences are
-invalid. `GenomeReference::from_records` applies the same validation as FASTA
+invalid. `GenomeReference::FromRecords` applies the same validation as FASTA
 input.
 
 ## Normalization

@@ -1,8 +1,9 @@
 # Extending sufkit
 
 Start with [architecture](architecture.md) and
-[internal invariants](internal-invariants.md). The checklists below prevent a
-local implementation detail from becoming an incompatible public format.
+[internal invariants](internal-invariants.md), and follow the
+[C++ style guide](cpp-style.md). The checklists below prevent a local
+implementation detail from becoming an incompatible public format.
 
 ## Add a suffix-array constructor
 

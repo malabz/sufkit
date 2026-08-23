@@ -38,7 +38,7 @@ double timeval_seconds(const timeval& value) {
 CpuUsage usage_now() {
     struct rusage usage {};
     if (getrusage(RUSAGE_SELF, &usage) != 0) {
-        throw Error(ErrorCode::io_error, "cannot read benchmark process resource usage");
+        throw Error(ErrorCode::kIoError, "cannot read benchmark process resource usage");
     }
     return {timeval_seconds(usage.ru_utime), timeval_seconds(usage.ru_stime)};
 }
@@ -73,7 +73,7 @@ std::string reverse_complement(const std::string& pattern) {
         case 'C': result.push_back('G'); break;
         case 'G': result.push_back('C'); break;
         case 'T': result.push_back('A'); break;
-        default: throw Error(ErrorCode::invalid_input, "benchmark query contains a non-ACGT symbol");
+        default: throw Error(ErrorCode::kInvalidInput, "benchmark query contains a non-ACGT symbol");
         }
     }
     return result;
@@ -107,19 +107,19 @@ QueryResult naive_locate(
     std::optional<std::uint64_t> max_hits) {
     const auto pattern = normalize_sequence(raw_pattern);
     if (pattern.empty() || pattern.find('N') != std::string::npos) {
-        throw Error(ErrorCode::invalid_input, "benchmark query must contain only A/C/G/T");
+        throw Error(ErrorCode::kInvalidInput, "benchmark query must contain only A/C/G/T");
     }
     const auto reverse = reverse_complement(pattern);
     std::vector<Match> matches;
-    if (strands == StrandMode::forward) {
-        collect_naive(records, pattern, Strand::forward, matches);
-    } else if (strands == StrandMode::reverse_complement) {
-        collect_naive(records, reverse, Strand::reverse_complement, matches);
+    if (strands == StrandMode::kForward) {
+        collect_naive(records, pattern, Strand::kForward, matches);
+    } else if (strands == StrandMode::kReverseComplement) {
+        collect_naive(records, reverse, Strand::kReverseComplement, matches);
     } else if (pattern == reverse) {
-        collect_naive(records, pattern, Strand::both, matches);
+        collect_naive(records, pattern, Strand::kBoth, matches);
     } else {
-        collect_naive(records, pattern, Strand::forward, matches);
-        collect_naive(records, reverse, Strand::reverse_complement, matches);
+        collect_naive(records, pattern, Strand::kForward, matches);
+        collect_naive(records, reverse, Strand::kReverseComplement, matches);
     }
     const auto order = [](const Match& left, const Match& right) {
         return std::tie(left.sequence_id, left.position, left.length, left.strand) <
@@ -130,7 +130,7 @@ QueryResult naive_locate(
     for (const auto& match : matches) {
         if (!merged.empty() && merged.back().sequence_id == match.sequence_id &&
             merged.back().position == match.position && merged.back().length == match.length) {
-            if (merged.back().strand != match.strand) merged.back().strand = Strand::both;
+            if (merged.back().strand != match.strand) merged.back().strand = Strand::kBoth;
         } else {
             merged.push_back(match);
         }
@@ -150,7 +150,7 @@ std::uint64_t naive_count(
     StrandMode strands) {
     const auto pattern = normalize_sequence(raw_pattern);
     if (pattern.empty() || pattern.find('N') != std::string::npos) {
-        throw Error(ErrorCode::invalid_input, "benchmark query must contain only A/C/G/T");
+        throw Error(ErrorCode::kInvalidInput, "benchmark query must contain only A/C/G/T");
     }
     const auto count_one = [&](const std::string& needle) {
         std::uint64_t count = 0;
@@ -163,9 +163,9 @@ std::uint64_t naive_count(
         }
         return count;
     };
-    if (strands == StrandMode::forward) return count_one(pattern);
+    if (strands == StrandMode::kForward) return count_one(pattern);
     const auto reverse = reverse_complement(pattern);
-    if (strands == StrandMode::reverse_complement) return count_one(reverse);
+    if (strands == StrandMode::kReverseComplement) return count_one(reverse);
     if (pattern == reverse) return count_one(pattern);
     return count_one(pattern) + count_one(reverse);
 }
@@ -175,12 +175,12 @@ struct LoadedIndex {
     std::vector<SequenceRecord> records;
     std::optional<SuffixArray> suffix_array;
     std::optional<FmIndex> fm_index;
-    SaSearchAlgorithm sa_algorithm = SaSearchAlgorithm::auto_select;
+    SaSearchAlgorithm sa_algorithm = SaSearchAlgorithm::kAutoSelect;
 
     std::uint64_t count(const std::string& pattern, StrandMode strands) const {
         if (method == "naive") return naive_count(records, pattern, strands);
-        if (suffix_array) return suffix_array->count(pattern, strands, sa_algorithm);
-        return fm_index->count(pattern, strands);
+        if (suffix_array) return suffix_array->Count(pattern, strands, sa_algorithm);
+        return fm_index->Count(pattern, strands);
     }
 
     std::vector<std::uint64_t> count_batch(
@@ -188,12 +188,12 @@ struct LoadedIndex {
         StrandMode strands,
         std::uint32_t batch_width) const {
         if (!fm_index) {
-            throw Error(ErrorCode::build_failure, "batch count requires an FM-index benchmark method");
+            throw Error(ErrorCode::kBuildFailure, "batch count requires an FM-index benchmark method");
         }
         FmBatchOptions options;
         options.strands = strands;
         options.batch_width = batch_width;
-        return fm_index->count_batch(patterns, options);
+        return fm_index->CountBatch(patterns, options);
     }
 
     QueryResult locate(
@@ -204,8 +204,8 @@ struct LoadedIndex {
         LocateOptions options;
         options.strands = strands;
         options.max_hits = max_hits;
-        if (suffix_array) return suffix_array->locate(pattern, options, sa_algorithm);
-        return fm_index->locate(pattern, options);
+        if (suffix_array) return suffix_array->Locate(pattern, options, sa_algorithm);
+        return fm_index->Locate(pattern, options);
     }
 };
 
@@ -215,10 +215,10 @@ bool is_fm_method(const std::string& method) {
 }
 
 FmBackend fm_backend_for_method(const std::string& method) {
-    if (method == "fm" || method == "fm-huff") return FmBackend::sdsl_csa_wt_huff;
-    if (method == "fm-balanced") return FmBackend::sdsl_csa_wt_balanced;
-    if (method == "fm-epr") return FmBackend::sdsl_csa_wt_epr;
-    throw Error(ErrorCode::invalid_input, "method is not an FM-index backend: " + method);
+    if (method == "fm" || method == "fm-huff") return FmBackend::kSdslCsaWtHuff;
+    if (method == "fm-balanced") return FmBackend::kSdslCsaWtBalanced;
+    if (method == "fm-epr") return FmBackend::kSdslCsaWtEpr;
+    throw Error(ErrorCode::kInvalidInput, "method is not an FM-index backend: " + method);
 }
 
 LoadedIndex load_method(
@@ -230,28 +230,28 @@ LoadedIndex load_method(
     if (method == "naive") {
         loaded.records = normalized_records(dataset.records);
     } else if (method.rfind("sa32", 0) == 0 || method.rfind("sa64", 0) == 0) {
-        loaded.suffix_array.emplace(SuffixArray::load(path));
+        loaded.suffix_array.emplace(SuffixArray::Load(path));
         if (method.find("lcp-binary") != std::string::npos)
-            loaded.sa_algorithm = SaSearchAlgorithm::lcp_binary;
+            loaded.sa_algorithm = SaSearchAlgorithm::kLcpBinary;
         else if (method.find("sapling") != std::string::npos)
-            loaded.sa_algorithm = SaSearchAlgorithm::sapling_pwl;
+            loaded.sa_algorithm = SaSearchAlgorithm::kSaplingPwl;
         else if (method.find("child") != std::string::npos)
-            loaded.sa_algorithm = SaSearchAlgorithm::child;
+            loaded.sa_algorithm = SaSearchAlgorithm::kChild;
         else if (method.find("binary") != std::string::npos)
-            loaded.sa_algorithm = SaSearchAlgorithm::binary;
+            loaded.sa_algorithm = SaSearchAlgorithm::kBinary;
     } else if (is_fm_method(method)) {
-        loaded.fm_index.emplace(FmIndex::load(path));
+        loaded.fm_index.emplace(FmIndex::Load(path));
     } else {
-        throw Error(ErrorCode::invalid_input, "unknown benchmark method: " + method);
+        throw Error(ErrorCode::kInvalidInput, "unknown benchmark method: " + method);
     }
     return loaded;
 }
 
 StrandMode strand_mode(const std::string& name) {
-    if (name == "forward") return StrandMode::forward;
-    if (name == "reverse-complement") return StrandMode::reverse_complement;
-    if (name == "both") return StrandMode::both;
-    throw Error(ErrorCode::build_failure, "internal benchmark strand is invalid");
+    if (name == "forward") return StrandMode::kForward;
+    if (name == "reverse-complement") return StrandMode::kReverseComplement;
+    if (name == "both") return StrandMode::kBoth;
+    throw Error(ErrorCode::kBuildFailure, "internal benchmark strand is invalid");
 }
 
 std::vector<const QueryCase*> select_queries(
@@ -314,7 +314,7 @@ QueryRaw measure_group(
     std::vector<std::string_view> batch_patterns;
     if (fm_query_mode == "batch") {
         if (operation != "count") {
-            throw Error(ErrorCode::build_failure, "batch benchmark mode only supports count");
+            throw Error(ErrorCode::kBuildFailure, "batch benchmark mode only supports count");
         }
         batch_patterns.reserve(queries.size());
         for (const auto* query : queries) batch_patterns.push_back(query->sequence);
@@ -335,7 +335,7 @@ QueryRaw measure_group(
     if (fm_query_mode == "batch") {
         const auto counts = index.count_batch(batch_patterns, strands, fm_batch_width);
         if (counts.size() != queries.size()) {
-            throw Error(ErrorCode::build_failure, "FM batch result cardinality mismatch");
+            throw Error(ErrorCode::kBuildFailure, "FM batch result cardinality mismatch");
         }
         for (const auto hits : counts) {
             result.total_hits += hits;
@@ -346,7 +346,7 @@ QueryRaw measure_group(
         if (operation == "count") {
             std::uint64_t hits = 0;
             if (index.suffix_array)
-                hits = index.suffix_array->count(
+                hits = index.suffix_array->Count(
                     query->sequence, strands, index.sa_algorithm, &search_statistics);
             else hits = index.count(query->sequence, strands);
             result.total_hits += hits;
@@ -359,7 +359,7 @@ QueryRaw measure_group(
                 locate_options.max_hits = limit.all
                     ? std::optional<std::uint64_t>{}
                     : std::optional<std::uint64_t>{limit.value};
-                located = index.suffix_array->locate(
+                located = index.suffix_array->Locate(
                     query->sequence, locate_options, index.sa_algorithm, &search_statistics);
             } else {
                 located = index.locate(
@@ -511,7 +511,7 @@ MethodResult run_worker(
         const auto value = std::make_tuple(
             located.total_hits, static_cast<std::uint64_t>(located.hits.size()), checksum);
         if (canary_result && *canary_result != value) {
-            throw Error(ErrorCode::build_failure,
+            throw Error(ErrorCode::kBuildFailure,
                 "query checksum changed between index construction repetitions");
         }
         canary_result = value;
@@ -540,20 +540,20 @@ MethodResult run_worker(
         return result;
     } else {
         for (std::uint32_t repetition = 0; repetition < build_repetitions; ++repetition) {
-            auto reference = GenomeReference::from_records(dataset.records);
+            auto reference = GenomeReference::FromRecords(dataset.records);
             const auto index_path = scratch_directory /
                 (method + "-" + std::to_string(repetition) + ".sufidx");
             BuildRaw raw;
             raw.repetition = repetition;
             if (method.rfind("sa32", 0) == 0 || method.rfind("sa64", 0) == 0) {
                 SuffixArrayBuildOptions build_options;
-                build_options.backend = SaBackend::divsufsort;
+                build_options.backend = SaBackend::kDivsufsort;
                 build_options.coordinate_width = method.rfind("sa32", 0) == 0
-                    ? CoordinateWidth::bits32 : CoordinateWidth::bits64;
+                    ? CoordinateWidth::kBits32 : CoordinateWidth::kBits64;
                 build_options.acceleration = method == "sa32-none" || method == "sa64-none"
-                    ? SaAcceleration::none :
+                    ? SaAcceleration::kNone :
                     (method.find("child") != std::string::npos
-                        ? SaAcceleration::full : SaAcceleration::lcp_suffix_link);
+                        ? SaAcceleration::kFull : SaAcceleration::kLcpSuffixLink);
                 if (method.find("sapling") != std::string::npos) {
                     build_options.learned_index.enabled = true;
                     build_options.learned_index.k = options.learned_k;
@@ -565,7 +565,7 @@ MethodResult run_worker(
                 build_options.statistics = &build_statistics;
                 const auto cpu_begin = usage_now();
                 const auto wall_begin = Clock::now();
-                auto index = SuffixArray::build(reference, build_options);
+                auto index = SuffixArray::Build(reference, build_options);
                 raw.build_seconds = elapsed(wall_begin);
                 const auto cpu = usage_delta(cpu_begin, usage_now());
                 raw.build_user_seconds = cpu.user;
@@ -575,36 +575,36 @@ MethodResult run_worker(
                 raw.lcp_build_seconds = build_statistics.lcp_seconds;
                 raw.child_build_seconds = build_statistics.child_seconds;
                 raw.learned_index_build_seconds = build_statistics.learned_index_seconds;
-                const auto info = index.info();
+                const auto info = index.GetInfo();
                 result.backend = info.backend;
                 result.signature = info.backend_signature;
                 result.coordinate_width = info.coordinate_width;
                 raw.learned_index_bytes = info.learned_index_bytes;
-                record_canary(index.locate(canary_query.sequence));
+                record_canary(index.Locate(canary_query.sequence));
                 const auto save_begin = Clock::now();
-                index.save(index_path);
+                index.Save(index_path);
                 raw.save_seconds = elapsed(save_begin);
             } else if (is_fm_method(method)) {
                 FmIndexBuildOptions build_options;
                 build_options.backend = fm_backend_for_method(method);
                 const auto cpu_begin = usage_now();
                 const auto wall_begin = Clock::now();
-                auto index = FmIndex::build(reference, build_options);
+                auto index = FmIndex::Build(reference, build_options);
                 raw.build_seconds = elapsed(wall_begin);
                 const auto cpu = usage_delta(cpu_begin, usage_now());
                 raw.build_user_seconds = cpu.user;
                 raw.build_system_seconds = cpu.system;
-                const auto info = index.info();
+                const auto info = index.GetInfo();
                 result.backend = info.backend;
                 result.signature = info.backend_signature;
                 result.sdsl_version = info.sdsl_version;
                 result.coordinate_width = info.coordinate_width;
-                record_canary(index.locate(canary_query.sequence));
+                record_canary(index.Locate(canary_query.sequence));
                 const auto save_begin = Clock::now();
-                index.save(index_path);
+                index.Save(index_path);
                 raw.save_seconds = elapsed(save_begin);
             } else {
-                throw Error(ErrorCode::invalid_input, "unknown benchmark method: " + method);
+                throw Error(ErrorCode::kInvalidInput, "unknown benchmark method: " + method);
             }
             raw.serialized_bytes = std::filesystem::file_size(index_path);
             if (repetition == 0) {
@@ -622,25 +622,25 @@ MethodResult run_worker(
             const auto cpu_begin = usage_now();
             const auto wall_begin = Clock::now();
             if (method.rfind("sa32", 0) == 0 || method.rfind("sa64", 0) == 0) {
-                auto index = SuffixArray::load(result.canonical_index);
-                (void)index.info();
+                auto index = SuffixArray::Load(result.canonical_index);
+                (void)index.GetInfo();
                 auto checksum = checksum_seed();
-                const auto located = index.locate(canary_query.sequence);
+                const auto located = index.Locate(canary_query.sequence);
                 mix_match_checksum(checksum, located);
                 if (!canary_result || *canary_result != std::make_tuple(
                         located.total_hits, static_cast<std::uint64_t>(located.hits.size()), checksum)) {
-                    throw Error(ErrorCode::build_failure,
+                    throw Error(ErrorCode::kBuildFailure,
                         "suffix-array query checksum changed after save/load");
                 }
             } else {
-                auto index = FmIndex::load(result.canonical_index);
-                (void)index.info();
+                auto index = FmIndex::Load(result.canonical_index);
+                (void)index.GetInfo();
                 auto checksum = checksum_seed();
-                const auto located = index.locate(canary_query.sequence);
+                const auto located = index.Locate(canary_query.sequence);
                 mix_match_checksum(checksum, located);
                 if (!canary_result || *canary_result != std::make_tuple(
                         located.total_hits, static_cast<std::uint64_t>(located.hits.size()), checksum)) {
-                    throw Error(ErrorCode::build_failure,
+                    throw Error(ErrorCode::kBuildFailure,
                         "FM-index query checksum changed after save/load");
                 }
             }
@@ -785,10 +785,10 @@ void write_worker_result(int descriptor, const MethodResult& result, const std::
 MethodResult read_worker_result(int descriptor) {
     WorkerHeader header;
     if (!read_exact(descriptor, &header, sizeof(header))) {
-        throw Error(ErrorCode::build_failure, "benchmark worker returned a truncated header");
+        throw Error(ErrorCode::kBuildFailure, "benchmark worker returned a truncated header");
     }
     if (header.status != 0) {
-        throw Error(ErrorCode::build_failure, std::string(header.error));
+        throw Error(ErrorCode::kBuildFailure, std::string(header.error));
     }
     MethodResult result;
     result.method = header.method;
@@ -799,7 +799,7 @@ MethodResult read_worker_result(int descriptor) {
     result.coordinate_width = header.coordinate_width;
     for (std::uint64_t index = 0; index < header.build_count; ++index) {
         BuildWire wire;
-        if (!read_exact(descriptor, &wire, sizeof(wire))) throw Error(ErrorCode::build_failure, "truncated build result");
+        if (!read_exact(descriptor, &wire, sizeof(wire))) throw Error(ErrorCode::kBuildFailure, "truncated build result");
         BuildRaw raw;
         raw.repetition = wire.repetition;
         raw.build_seconds = wire.build_seconds;
@@ -818,12 +818,12 @@ MethodResult read_worker_result(int descriptor) {
     }
     for (std::uint64_t index = 0; index < header.load_count; ++index) {
         LoadWire wire;
-        if (!read_exact(descriptor, &wire, sizeof(wire))) throw Error(ErrorCode::build_failure, "truncated load result");
+        if (!read_exact(descriptor, &wire, sizeof(wire))) throw Error(ErrorCode::kBuildFailure, "truncated load result");
         result.loads.push_back({wire.repetition, wire.seconds, wire.user_seconds, wire.system_seconds, wire.status});
     }
     for (std::uint64_t index = 0; index < header.query_count; ++index) {
         QueryWire wire;
-        if (!read_exact(descriptor, &wire, sizeof(wire))) throw Error(ErrorCode::build_failure, "truncated query result");
+        if (!read_exact(descriptor, &wire, sizeof(wire))) throw Error(ErrorCode::kBuildFailure, "truncated query result");
         QueryRaw raw;
         raw.group = wire.group;
         raw.pattern_length = wire.pattern_length;
@@ -944,12 +944,12 @@ MethodResult run_method_isolated(
     const Options& options,
     const std::filesystem::path& scratch_directory) {
     int descriptors[2]{};
-    if (pipe(descriptors) != 0) throw Error(ErrorCode::io_error, "cannot create benchmark worker pipe");
+    if (pipe(descriptors) != 0) throw Error(ErrorCode::kIoError, "cannot create benchmark worker pipe");
     const auto pid = fork();
     if (pid < 0) {
         close(descriptors[0]);
         close(descriptors[1]);
-        throw Error(ErrorCode::io_error, "cannot create benchmark worker process");
+        throw Error(ErrorCode::kIoError, "cannot create benchmark worker process");
     }
     if (pid == 0) {
         close(descriptors[0]);
@@ -977,9 +977,9 @@ MethodResult run_method_isolated(
     int status = 0;
     struct rusage usage {};
     const auto waited = wait4(pid, &status, 0, &usage);
-    if (!receive_error.empty()) throw Error(ErrorCode::build_failure, receive_error);
+    if (!receive_error.empty()) throw Error(ErrorCode::kBuildFailure, receive_error);
     if (waited < 0 || !WIFEXITED(status) || WEXITSTATUS(status) != 0) {
-        throw Error(ErrorCode::build_failure, "benchmark worker failed: " + method);
+        throw Error(ErrorCode::kBuildFailure, "benchmark worker failed: " + method);
     }
     result.peak_rss_mb = static_cast<double>(usage.ru_maxrss) / 1024.0;
     return result;
@@ -989,7 +989,7 @@ void validate_results(
     const Dataset& dataset,
     const std::vector<MethodResult>& results,
     Profile profile) {
-    if (results.empty()) throw Error(ErrorCode::build_failure, "benchmark produced no method results");
+    if (results.empty()) throw Error(ErrorCode::kBuildFailure, "benchmark produced no method results");
     for (const auto& result : results) {
         std::map<std::string, std::tuple<std::uint64_t, std::uint64_t, std::uint64_t>> expected;
         for (const auto& raw : result.queries) {
@@ -998,12 +998,12 @@ void validate_results(
             const auto value = std::make_tuple(raw.total_hits, raw.reported_hits, raw.checksum);
             const auto inserted = expected.emplace(key, value);
             if (!inserted.second && inserted.first->second != value) {
-                throw Error(ErrorCode::build_failure,
+                throw Error(ErrorCode::kBuildFailure,
                     "non-deterministic benchmark result for " + result.method + " at " + key);
             }
             if ((raw.group == "n_boundary" || raw.group == "contig_boundary") &&
                 raw.operation == "count" && raw.total_hits != 0) {
-                throw Error(ErrorCode::build_failure,
+                throw Error(ErrorCode::kBuildFailure,
                     "boundary query unexpectedly matched for " + result.method + " at " + key);
             }
         }
@@ -1028,7 +1028,7 @@ void validate_results(
                 const auto detail = expected_result == results.end()
                     ? std::string("baseline method result is unavailable")
                     : diagnose_mismatch(dataset, *expected_result, result, raw);
-                throw Error(ErrorCode::build_failure,
+                throw Error(ErrorCode::kBuildFailure,
                     "benchmark correctness mismatch at " + key + " between " +
                     expected_method + " and " + result.method + "; " + detail);
             }
@@ -1049,12 +1049,12 @@ void validate_results(
                 const auto queries = select_queries(dataset, group);
                 if (queries.empty()) continue;
                 const auto* query = queries.front();
-                for (const auto strands : {StrandMode::forward, StrandMode::reverse_complement, StrandMode::both}) {
+                for (const auto strands : {StrandMode::kForward, StrandMode::kReverseComplement, StrandMode::kBoth}) {
                     const auto expected = naive_locate(normalized, query->sequence, strands, 1000);
                     const auto observed = index.locate(query->sequence, strands, 1000);
                     if (expected.total_hits != observed.total_hits ||
                         !same_matches(expected.hits, observed.hits)) {
-                        throw Error(ErrorCode::build_failure,
+                        throw Error(ErrorCode::kBuildFailure,
                             "naive sample mismatch for query " + query->id + " using " + indexed->method);
                     }
                 }

@@ -10,7 +10,7 @@ operation first, then by build time, query throughput, and memory budget.
 | Exact count with a compressed index | Huffman FM | Smallest available FM backend and stable default |
 | Faster FM count/locate, space is secondary | EPR FM | Faster in current DNA quick runs, but much larger and slower to load |
 | right-maximal exact match search | SA+ISA+LCP | Suffix-link right-maximal exact match is the current default and strongest general path |
-| Direct SA row access or ESA research | Standalone SA | Exposes `suffix_at` and supports optional auxiliary structures |
+| Direct SA row access or ESA research | Standalone SA | Exposes `SuffixAt` and supports optional auxiliary structures |
 | Large, multithreaded SA construction | CaPS-SA | Shared-memory parallel construction; measure peak memory first |
 | Smaller resident/serialized standalone SA | Text-position sampled SA | Complete exact/right-maximal exact match results with extra query work and constraints |
 | Experimental exact lookup acceleration | SA + Sapling PWL | Can narrow binary search for patterns at least model k |
@@ -18,7 +18,7 @@ operation first, then by build time, query throughput, and memory budget.
 
 ## SA constructor: divsufsort or CaPS
 
-`SaBackend::auto_select` uses CaPS only when all conditions hold:
+`SaBackend::kAutoSelect` uses CaPS only when all conditions hold:
 
 - CaPS was compiled in;
 - more than one build thread was requested; and
@@ -40,7 +40,7 @@ An explicit `caps` request never silently falls back. A build with
   representable-length limit.
 - CaPS32 uses `uint32_t`.
 - 64-bit variants support larger texts at higher SA memory cost.
-- `CoordinateWidth::auto_select` chooses the smallest width legal for the
+- `CoordinateWidth::kAutoSelect` chooses the smallest width legal for the
   effective constructor.
 
 The coordinate width affects the stored SA/ISA/CHILD rows. Public reference
@@ -55,7 +55,7 @@ and row-based auxiliaries use approximately 1/K the entries.
 Use sampling when loaded memory or serialized size matters more than the extra
 residue recovery work. It does not reduce the complete-SA construction peak.
 Exact count/locate remain complete; patterns shorter than K use a direct
-contig scan, `equal_range` is unavailable, and right-maximal exact match requires `min_length>=K`.
+contig scan, `EqualRange` is unavailable, and right-maximal exact match requires `min_length>=K`.
 See [sampled suffix arrays](../concepts/sampled-suffix-arrays.md).
 
 ## SA acceleration layout

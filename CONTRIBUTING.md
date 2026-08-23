@@ -23,6 +23,12 @@ Use a focused branch and keep unrelated local changes out of a contribution.
 Do not add generated build trees, benchmark scratch data, Doxygen HTML, or
 local plans to Git.
 
+All first-party C++ changes follow the project
+[C++ style guide](docs/development/cpp-style.md). Use clang-format 18 and
+clang-tidy 18, keep third-party snapshots unformatted, and add
+`// SPDX-License-Identifier: MIT` to new first-party C++ files. Functional and
+mechanical formatting changes should be separate commits whenever possible.
+
 ## Architectural rules
 
 - Public headers live in `include/sufkit` and must not expose SDSL,
@@ -78,7 +84,8 @@ must not be presented as in-process query-kernel timings.
 
 ## Documentation contract
 
-- Public API change: update Doxygen, API contracts, examples, and CHANGELOG.
+- Public API change: use Google-style names and update Doxygen, API contracts,
+  examples, the naming migration guide, and CHANGELOG.
 - CLI change: update `--help`, CLI reference, README examples, and exit/error
   behavior.
 - Backend change: update backend matrix, compatibility, persistence, and

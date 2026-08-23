@@ -1,0 +1,21 @@
+* text=auto eol=lf
+
+# Preserve vendored source snapshots byte-for-byte; upstream controls their
+# line-ending conventions.
+third_party/** -text !eol
+
+*.7z binary
+*.bmp binary
+*.bz2 binary
+*.gif binary
+*.gz binary
+*.ico binary
+*.jpeg binary
+*.jpg binary
+*.pdf binary
+*.png binary
+*.sufidx binary
+*.tif binary
+*.tiff binary
+*.xz binary
+*.zip binary

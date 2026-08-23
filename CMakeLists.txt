@@ -17,6 +17,12 @@ option(SUFKIT_BUILD_BENCHMARKS "Build the benchmark suite" ${_sufkit_top_level_d
 option(SUFKIT_BUILD_EXAMPLES "Build consumer examples" ${_sufkit_top_level_default})
 option(SUFKIT_ENABLE_CAPS "Build the bundled CaPS-SA parallel suffix-array backend" ON)
 option(SUFKIT_BUILD_DOCS "Build local Doxygen API documentation" OFF)
+option(SUFKIT_ENABLE_DEVELOPER_TOOLS
+    "Enable local clang-format and clang-tidy targets" OFF)
+
+if(SUFKIT_ENABLE_DEVELOPER_TOOLS)
+    include(cmake/SufkitDeveloperTools.cmake)
+endif()
 
 find_package(ZLIB REQUIRED)
 if(SUFKIT_ENABLE_CAPS)

@@ -41,6 +41,13 @@ Acceptance requires zero Doxygen warnings, no private third-party types in the
 public reference, valid relative Markdown links, and successful compilation of
 every canonical example. Generated HTML is not committed.
 
+### Source style
+
+Configure `SUFKIT_ENABLE_DEVELOPER_TOOLS=ON`, then run
+`sufkit-format-check`, `sufkit-tidy-check`, and `git diff --check`. The
+format/tidy inputs are an explicit first-party list and must not include
+vendored or benchmark source. See the [C++ style guide](cpp-style.md).
+
 ## Correctness gates by change
 
 | Change | Required evidence |
@@ -79,7 +86,7 @@ every canonical example. Generated HTML is not committed.
 
 | Fact | Authority | Required mirrors |
 |---|---|---|
-| Public method signature/default | Public header + Doxygen | API contracts, examples |
+| Public method signature/default | Public header + Doxygen | API contracts, examples, naming migration |
 | CLI flag/default | CLI parser and `--help` | CLI reference, relevant tutorial |
 | Backend identity/status | Stored enum/signature + discovery API | Backend reference, README, changelog |
 | File layout | Serialization reader/writer | Format and compatibility references |

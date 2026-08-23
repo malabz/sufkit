@@ -59,7 +59,7 @@ implementation suggestions.
    `both`.
 7. `total_hits` is complete even when retained hits are bounded.
 8. Sampled count/locate search all residue classes, while sampled
-   `equal_range` fails explicitly because no single interval represents them.
+   `EqualRange` fails explicitly because no single interval represents them.
 
 ## Right-maximal exact match
 

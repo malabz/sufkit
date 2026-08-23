@@ -64,7 +64,7 @@ std::string cpu_model() {
 }
 
 void require_output(std::ofstream& output, const std::filesystem::path& path) {
-    if (!output) throw Error(ErrorCode::io_error, "cannot write benchmark output: " + path.string());
+    if (!output) throw Error(ErrorCode::kIoError, "cannot write benchmark output: " + path.string());
 }
 
 std::string fraction(double value) {
@@ -180,13 +180,13 @@ void write_result_directory(
     const std::vector<Dataset>& datasets,
     const std::vector<std::vector<MethodResult>>& results) {
     if (datasets.size() != results.size()) {
-        throw Error(ErrorCode::build_failure, "benchmark dataset/result cardinality mismatch");
+        throw Error(ErrorCode::kBuildFailure, "benchmark dataset/result cardinality mismatch");
     }
     const std::array<std::string, 4> names{{
         "run_metadata.tsv", "build_results.tsv", "query_results.tsv", "raw_repetitions.tsv"}};
     for (const auto& name : names) {
         if (std::filesystem::exists(directory / name)) {
-            throw Error(ErrorCode::io_error,
+            throw Error(ErrorCode::kIoError,
                 "benchmark output already exists: " + (directory / name).string());
         }
     }
@@ -200,7 +200,7 @@ void write_result_directory(
     std::ofstream queries(query_path);
     std::ofstream raw(raw_path);
     if (!metadata || !builds || !queries || !raw) {
-        throw Error(ErrorCode::io_error, "cannot create benchmark output directory files");
+        throw Error(ErrorCode::kIoError, "cannot create benchmark output directory files");
     }
 
     const auto platform = os_and_architecture();
@@ -404,7 +404,7 @@ void write_legacy_output(
     const Dataset& dataset,
     const std::vector<MethodResult>& results) {
     std::ofstream output(path);
-    if (!output) throw Error(ErrorCode::io_error, "cannot create benchmark output: " + path.string());
+    if (!output) throw Error(ErrorCode::kIoError, "cannot create benchmark output: " + path.string());
     output << "dataset\tdataset_fingerprint\ttotal_bases\tcontigs\tmethod\tbackend\t"
               "backend_signature\tsdsl_version\tcoordinate_width\tthreads\tbuild_seconds\t"
               "peak_rss_mb\tserialized_bytes\tload_seconds\tquery_count\tcount_qps\t"

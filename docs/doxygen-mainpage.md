@@ -11,7 +11,7 @@ Start with:
 - `sufkit::SuffixArray` for exact search, direct SA access, and right-maximal
   exact match search;
 - `sufkit::FmIndex` for compressed exact range/count/locate and batched count;
-- `sufkit::inspect_index` and backend-discovery functions for persisted/build
+- `sufkit::InspectIndex` and backend-discovery functions for persisted/build
   capabilities; and
 - `sufkit::Error` for stable error categories.
 

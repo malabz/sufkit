@@ -20,7 +20,7 @@ CaPS 的 `auto` 条件是逻辑文本至少 1 GiB、线程数大于 1 且编译�
 `--sa-sampling-rate K` 会只保留文本位置能被 K 整除的 suffix。它可以让
 最终 SA、ISA、LCP、CHILD 和序列化文件大约按 K 缩小，但底层仍先构建完整
 SA，所以不能用来解决构建峰值内存。采样索引的 `count/locate` 会恢复全部
-结果，`equal_range` 不可表示为单一区间，right-maximal exact match 要求 `min_length >= K`。
+结果，`EqualRange` 不可表示为单一区间，right-maximal exact match 要求 `min_length >= K`。
 
 Huffman 是 FM 默认后端。EPR 在当前合成 DNA benchmark 中 count/locate 更快，但序列化大小和加载时间显著增加；balanced 当前没有体现收益。
 

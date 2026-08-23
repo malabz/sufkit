@@ -4,11 +4,16 @@ All notable changes to sufkit are documented in this file.
 
 ## Unreleased
 
+- Standardized the planned 0.2.0 C++ source interface on Google-style
+  `PascalCase` functions and `kPascalCase` enumerators. This is intentionally
+  source-incompatible: no old-name forwarding aliases are provided. Public
+  include paths, the `sufkit::sufkit` CMake target, CLI syntax, serialized IDs,
+  and `.sufidx` compatibility are unchanged.
 - Corrected the former MEM terminology without changing query logic. The
   implementation guarantees right maximality but not left maximality, so
   `Mem*`, `find_mems()`, `for_each_mem()`, `sufkit mem`, and `--workload mem`
-  were renamed to `RightMaximal*`, `find_right_maximal_matches()`,
-  `for_each_right_maximal_match()`, `sufkit right-maximal`, and
+  were renamed to `RightMaximal*`, `FindRightMaximalMatches()`,
+  `ForEachRightMaximalMatch()`, `sufkit right-maximal`, and
   `--workload right-maximal`. MEM names are reserved for future two-sided
   maximality support.
 - Changed the default SA acceleration to SA+ISA+LCP and changed right-maximal
@@ -35,7 +40,7 @@ All notable changes to sufkit are documented in this file.
   LCP and compacts it by interval minima when sampling is enabled.
 - Added fixed SDSL balanced and DNA EPR `csa_wt` backends while retaining
   Huffman as the default and Sada as a reserved unavailable identity.
-- Added ordered FM `equal_range_batch` and `count_batch` APIs with fixed-width
+- Added ordered FM `EqualRangeBatch` and `CountBatch` APIs with fixed-width
   interleaving and scalar-equivalent correctness gates.
 - Added a layered English documentation set, concise Chinese onboarding,
   contributor architecture/extension contracts, and local Doxygen API

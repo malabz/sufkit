@@ -53,8 +53,9 @@ most query positions. Record suffix-link success and root/fallback lookup
 counts before adding another lookup accelerator. PWL can improve the remaining
 lookups but has workload-dependent end-to-end impact.
 
-Use `for_each_right_maximal_match` when results can be consumed online. Use `find_right_maximal_matches` for a
-deterministic vector and apply `max_matches` to bound retained result memory.
+Use `ForEachRightMaximalMatch` when results can be consumed online. Use
+`FindRightMaximalMatches` for a deterministic vector and apply `max_matches`
+to bound retained result memory.
 The full match count still requires complete traversal.
 
 ## FM-index

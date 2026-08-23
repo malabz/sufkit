@@ -43,7 +43,7 @@ LCP-aware binary search carries the prefix already known to match at each
 boundary. It reduces repeated character comparisons while retaining the same
 row probes and result interval.
 
-`locate` visits the matched SA rows, maps them to contigs, and sorts results,
+`Locate` visits the matched SA rows, maps them to contigs, and sorts results,
 so its lower bound includes O(z) output work regardless of range-search speed.
 
 ## Text-position sampled SA
@@ -57,7 +57,7 @@ Exact matches are recovered over all K residue classes. right-maximal exact matc
 sampled reference positions and extended to their true maximal boundaries.
 The trade-off is additional query work and `min_length>=K` for right-maximal exact match. Because
 one exact result becomes a union of intervals, sampled SA cannot expose a
-single `equal_range`.
+single `EqualRange`.
 
 Both backends still create a complete SA before compaction. Sampling reduces
 the loaded and serialized index, not full-SA constructor peak memory. See

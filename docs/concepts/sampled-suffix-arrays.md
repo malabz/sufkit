@@ -51,7 +51,7 @@ stored sampled row order. This means their row count scales approximately as
 A match can begin in any residue class modulo `K`, so one sampled-SA interval
 cannot represent all exact results.
 
-For a pattern of length at least `K`, `count()` and `locate()` search up to K
+For a pattern of length at least `K`, `Count()` and `Locate()` search up to K
 anchors. For offset `r`, the search uses `pattern[r..]`, subtracts `r` from
 each sampled candidate, verifies the omitted left prefix, and checks the
 contig boundary. The union recovers the complete-SA result.
@@ -60,7 +60,7 @@ Patterns shorter than `K` can contain no sampled reference position. They use
 a direct per-contig scan to preserve exact semantics. This is correct but may
 be slower than a complete SA for short-pattern workloads.
 
-`equal_range()` intentionally returns `unsupported_backend` for `K>1` because
+`EqualRange()` intentionally returns `unsupported_backend` for `K>1` because
 the complete result is a union of residue-specific intervals rather than one
 public half-open interval.
 
@@ -84,10 +84,10 @@ sampled row domain.
 
 ## API and persistence
 
-- `SuffixArray::sampling_rate()` returns K.
+- `SuffixArray::SamplingRate()` returns K.
 - `IndexInfo::sa_sampling_rate` records K.
 - `IndexInfo::suffix_count` records the number of stored rows.
-- `suffix_at(row)` accepts rows in `[0, suffix_count)` and returns the original
+- `SuffixAt(row)` accepts rows in `[0, suffix_count)` and returns the original
   global logical-text position, which is divisible by K.
 - Format 1.3 adds the `sa_sampling` section. Formats 1.0-1.2 imply K=1.
 

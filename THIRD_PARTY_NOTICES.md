@@ -28,7 +28,9 @@ The original license is reproduced in `third_party/parlaylib/LICENSE`.
 
 The bundled snapshot is the SDSL 3.0.3 header set audited in RaMAx. Its
 license and author list are reproduced in `third_party/sdsl/LICENSE` and
-`third_party/sdsl/AUTHORS` from the upstream `v3.0.3` tag.
+`third_party/sdsl/AUTHORS` from the upstream `v3.0.3` tag. Subset identity,
+tag commit, aggregate hash, and update rules are recorded in
+`third_party/sdsl/SOURCE.md`.
 
 ## libdivsufsort 2.0.2
 
@@ -37,6 +39,8 @@ license and author list are reproduced in `third_party/sdsl/LICENSE` and
 - Vendored files: `third_party/libdivsufsort`
 
 The original license is reproduced in `third_party/libdivsufsort/LICENSE`.
+The exact upstream commit was not retained; snapshot provenance, content hash,
+and that limitation are recorded in `third_party/libdivsufsort/SOURCE.md`.
 
 ## kseq
 
@@ -45,4 +49,5 @@ The original license is reproduced in `third_party/libdivsufsort/LICENSE`.
 - Vendored header: `third_party/kseq/kseq.h`
 
 The MIT notice is contained at the top of the vendored header and reproduced
-in `third_party/kseq/LICENSE`.
+in `third_party/kseq/LICENSE`. The immutable upstream revision is not known;
+the header date marker and hashes are recorded in `third_party/kseq/SOURCE.md`.

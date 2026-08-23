@@ -56,7 +56,7 @@ std::string reverse_complement(const std::string& pattern) {
         case 'C': result.push_back('G'); break;
         case 'G': result.push_back('C'); break;
         case 'T': result.push_back('A'); break;
-        default: throw Error(ErrorCode::invalid_input, "benchmark pattern is not A/C/G/T");
+        default: throw Error(ErrorCode::kInvalidInput, "benchmark pattern is not A/C/G/T");
         }
     }
     return result;
@@ -107,7 +107,7 @@ std::string make_random_no_hit(
         if (occurrence_count(records, pattern, 1) == 0 &&
             occurrence_count(records, reverse_complement(pattern), 1) == 0) return pattern;
     }
-    throw Error(ErrorCode::build_failure, "cannot generate a deterministic no-hit query");
+    throw Error(ErrorCode::kBuildFailure, "cannot generate a deterministic no-hit query");
 }
 
 std::string make_boundary_pattern(
@@ -202,9 +202,9 @@ void finalize_dataset(Dataset& dataset, double repeat_fraction) {
         ? 0.0 : static_cast<double>(ambiguous) / static_cast<double>(dataset.total_bases);
     dataset.repeat_fraction = repeat_fraction;
     const auto begin = Clock::now();
-    auto reference = GenomeReference::from_records(dataset.records);
+    auto reference = GenomeReference::FromRecords(dataset.records);
     dataset.normalization_seconds = elapsed(begin);
-    dataset.fingerprint = reference.fingerprint();
+    dataset.fingerprint = reference.Fingerprint();
 }
 
 std::string hit_bucket(std::uint64_t hits) {
@@ -246,7 +246,7 @@ Profile parse_profile(const std::string& value) {
     if (value == "quick") return Profile::quick;
     if (value == "standard") return Profile::standard;
     if (value == "full") return Profile::full;
-    throw Error(ErrorCode::invalid_input, "invalid benchmark profile: " + value);
+    throw Error(ErrorCode::kInvalidInput, "invalid benchmark profile: " + value);
 }
 
 Scenario parse_scenario(const std::string& value) {
@@ -256,7 +256,7 @@ Scenario parse_scenario(const std::string& value) {
     if (value == "repeat-rich") return Scenario::repeat_rich;
     if (value == "n-islands") return Scenario::n_islands;
     if (value == "many-contig") return Scenario::many_contig;
-    throw Error(ErrorCode::invalid_input, "invalid benchmark scenario: " + value);
+    throw Error(ErrorCode::kInvalidInput, "invalid benchmark scenario: " + value);
 }
 
 ProfileSpec profile_spec(Profile value) {
@@ -267,7 +267,7 @@ ProfileSpec profile_spec(Profile value) {
     case Profile::full: return {256ULL << 20U, 10000, 1, 1, 5};
     case Profile::user: return {0, 1000, 1, 1, 5};
     }
-    throw Error(ErrorCode::invalid_input, "invalid benchmark profile");
+    throw Error(ErrorCode::kInvalidInput, "invalid benchmark profile");
 }
 
 std::string fingerprint_hex(std::uint64_t value) {
@@ -450,14 +450,14 @@ Dataset load_user_dataset(
     Dataset dataset;
     dataset.name = reference.filename().string();
     dataset.scenario = Scenario::user;
-    dataset.records = read_fasta_records(reference);
+    dataset.records = ReadFastaRecords(reference);
     dataset.reference_seconds = elapsed(begin);
     if (dataset.records.empty()) {
-        throw Error(ErrorCode::invalid_input, "benchmark reference contains no records");
+        throw Error(ErrorCode::kInvalidInput, "benchmark reference contains no records");
     }
     SplitMix64 random(seed);
     if (queries) {
-        const auto records = read_fasta_records(*queries);
+        const auto records = ReadFastaRecords(*queries);
         for (const auto& record : records) {
             dataset.queries.push_back({
                 record.name, record.sequence, "user", std::to_string(record.sequence.size()), "user query"});
@@ -490,7 +490,7 @@ Dataset load_user_dataset(
         }
     }
     if (dataset.queries.empty()) {
-        throw Error(ErrorCode::invalid_input, "benchmark query set contains no usable records");
+        throw Error(ErrorCode::kInvalidInput, "benchmark query set contains no usable records");
     }
     std::set<std::pair<std::string, std::string>> groups;
     for (const auto& query : dataset.queries) groups.emplace(query.group, query.pattern_length);
@@ -501,18 +501,18 @@ Dataset load_user_dataset(
 
 void classify_user_queries(Dataset& dataset, const std::filesystem::path& classifier_index) {
     if (dataset.queries.empty() || dataset.queries.front().group != "user") return;
-    const auto info = inspect_index(classifier_index);
+    const auto info = InspectIndex(classifier_index);
     std::set<std::pair<std::string, std::string>> groups;
-    if (info.kind == IndexKind::suffix_array) {
-        auto index = SuffixArray::load(classifier_index);
+    if (info.kind == IndexKind::kSuffixArray) {
+        auto index = SuffixArray::Load(classifier_index);
         for (auto& query : dataset.queries) {
-            query.group = hit_bucket(index.count(query.sequence));
+            query.group = hit_bucket(index.Count(query.sequence));
             groups.emplace(query.group, query.pattern_length);
         }
     } else {
-        auto index = FmIndex::load(classifier_index);
+        auto index = FmIndex::Load(classifier_index);
         for (auto& query : dataset.queries) {
-            query.group = hit_bucket(index.count(query.sequence));
+            query.group = hit_bucket(index.Count(query.sequence));
             groups.emplace(query.group, query.pattern_length);
         }
     }

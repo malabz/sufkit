@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "caps_backend.hpp"
 
 #include <algorithm>
@@ -15,83 +17,78 @@ namespace sufkit::detail {
 namespace {
 
 template <class Index>
-CapsBuildResult<Index> build_caps(
-    const std::vector<std::uint8_t>& text,
-    std::uint32_t threads,
-    bool retain_lcp) {
+CapsBuildResult<Index> BuildCaps(const std::vector<std::uint8_t>& text,
+                                 std::uint32_t threads, bool retain_lcp) {
 #if SUFKIT_HAS_CAPS
-    if (text.size() < 16) {
-        throw Error(
-            ErrorCode::invalid_input,
-            "CaPS-SA requires a logical text containing at least 16 symbols");
-    }
-    if (text.size() > static_cast<std::uint64_t>(std::numeric_limits<Index>::max())) {
-        throw Error(
-            ErrorCode::invalid_input,
-            sizeof(Index) == 4
-                ? "reference is too large for CaPS-SA uint32_t"
-                : "reference is too large for CaPS-SA uint64_t");
-    }
-
-    const auto subproblems = caps_subproblem_count(text.size(), threads);
-    try {
-        CaPS_SA::Suffix_Array<Index> suffix_array(
-            reinterpret_cast<const char*>(text.data()),
-            static_cast<Index>(text.size()),
-            static_cast<Index>(subproblems),
-            0);
-        parlay::execute_with_scheduler(threads, [&] {
-            suffix_array.construct();
-        });
-        CapsBuildResult<Index> result;
-        result.suffix_array.assign(suffix_array.SA(), suffix_array.SA() + text.size());
-        if (retain_lcp) {
-            result.lcp.reserve(text.size());
-            for (std::size_t row = 0; row < text.size(); ++row)
-                result.lcp.push_back(static_cast<std::uint64_t>(suffix_array.LCP()[row]));
-        }
-        return result;
-    } catch (const std::bad_alloc&) {
-        throw Error(ErrorCode::build_failure, "CaPS-SA allocation failed");
-    } catch (const std::exception& error) {
-        throw Error(
-            ErrorCode::build_failure,
-            std::string("CaPS-SA construction failed: ") + error.what());
-    } catch (...) {
-        throw Error(ErrorCode::build_failure, "CaPS-SA construction failed");
-    }
-#else
-    (void)text;
-    (void)threads;
-    (void)retain_lcp;
+  if (text.size() < 16) {
     throw Error(
-        ErrorCode::unsupported_backend,
-        "CaPS-SA support was disabled when sufkit was built");
-#endif
-}
+        ErrorCode::kInvalidInput,
+        "CaPS-SA requires a logical text containing at least 16 symbols");
+  }
+  if (text.size() >
+      static_cast<std::uint64_t>(std::numeric_limits<Index>::max())) {
+    throw Error(ErrorCode::kInvalidInput,
+                sizeof(Index) == 4
+                    ? "reference is too large for CaPS-SA uint32_t"
+                    : "reference is too large for CaPS-SA uint64_t");
+  }
 
-} // namespace
-
-bool caps_build_available() noexcept {
-#if SUFKIT_HAS_CAPS
-    return true;
+  const auto subproblems = CapsSubproblemCount(text.size(), threads);
+  try {
+    CaPS_SA::Suffix_Array<Index> suffix_array(
+        reinterpret_cast<const char*>(text.data()),
+        static_cast<Index>(text.size()), static_cast<Index>(subproblems), 0);
+    parlay::execute_with_scheduler(threads, [&] { suffix_array.construct(); });
+    CapsBuildResult<Index> result;
+    result.suffix_array.assign(suffix_array.SA(),
+                               suffix_array.SA() + text.size());
+    if (retain_lcp) {
+      // Reuse CaPS's native complete-SA LCP instead of repeating a full
+      // adjacent-suffix scan in the common accelerated build path.
+      result.lcp.reserve(text.size());
+      for (std::size_t row = 0; row < text.size(); ++row) {
+        result.lcp.push_back(
+            static_cast<std::uint64_t>(suffix_array.LCP()[row]));
+      }
+    }
+    return result;
+  } catch (const std::bad_alloc&) {
+    throw Error(ErrorCode::kBuildFailure, "CaPS-SA allocation failed");
+  } catch (const std::exception& error) {
+    throw Error(ErrorCode::kBuildFailure,
+                std::string("CaPS-SA construction failed: ") + error.what());
+  } catch (...) {
+    throw Error(ErrorCode::kBuildFailure, "CaPS-SA construction failed");
+  }
 #else
-    return false;
+  (void)text;
+  (void)threads;
+  (void)retain_lcp;
+  throw Error(ErrorCode::kUnsupportedBackend,
+              "CaPS-SA support was disabled when sufkit was built");
 #endif
 }
 
-CapsBuildResult<std::uint32_t> build_caps32(
-    const std::vector<std::uint8_t>& text,
-    std::uint32_t threads,
-    bool retain_lcp) {
-    return build_caps<std::uint32_t>(text, threads, retain_lcp);
+}  // namespace
+
+bool CapsBuildAvailable() noexcept {
+#if SUFKIT_HAS_CAPS
+  return true;
+#else
+  return false;
+#endif
 }
 
-CapsBuildResult<std::uint64_t> build_caps64(
-    const std::vector<std::uint8_t>& text,
-    std::uint32_t threads,
+CapsBuildResult<std::uint32_t> BuildCaps32(
+    const std::vector<std::uint8_t>& text, std::uint32_t threads,
     bool retain_lcp) {
-    return build_caps<std::uint64_t>(text, threads, retain_lcp);
+  return BuildCaps<std::uint32_t>(text, threads, retain_lcp);
 }
 
-} // namespace sufkit::detail
+CapsBuildResult<std::uint64_t> BuildCaps64(
+    const std::vector<std::uint8_t>& text, std::uint32_t threads,
+    bool retain_lcp) {
+  return BuildCaps<std::uint64_t>(text, threads, retain_lcp);
+}
+
+}  // namespace sufkit::detail

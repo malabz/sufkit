@@ -64,7 +64,7 @@ this equals the common prefix of the retained suffix pair.
 Exact sampled recovery searches pattern suffixes for every residue r in
 `[0,K)`, maps each candidate sampled position back by r, and verifies the
 omitted prefix and contig boundary. If pattern length is below K, direct contig
-scan is the correctness fallback. `equal_range` is rejected for K>1.
+scan is the correctness fallback. `EqualRange` is rejected for K>1.
 
 Sampled right-maximal search uses anchor length `min_length-K+1`, iterates query
 residue classes in K steps, maps sampled anchors to candidate starts, extends

@@ -27,13 +27,13 @@ may be called concurrently.
 
 ## Ranges and coordinates
 
-`SuffixRange` is half-open and `size()` is `end-begin`. Empty searches return
+`SuffixRange` is half-open and `Size()` is `end-begin`. Empty searches return
 `[0,0)` and do not expose a lexical insertion point.
 
-For complete standalone SA, `equal_range` returns one SA interval. For sampled
+For complete standalone SA, `EqualRange` returns one SA interval. For sampled
 SA (`sampling_rate>1`) complete exact results span residue-specific intervals,
-so `equal_range` explicitly returns `unsupported_backend`; use `count` or
-`locate` instead.
+so `EqualRange` explicitly returns `unsupported_backend`; use `Count` or
+`Locate` instead.
 
 `Match::position` and `RightMaximalMatch::reference_position` are zero-based,
 contig-local positions. `RightMaximalMatch::query_position` is zero-based in the
@@ -42,7 +42,7 @@ original forward query. Sequence IDs follow reference input order.
 ## Ordering and truncation
 
 Exact vector results are ordered by sequence ID, position, length, and strand.
-Both-strand palindromic exact hits are merged with strand `both`.
+Both-strand palindromic exact hits are merged with strand `Strand::kBoth`.
 
 Right-maximal results are ordered by query position, sequence ID, reference
 position, length, and strand. Forward and reverse results remain distinct.
@@ -67,20 +67,20 @@ Use separate objects for concurrent operations.
 
 Public failures use `sufkit::Error`:
 
-| `ErrorCode` | Meaning |
-|---|---|
-| `invalid_input` | Invalid FASTA, pattern, option, size, or coordinate |
-| `io_error` | Open, read, write, rename, or stream failure |
-| `unsupported_backend` | Recognized capability is absent or not built |
-| `corrupt_index` | Container or payload violates persisted invariants |
-| `version_mismatch` | Format/SDSL version cannot be interpreted safely |
-| `build_failure` | Backend construction or benchmark correctness failure |
+| C++ value | `ToString()` value | Meaning |
+|---|---|---|
+| `ErrorCode::kInvalidInput` | `invalid_input` | Invalid FASTA, pattern, option, size, or coordinate |
+| `ErrorCode::kIoError` | `io_error` | Open, read, write, rename, or stream failure |
+| `ErrorCode::kUnsupportedBackend` | `unsupported_backend` | Recognized capability is absent or not built |
+| `ErrorCode::kCorruptIndex` | `corrupt_index` | Container or payload violates persisted invariants |
+| `ErrorCode::kVersionMismatch` | `version_mismatch` | Format/SDSL version cannot be interpreted safely |
+| `ErrorCode::kBuildFailure` | `build_failure` | Backend construction or benchmark correctness failure |
 
 Callers should branch on the error code rather than parsing diagnostic text.
 
 ## Backend discovery
 
-`available_sa_backends()` and `available_fm_backends()` report compiled
+`AvailableSaBackends()` and `AvailableFmBackends()` report compiled
 availability and implementation signatures. A reserved name can be reported
 unavailable. Availability is runtime-visible build metadata, not permission
 to silently replace an explicit request.
@@ -88,14 +88,14 @@ to silently replace an explicit request.
 ## Sampled standalone SA
 
 `SuffixArrayBuildOptions::sampling_rate=K` keeps text positions divisible by
-K. `SuffixArray::sampling_rate()` reports the effective K. `IndexInfo` keeps
+K. `SuffixArray::SamplingRate()` reports the effective K. `IndexInfo` keeps
 logical text length and stored row count separate:
 
 - `text_symbols`: encoded text plus sentinel;
 - `suffix_count`: retained SA rows;
 - `sa_sampling_rate`: K.
 
-`suffix_at(row)` addresses `[0,suffix_count)`. Exact count/locate preserve
+`SuffixAt(row)` addresses `[0,suffix_count)`. Exact `Count`/`Locate` preserve
 complete results through residue recovery; patterns shorter than K use a
 correct per-contig scan. Right-maximal search requires `min_length>=K`.
 

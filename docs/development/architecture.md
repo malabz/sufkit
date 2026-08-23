@@ -104,7 +104,7 @@ flowchart TD
 SA range search dispatches among binary, LCP-aware binary, eligible PWL, or
 explicit CHILD. FM range search uses SDSL `backward_search`. Backend paths must
 converge before public result finalization. A sampled standalone SA cannot
-return one `equal_range`, but count/locate recover all residue classes.
+return one `EqualRange`, but `Count`/`Locate` recover all residue classes.
 
 ## right-maximal exact match query flow
 

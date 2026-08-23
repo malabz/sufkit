@@ -22,6 +22,11 @@
 [中文文档导航](docs/zh-CN/README.md) · [英文完整文档](docs/README.md) ·
 [贡献指南](CONTRIBUTING.md)
 
+当前开发分支已经为计划中的 0.2.0 统一 C++ 命名：函数使用
+`PascalCase`，枚举值使用 `kPascalCase`。0.1.x 调用方请参考
+[API 命名迁移指南](docs/development/api-naming-migration-0.2.0.md)。公共头文件
+路径、CMake target、CLI 与 `.sufidx` 格式没有因此改变。
+
 ## 当前版本口径
 
 已发布版本是 `0.1.1`。当前 `main` 还包含尚未重新发布的 CaPS、采样

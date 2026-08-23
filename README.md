@@ -103,31 +103,32 @@ Minimal exact-search example:
 ```cpp
 #include <sufkit/sufkit.hpp>
 
-auto reference = sufkit::GenomeReference::from_fasta("reference.fa.gz");
-auto index = sufkit::FmIndex::build(reference);
-index.save("reference.sufidx");
+auto reference = sufkit::GenomeReference::FromFasta("reference.fa.gz");
+auto index = sufkit::FmIndex::Build(reference);
+index.Save("reference.sufidx");
 
-auto loaded = sufkit::FmIndex::load("reference.sufidx");
-auto result = loaded.locate("ACGTACGT");
+auto loaded = sufkit::FmIndex::Load("reference.sufidx");
+auto result = loaded.Locate("ACGTACGT");
 ```
 
 Minimal right-maximal exact match example:
 
 ```cpp
-auto reference = sufkit::GenomeReference::from_fasta("reference.fa.gz");
-auto index = sufkit::SuffixArray::build(reference); // SA+ISA+LCP
+auto reference = sufkit::GenomeReference::FromFasta("reference.fa.gz");
+auto index = sufkit::SuffixArray::Build(reference);  // SA+ISA+LCP
 
 sufkit::RightMaximalOptions options;
 options.min_length = 20;
-options.strands = sufkit::StrandMode::both;
-auto result = index.find_right_maximal_matches("GGGACGTACGTNNNGATTACA", options);
+options.strands = sufkit::StrandMode::kBoth;
+auto result =
+    index.FindRightMaximalMatches("GGGACGTACGTNNNGATTACA", options);
 ```
 
 To reduce resident and serialized SA memory, set
 `SuffixArrayBuildOptions::sampling_rate` or pass `--sa-sampling-rate K`.
 The builder still constructs a complete SA before compacting it, so sampling
 does not reduce constructor peak memory. Sampled right-maximal search requires
-`min_length >= K`; direct `equal_range()` is intentionally unavailable because
+`min_length >= K`; direct `EqualRange()` is intentionally unavailable because
 the sampled rows do not represent the complete suffix order.
 
 See the [installation guide](docs/getting-started/installation.md),
@@ -151,3 +152,8 @@ choosing a production backend.
 The [documentation hub](docs/README.md) separates short user guidance from
 API contracts, algorithm descriptions, internal architecture, contributor
 instructions, index-format details, and evidence-bounded benchmark reports.
+
+The development branch uses Google-style
+`PascalCase` functions and `kPascalCase` enumerators for the planned 0.2.0
+source interface. Existing 0.1.x callers should use the
+[API naming migration guide](docs/development/api-naming-migration-0.2.0.md).
