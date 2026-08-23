@@ -52,6 +52,7 @@ const char* to_string(FmBackend value) noexcept {
     case FmBackend::sdsl_csa_wt_huff: return "sdsl-csa-wt-huff";
     case FmBackend::sdsl_csa_wt_balanced: return "sdsl-csa-wt-balanced";
     case FmBackend::sdsl_csa_sada: return "sdsl-csa-sada";
+    case FmBackend::sdsl_csa_wt_epr: return "sdsl-csa-wt-epr";
     }
     return "unknown";
 }

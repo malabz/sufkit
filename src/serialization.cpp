@@ -456,7 +456,10 @@ ParsedContainer read_container(const std::filesystem::path& path) {
     if ((result.spec.kind == IndexKind::suffix_array &&
          backend != StoredBackend::divsufsort32 && backend != StoredBackend::divsufsort64) ||
         (result.spec.kind == IndexKind::fm_index &&
-         backend != StoredBackend::sdsl_csa_wt_huff)) {
+         backend != StoredBackend::sdsl_csa_wt_huff &&
+         backend != StoredBackend::sdsl_csa_wt_balanced &&
+         backend != StoredBackend::sdsl_csa_sada &&
+         backend != StoredBackend::sdsl_csa_wt_epr)) {
         throw Error(ErrorCode::unsupported_backend, "unsupported index backend id");
     }
 
@@ -582,6 +585,9 @@ const char* stored_backend_name(StoredBackend backend) noexcept {
     case StoredBackend::divsufsort32: return "divsufsort32";
     case StoredBackend::divsufsort64: return "divsufsort64";
     case StoredBackend::sdsl_csa_wt_huff: return "sdsl-csa-wt-huff";
+    case StoredBackend::sdsl_csa_wt_balanced: return "sdsl-csa-wt-balanced";
+    case StoredBackend::sdsl_csa_sada: return "sdsl-csa-sada";
+    case StoredBackend::sdsl_csa_wt_epr: return "sdsl-csa-wt-epr";
     }
     return "unknown";
 }
@@ -592,6 +598,12 @@ const char* stored_backend_signature(StoredBackend backend) noexcept {
     case StoredBackend::divsufsort64: return "libdivsufsort-2.0.2/saidx64_t";
     case StoredBackend::sdsl_csa_wt_huff:
         return "sdsl::csa_wt<sdsl::wt_huff<>,32,64>";
+    case StoredBackend::sdsl_csa_wt_balanced:
+        return "sdsl::csa_wt<sdsl::wt_blcd<>,32,64>";
+    case StoredBackend::sdsl_csa_sada:
+        return "sdsl::csa_sada<>";
+    case StoredBackend::sdsl_csa_wt_epr:
+        return "sdsl::csa_wt<sdsl::wt_epr<8>,32,64>";
     }
     return "unknown";
 }

@@ -43,6 +43,21 @@ sufkit bench --smoke --output smoke.tsv
 sufkit bench --quick --output quick.tsv
 ```
 
+FM backend and batched-count comparisons use:
+
+```bash
+sufkit bench --profile quick \
+  --methods fm-huff,fm-balanced,fm-epr \
+  --fm-query-modes scalar,batch \
+  --fm-batch-widths 1,4,8,16,32 \
+  --output-dir results/fm-quick
+```
+
+`fm` remains an alias for `fm-huff`; selecting both in one run is rejected.
+Scalar mode records count and locate. Batch mode records count only and keeps
+one row per batch width. Query summaries append the mode, width, processed
+query bases, bases/s, and speedup relative to the matching Huffman scalar row.
+
 ## Synthetic datasets and query groups
 
 The generator uses SplitMix64 and derives all choices from the selected seed.

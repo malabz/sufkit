@@ -39,6 +39,8 @@ struct Options {
     std::vector<Scenario> scenarios;
     std::vector<std::uint64_t> pattern_lengths;
     std::vector<LocateLimit> locate_limits;
+    std::vector<std::string> fm_query_modes{"scalar"};
+    std::vector<std::uint32_t> fm_batch_widths{16};
     std::uint64_t seed = 20260822;
     std::optional<std::uint32_t> build_repetitions;
     std::optional<std::uint32_t> query_repetitions;
@@ -98,8 +100,11 @@ struct QueryRaw {
     std::string strand;
     std::string operation;
     std::string max_hits;
+    std::string fm_query_mode = "scalar";
+    std::string fm_batch_width = "NA";
     std::uint32_t repetition = 0;
     std::uint64_t query_count = 0;
+    std::uint64_t query_bases = 0;
     double seconds = 0.0;
     double user_seconds = 0.0;
     double system_seconds = 0.0;
@@ -133,6 +138,8 @@ struct RunContext {
     std::string build_repetitions;
     std::string query_repetitions;
     std::string warmups;
+    std::string fm_query_modes;
+    std::string fm_batch_widths;
 };
 
 const char* to_string(Profile value) noexcept;

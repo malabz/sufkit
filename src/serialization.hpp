@@ -20,7 +20,10 @@ namespace sufkit::detail {
 enum class StoredBackend : std::uint8_t {
     divsufsort32 = 1,
     divsufsort64 = 2,
-    sdsl_csa_wt_huff = 10
+    sdsl_csa_wt_huff = 10,
+    sdsl_csa_wt_balanced = 11,
+    sdsl_csa_sada = 12,
+    sdsl_csa_wt_epr = 13
 };
 
 enum class SectionType : std::uint32_t {

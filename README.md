@@ -4,7 +4,7 @@
 pattern and maximal-exact-match search. Version 0.1.1 contains:
 
 - libdivsufsort32/64 standalone suffix arrays;
-- `sdsl::csa_wt<sdsl::wt_huff<>,32,64>` as the only FM-index core;
+- fixed SDSL Huffman, balanced, and DNA EPR compressed suffix-array backends;
 - plain/gzip FASTA input through kseq and zlib;
 - multi-contig, forward, reverse-complement, and both-strand queries;
 - versioned, self-contained `.sufidx` files;
@@ -59,6 +59,12 @@ index.save("reference.sufidx");
 
 auto loaded = sufkit::FmIndex::load("reference.sufidx");
 auto hits = loaded.locate("ACGTACGT");
+
+std::vector<std::string_view> patterns{"ACGT", "GATTACA", "TTTT"};
+sufkit::FmBatchOptions batch;
+batch.strands = sufkit::StrandMode::both;
+batch.batch_width = 16;
+auto counts = loaded.count_batch(patterns, batch);
 ```
 
 MEM search uses a suffix-array index:
@@ -82,6 +88,8 @@ the reported contig.
 ```bash
 sufkit build --type sa --input reference.fa.gz --output reference.sa.sufidx
 sufkit build --type fm --input reference.fa.gz --output reference.fm.sufidx
+sufkit build --type fm --fm-backend sdsl-csa-wt-epr \
+  --input reference.fa.gz --output reference.epr.sufidx
 
 sufkit query --index reference.fm.sufidx --pattern ACGTACGT
 sufkit query --index reference.fm.sufidx --query queries.fa --strand both

@@ -22,6 +22,12 @@ cross a separator or an N.  Sequence IDs and positions are zero-based.
 `equal_range` returns a half-open index-row range.  Empty results are `[0,0)`;
 no insertion-point meaning is promised for an empty SDSL range.
 
+`FmIndex::equal_range_batch` and `count_batch` preserve input order and reject
+the whole call if any pattern is invalid. `FmBatchOptions::batch_width=0`
+selects width 16; explicit widths are limited to 1-256. Batch count supports
+the same forward, reverse-complement, both, and palindrome semantics as scalar
+count. Locate remains a scalar API.
+
 `count` and `locate` support:
 
 - `forward`: the supplied pattern;

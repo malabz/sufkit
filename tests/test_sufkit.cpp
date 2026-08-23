@@ -226,6 +226,16 @@ void test_suffix_array(const std::filesystem::path& directory) {
 
 void test_fm_index(const std::filesystem::path& directory) {
     auto reference = make_reference();
+    const auto available = sufkit::available_fm_backends();
+    CHECK(std::any_of(available.begin(), available.end(), [](const auto& backend) {
+        return backend.name == "sdsl-csa-wt-balanced" && backend.available;
+    }));
+    CHECK(std::any_of(available.begin(), available.end(), [](const auto& backend) {
+        return backend.name == "sdsl-csa-wt-epr" && backend.available;
+    }));
+    CHECK(std::any_of(available.begin(), available.end(), [](const auto& backend) {
+        return backend.name == "sdsl-csa-sada" && !backend.available;
+    }));
     auto fm = sufkit::FmIndex::build(reference);
     CHECK(fm.info().backend == "sdsl-csa-wt-huff");
     CHECK(fm.info().backend_signature == "sdsl::csa_wt<sdsl::wt_huff<>,32,64>");
@@ -262,6 +272,72 @@ void test_fm_index(const std::filesystem::path& directory) {
     CHECK(aaa.hits[2].sequence_id == 2 && aaa.hits[2].position == 0 &&
           aaa.hits[2].strand == sufkit::Strand::forward);
 
+    const std::vector<std::string_view> batch_patterns{
+        "ACGT", "AAA", "GTTT", "TTT", "CGT", "TACGT"};
+    const std::array<std::uint32_t, 4> batch_widths{{1, 4, 16, 256}};
+    struct FmCase {
+        sufkit::FmBackend backend;
+        const char* name;
+        const char* signature;
+    };
+    const std::array<FmCase, 3> fm_cases{{
+        {sufkit::FmBackend::sdsl_csa_wt_huff,
+         "sdsl-csa-wt-huff", "sdsl::csa_wt<sdsl::wt_huff<>,32,64>"},
+        {sufkit::FmBackend::sdsl_csa_wt_balanced,
+         "sdsl-csa-wt-balanced", "sdsl::csa_wt<sdsl::wt_blcd<>,32,64>"},
+        {sufkit::FmBackend::sdsl_csa_wt_epr,
+         "sdsl-csa-wt-epr", "sdsl::csa_wt<sdsl::wt_epr<8>,32,64>"}
+    }};
+    for (const auto& fm_case : fm_cases) {
+        auto candidate = sufkit::FmIndex::build(reference, {fm_case.backend});
+        CHECK(candidate.info().backend == fm_case.name);
+        CHECK(candidate.info().backend_signature == fm_case.signature);
+        CHECK(candidate.info().format_version == "1.0");
+        check_match_results(candidate.locate("ACGT"));
+        for (const auto width : batch_widths) {
+            const auto ranges = candidate.equal_range_batch(batch_patterns, width);
+            CHECK(ranges.size() == batch_patterns.size());
+            for (std::size_t index = 0; index < batch_patterns.size(); ++index) {
+                CHECK(ranges[index].size() == candidate.equal_range(batch_patterns[index]).size());
+            }
+            for (const auto strands : {sufkit::StrandMode::forward,
+                                       sufkit::StrandMode::reverse_complement,
+                                       sufkit::StrandMode::both}) {
+                sufkit::FmBatchOptions batch_options;
+                batch_options.strands = strands;
+                batch_options.batch_width = width;
+                const auto counts = candidate.count_batch(batch_patterns, batch_options);
+                CHECK(counts.size() == batch_patterns.size());
+                for (std::size_t index = 0; index < batch_patterns.size(); ++index) {
+                    CHECK(counts[index] == candidate.count(batch_patterns[index], strands));
+                }
+            }
+        }
+        CHECK(candidate.count_batch({}, {}).empty());
+        check_error(sufkit::ErrorCode::invalid_input, [&] {
+            (void)candidate.equal_range_batch(batch_patterns, 257);
+        });
+        check_error(sufkit::ErrorCode::invalid_input, [&] {
+            sufkit::FmBatchOptions invalid;
+            invalid.batch_width = 257;
+            (void)candidate.count_batch(batch_patterns, invalid);
+        });
+        check_error(sufkit::ErrorCode::invalid_input, [&] {
+            const std::vector<std::string_view> invalid{"ACGT", "ACNT", "TTT"};
+            (void)candidate.count_batch(invalid);
+        });
+
+        const auto backend_path = directory / (std::string(fm_case.name) + ".sufidx");
+        candidate.save(backend_path);
+        const auto backend_info = sufkit::inspect_index(backend_path);
+        CHECK(backend_info.format_version == "1.0");
+        CHECK(backend_info.backend == fm_case.name);
+        CHECK(backend_info.backend_signature == fm_case.signature);
+        auto backend_loaded = sufkit::FmIndex::load(backend_path);
+        CHECK(backend_loaded.count_batch(batch_patterns).size() == batch_patterns.size());
+        check_match_results(backend_loaded.locate("ACGT"));
+    }
+
     check_error(sufkit::ErrorCode::unsupported_backend, [&] {
         (void)sufkit::FmIndex::build(
             reference,
@@ -296,7 +372,9 @@ void test_fm_index(const std::filesystem::path& directory) {
     for (int worker = 0; worker < 4; ++worker) {
         threads.emplace_back([&] {
             for (int iteration = 0; iteration < 100; ++iteration) {
-                if (loaded.count("ACGT") != 3 || loaded.locate("AAA", both).total_hits != 3) {
+                const auto batch = loaded.count_batch(batch_patterns);
+                if (loaded.count("ACGT") != 3 || loaded.locate("AAA", both).total_hits != 3 ||
+                    batch.size() != batch_patterns.size() || batch.front() != 3) {
                     concurrent_ok.store(false);
                 }
             }
