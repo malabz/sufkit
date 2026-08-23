@@ -12,14 +12,10 @@
 #include <variant>
 #include <vector>
 
-extern "C" {
-#include "divsufsort.h"
-#include "divsufsort64.h"
-}
-
 #include <sufkit/version.hpp>
 
 #include "caps_backend.hpp"
+#include "divsufsort_backend.hpp"
 #include "genome_reference_internal.hpp"
 #include "query.hpp"
 #include "reference_data.hpp"
@@ -237,13 +233,80 @@ std::uint64_t sa_value(const SaStorage& storage, std::uint64_t row) {
     }, storage);
 }
 
-std::vector<std::uint64_t> build_isa(const SaStorage& sa, std::uint32_t requested_threads) {
+std::uint64_t sa_size(const SaStorage& storage) noexcept {
+    return std::visit([](const auto& values) {
+        return static_cast<std::uint64_t>(values.size());
+    }, storage);
+}
+
+std::uint64_t sampled_suffix_count(
+    std::uint64_t text_size,
+    std::uint32_t sampling_rate) noexcept {
+    return text_size == 0 ? 0 : 1 + (text_size - 1) / sampling_rate;
+}
+
+template <class SaVector>
+void sample_sa_in_place(SaVector& values, std::uint32_t sampling_rate) {
+    if (sampling_rate == 1) return;
+    std::size_t output = 0;
+    for (const auto value : values) {
+        if (static_cast<std::uint64_t>(value) % sampling_rate == 0)
+            values[output++] = value;
+    }
+    values.resize(output);
+    values.shrink_to_fit();
+}
+
+template <class SaVector>
+void sample_sa_lcp_in_place(
+    SaVector& values,
+    std::vector<std::uint64_t>& lcp,
+    std::uint32_t sampling_rate) {
+    if (sampling_rate == 1) return;
+    std::size_t output = 0;
+    std::uint64_t interval_min = std::numeric_limits<std::uint64_t>::max();
+    for (std::size_t row = 0; row < values.size(); ++row) {
+        if (row != 0) interval_min = std::min(interval_min, lcp[row]);
+        if (static_cast<std::uint64_t>(values[row]) % sampling_rate != 0) continue;
+        values[output] = values[row];
+        lcp[output] = output == 0 ? 0 : interval_min;
+        ++output;
+        interval_min = std::numeric_limits<std::uint64_t>::max();
+    }
+    values.resize(output);
+    values.shrink_to_fit();
+    lcp.resize(output);
+    lcp.shrink_to_fit();
+}
+
+void sample_sa(SaStorage& storage, std::uint32_t sampling_rate) {
+    std::visit([&](auto& values) { sample_sa_in_place(values, sampling_rate); }, storage);
+}
+
+void sample_sa_lcp(
+    SaStorage& storage,
+    std::vector<std::uint64_t>& lcp,
+    std::uint32_t sampling_rate) {
+    std::visit([&](auto& values) {
+        sample_sa_lcp_in_place(values, lcp, sampling_rate);
+    }, storage);
+}
+
+std::vector<std::uint64_t> build_isa(
+    const SaStorage& sa,
+    std::uint64_t text_size,
+    std::uint32_t sampling_rate,
+    std::uint32_t requested_threads) {
     const auto count = std::visit([](const auto& values) { return values.size(); }, sa);
     std::vector<std::uint64_t> isa(count);
     const auto thread_count = std::min<std::uint64_t>(requested_threads, count);
     if (thread_count <= 1 || count < 1U << 20) {
-        for (std::uint64_t row = 0; row < count; ++row)
-            isa[static_cast<std::size_t>(sa_value(sa, row))] = row;
+        for (std::uint64_t row = 0; row < count; ++row) {
+            const auto suffix = sa_value(sa, row);
+            if (suffix >= text_size || suffix % sampling_rate != 0)
+                throw Error(ErrorCode::build_failure, "sampled suffix array contains an invalid position");
+            isa[static_cast<std::size_t>(suffix / sampling_rate)] = row;
+        }
         return isa;
     }
     std::vector<std::thread> workers;
@@ -252,8 +315,10 @@ std::vector<std::uint64_t> build_isa(const SaStorage& sa, std::uint32_t requeste
         const auto begin = count * worker / thread_count;
         const auto end = count * (worker + 1) / thread_count;
         workers.emplace_back([&, begin, end] {
-            for (auto row = begin; row < end; ++row)
-                isa[static_cast<std::size_t>(sa_value(sa, row))] = row;
+            for (auto row = begin; row < end; ++row) {
+                const auto suffix = sa_value(sa, row);
+                isa[static_cast<std::size_t>(suffix / sampling_rate)] = row;
+            }
         });
     }
     for (auto& worker : workers) worker.join();
@@ -263,17 +328,19 @@ std::vector<std::uint64_t> build_isa(const SaStorage& sa, std::uint32_t requeste
 std::vector<std::uint64_t> build_lcp(
     const std::vector<std::uint8_t>& text,
     const SaStorage& sa,
-    const std::vector<std::uint64_t>& isa) {
-    std::vector<std::uint64_t> lcp(text.size(), 0);
+    const std::vector<std::uint64_t>& isa,
+    std::uint32_t sampling_rate) {
+    std::vector<std::uint64_t> lcp(sa_size(sa), 0);
     std::uint64_t common = 0;
-    for (std::uint64_t suffix = 0; suffix < text.size(); ++suffix) {
-        const auto row = isa[static_cast<std::size_t>(suffix)];
+    for (std::uint64_t sample = 0; sample < isa.size(); ++sample) {
+        const auto suffix = sample * sampling_rate;
+        const auto row = isa[static_cast<std::size_t>(sample)];
         if (row == 0) continue;
         const auto previous = sa_value(sa, row - 1);
         while (suffix + common < text.size() && previous + common < text.size() &&
                text[static_cast<std::size_t>(suffix + common)] == text[static_cast<std::size_t>(previous + common)]) ++common;
         lcp[static_cast<std::size_t>(row)] = common;
-        if (common != 0) --common;
+        common = common > sampling_rate ? common - sampling_rate : 0;
     }
     return lcp;
 }
@@ -362,12 +429,13 @@ std::uint32_t choose_bucket_bits(
 LearnedSaIndex build_learned_index(
     const detail::ReferenceData& reference,
     const std::vector<std::uint8_t>& text,
-    const std::vector<std::uint64_t>& isa,
+    const SaStorage& suffix_array,
     std::uint8_t coordinate_width,
     const LearnedSaOptions& options) {
     LearnedSaIndex model;
     model.k = options.k;
-    model.bucket_bits = choose_bucket_bits(text.size(), coordinate_width, options);
+    const auto suffix_count = sa_size(suffix_array);
+    model.bucket_bits = choose_bucket_bits(suffix_count, coordinate_width, options);
     model.memory_overhead_basis_points = options.memory_overhead_basis_points;
     const auto bucket_count = 1ULL << model.bucket_bits;
     if (bucket_count > std::vector<std::uint64_t>().max_size() - 1)
@@ -375,46 +443,43 @@ LearnedSaIndex build_learned_index(
     try {
         model.anchor_x.assign(static_cast<std::size_t>(bucket_count + 1),
                               std::numeric_limits<std::uint64_t>::max());
-        model.anchor_y.assign(static_cast<std::size_t>(bucket_count + 1), text.size());
+        model.anchor_y.assign(static_cast<std::size_t>(bucket_count + 1), suffix_count);
     } catch (const std::bad_alloc&) {
         throw Error(ErrorCode::build_failure,
                     "cannot allocate learned SA anchor arrays");
     }
     const auto key_bits = 2U * model.k;
-    const auto key_mask = (1ULL << key_bits) - 1ULL;
     const auto bucket_shift = key_bits - model.bucket_bits;
     bool found = false;
 
-    for (const auto& sequence : reference.sequences) {
+    for (std::uint64_t row = 0; row < suffix_count; ++row) {
+        const auto start = sa_value(suffix_array, row);
+        if (!detail::map_global_position(reference.sequences, start, model.k)) continue;
         std::uint64_t key = 0;
-        std::uint32_t run = 0;
-        for (std::uint64_t local = 0; local < sequence.length; ++local) {
-            const auto symbol = text[static_cast<std::size_t>(sequence.global_offset + local)];
+        bool canonical = true;
+        for (std::uint32_t offset = 0; offset < model.k; ++offset) {
+            const auto symbol = text[static_cast<std::size_t>(start + offset)];
             if (symbol < detail::kA || symbol > detail::kT) {
-                key = 0;
-                run = 0;
-                continue;
+                canonical = false;
+                break;
             }
-            key = ((key << 2U) | static_cast<std::uint64_t>(symbol - detail::kA)) & key_mask;
-            if (run < model.k) ++run;
-            if (run < model.k) continue;
-            const auto start = sequence.global_offset + local + 1 - model.k;
-            const auto row = isa[static_cast<std::size_t>(start)];
-            const auto bucket = model.bucket_bits == 0 ? 0ULL : key >> bucket_shift;
-            const auto index = static_cast<std::size_t>(bucket);
-            if (key < model.anchor_x[index] ||
-                (key == model.anchor_x[index] && row < model.anchor_y[index])) {
-                model.anchor_x[index] = key;
-                model.anchor_y[index] = row;
-            }
-            found = true;
+            key = (key << 2U) | static_cast<std::uint64_t>(symbol - detail::kA);
         }
+        if (!canonical) continue;
+        const auto bucket = model.bucket_bits == 0 ? 0ULL : key >> bucket_shift;
+        const auto index = static_cast<std::size_t>(bucket);
+        if (key < model.anchor_x[index] ||
+            (key == model.anchor_x[index] && row < model.anchor_y[index])) {
+            model.anchor_x[index] = key;
+            model.anchor_y[index] = row;
+        }
+        found = true;
     }
     if (!found) {
         std::fill(model.anchor_x.begin(), std::prev(model.anchor_x.end()), 0);
         std::fill(model.anchor_y.begin(), std::prev(model.anchor_y.end()), 0);
         model.anchor_x.back() = 1ULL << key_bits;
-        model.anchor_y.back() = text.size();
+        model.anchor_y.back() = suffix_count;
         return model;
     }
 
@@ -432,7 +497,7 @@ LearnedSaIndex build_learned_index(
         }
     }
     model.anchor_x.back() = 1ULL << key_bits;
-    model.anchor_y.back() = text.size();
+    model.anchor_y.back() = suffix_count;
     for (std::size_t index = 1; index < model.anchor_x.size(); ++index) {
         if (model.anchor_x[index] < model.anchor_x[index - 1] ||
             model.anchor_y[index] < model.anchor_y[index - 1])
@@ -516,11 +581,12 @@ bool mem_less(const MemMatch& left, const MemMatch& right) {
 }
 
 IndexInfo built_info(const detail::ReferenceData& data, detail::StoredBackend backend,
-    std::uint8_t width, std::uint64_t text_symbols, SaAcceleration acceleration,
+    std::uint8_t width, std::uint64_t text_symbols, std::uint64_t suffix_count,
+    std::uint32_t sampling_rate, SaAcceleration acceleration,
     std::uint64_t auxiliary_bytes, const LearnedSaIndex& learned) {
     IndexInfo info;
     info.kind = IndexKind::suffix_array;
-    info.format_version = !learned.empty() ? "1.2" :
+    info.format_version = sampling_rate > 1 ? "1.3" : !learned.empty() ? "1.2" :
         (acceleration == SaAcceleration::none ? "1.0" : "1.1");
     info.library_version = SUFKIT_VERSION_STRING;
     info.backend = detail::stored_backend_name(backend);
@@ -529,6 +595,8 @@ IndexInfo built_info(const detail::ReferenceData& data, detail::StoredBackend ba
     info.sequence_count = data.sequences.size();
     info.total_bases = data.total_bases;
     info.text_symbols = text_symbols;
+    info.suffix_count = suffix_count;
+    info.sa_sampling_rate = sampling_rate;
     info.ambiguous_bases = data.ambiguous_bases;
     info.fingerprint = data.fingerprint;
     info.sa_acceleration = acceleration;
@@ -642,6 +710,7 @@ struct SuffixArray::Impl {
     ChildTable child;
     LearnedSaIndex learned;
     SaAcceleration acceleration = SaAcceleration::none;
+    std::uint32_t sampling_rate = 1;
     detail::StoredBackend backend = detail::StoredBackend::divsufsort32;
     IndexInfo index_info;
 
@@ -678,7 +747,7 @@ struct SuffixArray::Impl {
         }
         const std::vector<std::uint8_t> prefix(
             pattern.begin(), pattern.begin() + static_cast<std::ptrdiff_t>(learned.k));
-        const auto prediction = learned.predict(learned.key_for(prefix), text.size());
+        const auto prediction = learned.predict(learned.key_for(prefix), sa_size(suffix_array));
         const auto prefix_range = std::visit([&](const auto& values) {
             const SuffixRange whole{0, static_cast<std::uint64_t>(values.size())};
             const auto lower = galloping_boundary_for(
@@ -727,8 +796,9 @@ struct SuffixArray::Impl {
 
     std::uint64_t interval_depth(SuffixRange range) const {
         if (range.size() <= 1) return std::numeric_limits<std::uint64_t>::max();
-        if (range.begin == 0 && range.end == text.size()) return 0;
-        const auto none = text.size();
+        const auto rows = sa_size(suffix_array);
+        if (range.begin == 0 && range.end == rows) return 0;
+        const auto none = rows;
         auto boundary = child[static_cast<std::size_t>(range.end - 1)];
         if (boundary == none || boundary <= range.begin || boundary >= range.end)
             boundary = child[static_cast<std::size_t>(range.begin)];
@@ -739,7 +809,7 @@ struct SuffixArray::Impl {
     SuffixRange child_step(SuffixRange range, std::uint64_t depth, std::uint8_t symbol) const {
         const auto verified = narrow_char(range, depth, symbol);
         if (!has_child() || range.size() <= 1) return verified;
-        const auto none = text.size();
+        const auto none = sa_size(suffix_array);
         auto first = child[static_cast<std::size_t>(range.end - 1)];
         if (first == none || first <= range.begin || first >= range.end)
             first = child[static_cast<std::size_t>(range.begin)];
@@ -761,7 +831,7 @@ struct SuffixArray::Impl {
     }
 
     SuffixRange child_range(const std::vector<std::uint8_t>& pattern) const {
-        SuffixRange range{0, static_cast<std::uint64_t>(text.size())};
+        SuffixRange range{0, sa_size(suffix_array)};
         std::uint64_t depth = 0;
         while (depth < pattern.size() && !range.empty()) {
             if (range.size() == 1) {
@@ -815,18 +885,70 @@ struct SuffixArray::Impl {
         return result;
     }
 
+    template <class Callback>
+    void for_each_exact_global(
+        const std::vector<std::uint8_t>& pattern,
+        SaSearchAlgorithm algorithm,
+        SaSearchStatistics* statistics,
+        Callback&& callback) const {
+        if (sampling_rate == 1) {
+            const auto interval = range(pattern, algorithm, statistics);
+            for (std::uint64_t row = interval.begin; row < interval.end; ++row)
+                callback(sa_value(suffix_array, row));
+            return;
+        }
+
+        if (pattern.size() < sampling_rate) {
+            for (const auto& sequence : reference.sequences) {
+                if (pattern.size() > sequence.length) continue;
+                for (std::uint64_t local = 0; local + pattern.size() <= sequence.length; ++local) {
+                    const auto global = sequence.global_offset + local;
+                    if (std::equal(pattern.begin(), pattern.end(),
+                                   text.begin() + static_cast<std::ptrdiff_t>(global)))
+                        callback(global);
+                }
+            }
+            return;
+        }
+
+        for (std::uint32_t offset = 0; offset < sampling_rate; ++offset) {
+            const std::vector<std::uint8_t> anchor(
+                pattern.begin() + static_cast<std::ptrdiff_t>(offset), pattern.end());
+            const auto interval = range(anchor, algorithm, statistics);
+            for (std::uint64_t row = interval.begin; row < interval.end; ++row) {
+                const auto sampled = sa_value(suffix_array, row);
+                if (sampled < offset) continue;
+                const auto global = sampled - offset;
+                if (!detail::map_global_position(reference.sequences, global, pattern.size())) continue;
+                if (std::equal(pattern.begin(), pattern.begin() + static_cast<std::ptrdiff_t>(offset),
+                               text.begin() + static_cast<std::ptrdiff_t>(global)))
+                    callback(global);
+            }
+        }
+    }
+
+    std::uint64_t exact_count(
+        const std::vector<std::uint8_t>& pattern,
+        SaSearchAlgorithm algorithm,
+        SaSearchStatistics* statistics) const {
+        std::uint64_t count = 0;
+        for_each_exact_global(pattern, algorithm, statistics,
+            [&](std::uint64_t) { ++count; });
+        return count;
+    }
+
     std::uint64_t collect(const std::vector<std::uint8_t>& pattern, Strand strand,
         const LocateOptions& options, std::vector<Match>& output,
         SaSearchAlgorithm algorithm, SaSearchStatistics* statistics) const {
-        const auto interval = range(pattern, algorithm, statistics);
-        for (std::uint64_t row = interval.begin; row < interval.end; ++row) {
-            const auto global = sa_value(suffix_array, row);
+        std::uint64_t total = 0;
+        for_each_exact_global(pattern, algorithm, statistics, [&](std::uint64_t global) {
             const auto mapped = detail::map_global_position(reference.sequences, global, pattern.size());
             if (!mapped) throw Error(ErrorCode::corrupt_index, "suffix-array hit is outside a reference contig");
             detail::retain_match(output, {mapped->first, mapped->second,
                 static_cast<std::uint64_t>(pattern.size()), strand}, options);
-        }
-        return interval.size();
+            ++total;
+        });
+        return total;
     }
 
     MemSearchAlgorithm resolve_algorithm(MemSearchAlgorithm requested) const {
@@ -845,18 +967,24 @@ struct SuffixArray::Impl {
         return requested;
     }
 
-    SuffixRange suffix_link_interval(SuffixRange previous, std::uint64_t depth) const {
-        if (previous.empty() || depth <= 1) return {};
+    SuffixRange suffix_link_interval(
+        SuffixRange previous,
+        std::uint64_t depth,
+        std::uint32_t shift = 1) const {
+        if (previous.empty() || depth <= shift) return {};
         const auto left_suffix = sa_value(suffix_array, previous.begin);
         const auto right_suffix = sa_value(suffix_array, previous.end - 1);
-        if (left_suffix + 1 >= text.size() || right_suffix + 1 >= text.size()) return {};
-        auto left = std::min(isa[static_cast<std::size_t>(left_suffix + 1)],
-                             isa[static_cast<std::size_t>(right_suffix + 1)]);
-        auto right = std::max(isa[static_cast<std::size_t>(left_suffix + 1)],
-                              isa[static_cast<std::size_t>(right_suffix + 1)]) + 1;
-        const auto target = depth - 1;
+        if (left_suffix + shift >= text.size() || right_suffix + shift >= text.size()) return {};
+        const auto left_sample = (left_suffix + shift) / sampling_rate;
+        const auto right_sample = (right_suffix + shift) / sampling_rate;
+        if (left_sample >= isa.size() || right_sample >= isa.size()) return {};
+        auto left = std::min(isa[static_cast<std::size_t>(left_sample)],
+                             isa[static_cast<std::size_t>(right_sample)]);
+        auto right = std::max(isa[static_cast<std::size_t>(left_sample)],
+                              isa[static_cast<std::size_t>(right_sample)]) + 1;
+        const auto target = depth - shift;
         while (left > 0 && lcp[static_cast<std::size_t>(left)] >= target) --left;
-        while (right < text.size() && lcp[static_cast<std::size_t>(right)] >= target) ++right;
+        while (right < sa_size(suffix_array) && lcp[static_cast<std::size_t>(right)] >= target) ++right;
         return {left, right};
     }
 
@@ -936,6 +1064,97 @@ struct SuffixArray::Impl {
             run_begin = run_end;
         }
     }
+
+    void enumerate_sparse_one_strand(const std::vector<std::uint8_t>& query,
+        std::uint64_t original_query_length, Strand strand, std::uint64_t min_length,
+        MemSearchAlgorithm algorithm, SaSearchAlgorithm lookup_algorithm,
+        MemSearchStatistics* statistics, const MemCallback& callback) const {
+        if (min_length < sampling_rate)
+            throw Error(ErrorCode::invalid_input,
+                "sampled SA MEM search requires min_length >= sampling_rate");
+        const auto anchor_length = min_length - sampling_rate + 1;
+        std::size_t run_begin = 0;
+        while (run_begin < query.size()) {
+            while (run_begin < query.size() && query[run_begin] == detail::kSentinel) ++run_begin;
+            std::size_t run_end = run_begin;
+            while (run_end < query.size() && query[run_end] != detail::kSentinel) ++run_end;
+            for (std::uint32_t residue = 0; residue < sampling_rate; ++residue) {
+                const auto first = run_begin + residue;
+                if (first >= run_end) break;
+                SuffixRange previous{};
+                for (std::size_t anchor_position = first;
+                     anchor_position + anchor_length <= run_end;
+                     anchor_position += sampling_rate) {
+                    const std::vector<std::uint8_t> prefix(
+                        query.begin() + static_cast<std::ptrdiff_t>(anchor_position),
+                        query.begin() + static_cast<std::ptrdiff_t>(anchor_position + anchor_length));
+                    SuffixRange interval;
+                    const bool links = algorithm == MemSearchAlgorithm::suffix_link ||
+                                       algorithm == MemSearchAlgorithm::full;
+                    if (links && anchor_position != first && !previous.empty() &&
+                        anchor_length > sampling_rate) {
+                        if (statistics) ++statistics->suffix_link_attempts;
+                        interval = suffix_link_interval(previous, anchor_length, sampling_rate);
+                        for (std::uint64_t depth = anchor_length - sampling_rate;
+                             !interval.empty() && depth < anchor_length; ++depth)
+                            interval = narrow_char(interval, depth, prefix[static_cast<std::size_t>(depth)]);
+                        if (statistics && !interval.empty()) ++statistics->suffix_link_successes;
+                    }
+                    if (interval.empty()) {
+                        if (links && anchor_position != first && statistics)
+                            ++statistics->suffix_link_fallbacks;
+                        if (algorithm == MemSearchAlgorithm::child ||
+                            algorithm == MemSearchAlgorithm::full) {
+                            interval = child_range(prefix);
+                        } else {
+                            const auto selected = resolve_search_algorithm(
+                                lookup_algorithm, prefix.size());
+                            if (statistics) {
+                                ++statistics->lookup_calls;
+                                if (selected == SaSearchAlgorithm::sapling_pwl)
+                                    ++statistics->learned_lookup_calls;
+                                else ++statistics->binary_lookup_calls;
+                            }
+                            interval = range(prefix, selected,
+                                statistics ? &statistics->lookup : nullptr);
+                        }
+                    }
+                    previous = interval;
+                    for (std::uint64_t row = interval.begin; row < interval.end; ++row) {
+                        const auto sampled = sa_value(suffix_array, row);
+                        const auto mapped = detail::map_global_position(
+                            reference.sequences, sampled, anchor_length);
+                        if (!mapped) continue;
+                        const auto& sequence = reference.sequences[static_cast<std::size_t>(mapped->first)];
+                        const auto reference_begin = sequence.global_offset;
+                        const auto reference_end = reference_begin + sequence.length;
+                        std::uint64_t left = 0;
+                        while (left < sampling_rate && anchor_position > run_begin + left &&
+                               sampled > reference_begin + left &&
+                               query[anchor_position - static_cast<std::size_t>(left) - 1] ==
+                                   text[static_cast<std::size_t>(sampled - left - 1)])
+                            ++left;
+                        if (left == sampling_rate) continue;
+                        std::uint64_t right = anchor_length;
+                        while (anchor_position + right < run_end && sampled + right < reference_end &&
+                               query[anchor_position + static_cast<std::size_t>(right)] ==
+                                   text[static_cast<std::size_t>(sampled + right)])
+                            ++right;
+                        const auto length = left + right;
+                        if (length < min_length) continue;
+                        const auto query_start = anchor_position - static_cast<std::size_t>(left);
+                        const auto reference_start = sampled - left;
+                        const auto output_position = strand == Strand::reverse_complement
+                            ? original_query_length - (query_start + length)
+                            : static_cast<std::uint64_t>(query_start);
+                        callback({mapped->first, reference_start - reference_begin,
+                                  output_position, length, strand});
+                    }
+                }
+            }
+            run_begin = run_end;
+        }
+    }
 };
 
 SuffixArray::SuffixArray(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {}
@@ -945,6 +1164,7 @@ SuffixArray::~SuffixArray() = default;
 
 SuffixArray SuffixArray::build(const GenomeReference& reference, const SuffixArrayBuildOptions& options) {
     if (options.threads == 0) throw Error(ErrorCode::invalid_input, "suffix-array thread count must be greater than zero");
+    if (options.sampling_rate == 0) throw Error(ErrorCode::invalid_input, "SA sampling rate must be greater than zero");
     if (options.statistics) *options.statistics = {};
     auto impl = std::make_unique<Impl>();
     impl->reference = metadata_copy(reference.impl_->data);
@@ -969,45 +1189,74 @@ SuffixArray SuffixArray::build(const GenomeReference& reference, const SuffixArr
         options.coordinate_width,
         impl->text.size());
     const auto sa_begin = BuildClock::now();
+    const bool retain_lcp = options.acceleration != SaAcceleration::none;
+    const bool retain_isa = options.acceleration == SaAcceleration::lcp_suffix_link ||
+                            options.acceleration == SaAcceleration::full;
+    std::vector<std::uint64_t> backend_isa;
+    bool backend_reports_phases = false;
     if (backend == SaBackend::caps && width == CoordinateWidth::bits32) {
         if (impl->text.size() > static_cast<std::uint64_t>(std::numeric_limits<std::uint32_t>::max()))
             throw Error(ErrorCode::invalid_input, "reference is too large for CaPS-SA uint32_t");
-        impl->suffix_array = detail::build_caps32(impl->text, options.threads);
+        auto built = detail::build_caps32(impl->text, options.threads, retain_lcp);
+        impl->suffix_array = std::move(built.suffix_array);
+        impl->lcp = std::move(built.lcp);
         impl->backend = detail::StoredBackend::caps32;
     } else if (backend == SaBackend::caps && width == CoordinateWidth::bits64) {
-        impl->suffix_array = detail::build_caps64(impl->text, options.threads);
+        auto built = detail::build_caps64(impl->text, options.threads, retain_lcp);
+        impl->suffix_array = std::move(built.suffix_array);
+        impl->lcp = std::move(built.lcp);
         impl->backend = detail::StoredBackend::caps64;
     } else if (backend == SaBackend::divsufsort && width == CoordinateWidth::bits32) {
-        if (impl->text.size() > static_cast<std::size_t>(std::numeric_limits<saidx_t>::max()))
-            throw Error(ErrorCode::invalid_input, "reference is too large for divsufsort32");
-        Sa32 values(impl->text.size());
-        if (divsufsort(reinterpret_cast<const sauchar_t*>(impl->text.data()), reinterpret_cast<saidx_t*>(values.data()),
-                static_cast<saidx_t>(impl->text.size())) != 0) throw Error(ErrorCode::build_failure, "divsufsort32 failed");
-        impl->suffix_array = std::move(values);
+        auto built = detail::build_divsufsort32(
+            impl->text, options.sampling_rate, retain_lcp, retain_isa, options.threads);
+        if (options.statistics) {
+            options.statistics->sa_seconds = built.sa_seconds;
+            options.statistics->isa_seconds = built.isa_seconds;
+            options.statistics->lcp_seconds = built.lcp_seconds;
+        }
+        backend_reports_phases = true;
+        impl->suffix_array = std::move(built.suffix_array);
+        impl->lcp = std::move(built.lcp);
+        backend_isa = std::move(built.isa);
         impl->backend = detail::StoredBackend::divsufsort32;
     } else if (backend == SaBackend::divsufsort && width == CoordinateWidth::bits64) {
-        if (impl->text.size() > static_cast<std::size_t>(std::numeric_limits<saidx64_t>::max()))
-            throw Error(ErrorCode::invalid_input, "reference is too large for divsufsort64");
-        Sa64 values(impl->text.size());
-        if (divsufsort64(reinterpret_cast<const sauchar_t*>(impl->text.data()), reinterpret_cast<saidx64_t*>(values.data()),
-                static_cast<saidx64_t>(impl->text.size())) != 0) throw Error(ErrorCode::build_failure, "divsufsort64 failed");
-        impl->suffix_array = std::move(values);
+        auto built = detail::build_divsufsort64(
+            impl->text, options.sampling_rate, retain_lcp, retain_isa, options.threads);
+        if (options.statistics) {
+            options.statistics->sa_seconds = built.sa_seconds;
+            options.statistics->isa_seconds = built.isa_seconds;
+            options.statistics->lcp_seconds = built.lcp_seconds;
+        }
+        backend_reports_phases = true;
+        impl->suffix_array = std::move(built.suffix_array);
+        impl->lcp = std::move(built.lcp);
+        backend_isa = std::move(built.isa);
         impl->backend = detail::StoredBackend::divsufsort64;
     } else throw Error(ErrorCode::invalid_input, "invalid suffix-array coordinate width");
-    if (options.statistics) options.statistics->sa_seconds = build_elapsed(sa_begin);
+    impl->sampling_rate = options.sampling_rate;
+    if (backend == SaBackend::caps && impl->sampling_rate > 1) {
+        if (!impl->lcp.empty()) sample_sa_lcp(impl->suffix_array, impl->lcp, impl->sampling_rate);
+        else sample_sa(impl->suffix_array, impl->sampling_rate);
+    }
+    if (options.statistics && !backend_reports_phases)
+        options.statistics->sa_seconds = build_elapsed(sa_begin);
 
     impl->acceleration = options.acceleration;
-    std::vector<std::uint64_t> temporary_isa;
-    if (options.acceleration != SaAcceleration::none || options.learned_index.enabled) {
+    std::vector<std::uint64_t> temporary_isa = std::move(backend_isa);
+    if (((retain_lcp && impl->lcp.empty()) || retain_isa) && temporary_isa.empty()) {
         const auto begin = BuildClock::now();
-        temporary_isa = build_isa(impl->suffix_array, options.threads);
+        temporary_isa = build_isa(
+            impl->suffix_array, impl->text.size(), impl->sampling_rate, options.threads);
         if (options.statistics) options.statistics->isa_seconds = build_elapsed(begin);
     }
-    if (options.acceleration != SaAcceleration::none) {
-        const auto lcp_begin = BuildClock::now();
-        impl->lcp = build_lcp(impl->text, impl->suffix_array, temporary_isa);
-        if (options.statistics) options.statistics->lcp_seconds = build_elapsed(lcp_begin);
-        if (options.acceleration == SaAcceleration::lcp_suffix_link || options.acceleration == SaAcceleration::full)
+    if (retain_lcp) {
+        if (impl->lcp.empty()) {
+            const auto lcp_begin = BuildClock::now();
+            impl->lcp = build_lcp(
+                impl->text, impl->suffix_array, temporary_isa, impl->sampling_rate);
+            if (options.statistics) options.statistics->lcp_seconds = build_elapsed(lcp_begin);
+        }
+        if (retain_isa)
             impl->isa = temporary_isa;
         if (options.acceleration == SaAcceleration::lcp_child || options.acceleration == SaAcceleration::full) {
             const auto child_begin = BuildClock::now();
@@ -1018,7 +1267,7 @@ SuffixArray SuffixArray::build(const GenomeReference& reference, const SuffixArr
     if (options.learned_index.enabled) {
         const auto learned_begin = BuildClock::now();
         impl->learned = build_learned_index(
-            impl->reference, impl->text, temporary_isa,
+            impl->reference, impl->text, impl->suffix_array,
             static_cast<std::uint8_t>(width), options.learned_index);
         if (options.statistics)
             options.statistics->learned_index_seconds = build_elapsed(learned_begin);
@@ -1027,8 +1276,10 @@ SuffixArray SuffixArray::build(const GenomeReference& reference, const SuffixArr
     const auto lcp_bytes = impl->lcp.size() * (impl->text.size() <= std::numeric_limits<std::uint32_t>::max() ? 4ULL : 8ULL);
     const auto aux_bytes = impl->isa.size() * width_bytes + lcp_bytes +
         impl->child.size() * width_bytes;
-    impl->index_info = built_info(impl->reference, impl->backend, static_cast<std::uint8_t>(width), impl->text.size(),
-                                  impl->acceleration, aux_bytes, impl->learned);
+    impl->index_info = built_info(
+        impl->reference, impl->backend, static_cast<std::uint8_t>(width), impl->text.size(),
+        sa_size(impl->suffix_array), impl->sampling_rate,
+        impl->acceleration, aux_bytes, impl->learned);
     return SuffixArray(std::move(impl));
 }
 
@@ -1040,6 +1291,9 @@ SuffixRange SuffixArray::equal_range(
     std::string_view pattern,
     SaSearchAlgorithm algorithm,
     SaSearchStatistics* statistics) const {
+    if (impl_->sampling_rate != 1)
+        throw Error(ErrorCode::unsupported_backend,
+            "equal_range is not representable as one interval for a sampled suffix array; use count or locate");
     return impl_->range(detail::encode_pattern(pattern), algorithm, statistics);
 }
 
@@ -1053,12 +1307,12 @@ std::uint64_t SuffixArray::count(
     SaSearchAlgorithm algorithm,
     SaSearchStatistics* statistics) const {
     const auto encoded = detail::encode_pattern(pattern);
-    if (strands == StrandMode::forward) return impl_->range(encoded, algorithm, statistics).size();
+    if (strands == StrandMode::forward) return impl_->exact_count(encoded, algorithm, statistics);
     const auto reverse = detail::reverse_complement(encoded);
-    if (strands == StrandMode::reverse_complement) return impl_->range(reverse, algorithm, statistics).size();
-    if (encoded == reverse) return impl_->range(encoded, algorithm, statistics).size();
-    return impl_->range(encoded, algorithm, statistics).size() +
-           impl_->range(reverse, algorithm, statistics).size();
+    if (strands == StrandMode::reverse_complement) return impl_->exact_count(reverse, algorithm, statistics);
+    if (encoded == reverse) return impl_->exact_count(encoded, algorithm, statistics);
+    return impl_->exact_count(encoded, algorithm, statistics) +
+           impl_->exact_count(reverse, algorithm, statistics);
 }
 
 QueryResult SuffixArray::locate(std::string_view pattern, const LocateOptions& options) const {
@@ -1095,13 +1349,19 @@ void SuffixArray::for_each_mem(std::string_view query, const MemOptions& options
     if (options.statistics) *options.statistics = {};
     const auto encoded = encode_mem_query(query);
     const auto algorithm = impl_->resolve_algorithm(options.algorithm);
+    const auto enumerate = [&](const std::vector<std::uint8_t>& value, Strand strand) {
+        if (impl_->sampling_rate == 1)
+            impl_->enumerate_one_strand(value, encoded.size(), strand, options.min_length,
+                                       algorithm, options.lookup_algorithm, options.statistics, callback);
+        else
+            impl_->enumerate_sparse_one_strand(value, encoded.size(), strand, options.min_length,
+                                              algorithm, options.lookup_algorithm, options.statistics, callback);
+    };
     if (options.strands == StrandMode::forward || options.strands == StrandMode::both)
-        impl_->enumerate_one_strand(encoded, encoded.size(), Strand::forward, options.min_length,
-                                   algorithm, options.lookup_algorithm, options.statistics, callback);
+        enumerate(encoded, Strand::forward);
     if (options.strands == StrandMode::reverse_complement || options.strands == StrandMode::both) {
         const auto reverse = reverse_complement_mem(encoded);
-        impl_->enumerate_one_strand(reverse, encoded.size(), Strand::reverse_complement, options.min_length,
-                                   algorithm, options.lookup_algorithm, options.statistics, callback);
+        enumerate(reverse, Strand::reverse_complement);
     }
 }
 
@@ -1126,7 +1386,12 @@ SaAcceleration SuffixArray::acceleration() const noexcept { return impl_->accele
 SaLookupAcceleration SuffixArray::lookup_acceleration() const noexcept {
     return impl_->has_learned() ? SaLookupAcceleration::sapling_pwl : SaLookupAcceleration::binary;
 }
-Position SuffixArray::suffix_at(std::uint64_t row) const { return sa_value(impl_->suffix_array, row); }
+std::uint32_t SuffixArray::sampling_rate() const noexcept { return impl_->sampling_rate; }
+Position SuffixArray::suffix_at(std::uint64_t row) const {
+    if (row >= sa_size(impl_->suffix_array))
+        throw Error(ErrorCode::invalid_input, "suffix-array row is out of range");
+    return sa_value(impl_->suffix_array, row);
+}
 
 SequenceInfo SuffixArray::sequence_info(SequenceId id) const {
     const auto index = static_cast<std::size_t>(id);
@@ -1138,7 +1403,7 @@ IndexInfo SuffixArray::info() const { return impl_->index_info; }
 
 void SuffixArray::save(const std::filesystem::path& path, const SaveOptions& options) const {
     detail::ContainerSpec spec;
-    spec.format_minor = impl_->has_learned() ? 2 :
+    spec.format_minor = impl_->sampling_rate > 1 ? 3 : impl_->has_learned() ? 2 :
         (impl_->acceleration == SaAcceleration::none ? 0 : 1);
     spec.kind = IndexKind::suffix_array;
     spec.backend = impl_->backend;
@@ -1174,6 +1439,11 @@ void SuffixArray::save(const std::filesystem::path& path, const SaveOptions& opt
         [&](std::ostream& out) {
             write_learned_index(out, impl_->learned, spec.coordinate_width, impl_->reference.fingerprint);
         }});
+    if (impl_->sampling_rate > 1) writers.push_back({detail::SectionType::sa_sampling,
+        [&](std::ostream& out) {
+            detail::write_u32(out, impl_->sampling_rate);
+            detail::write_u64(out, sa_size(impl_->suffix_array));
+        }});
     detail::write_container(path, options, spec, writers);
 }
 
@@ -1204,10 +1474,35 @@ SuffixArray SuffixArray::load(const std::filesystem::path& path) {
     }
     if (detail::content_fingerprint(impl->text.data(), impl->text.size() - 1) != impl->reference.fingerprint)
         throw Error(ErrorCode::corrupt_index, "suffix-array text fingerprint mismatch");
+    const auto has_section = [&](detail::SectionType type) {
+        return std::any_of(container.sections.begin(), container.sections.end(),
+            [type](const auto& section) { return section.type == type; });
+    };
+    if (has_section(detail::SectionType::sa_sampling)) {
+        if (container.spec.format_minor < 3)
+            throw Error(ErrorCode::corrupt_index, "sampled SA data requires sufidx format 1.3");
+        auto sampling_input = detail::open_section_stream(container, detail::SectionType::sa_sampling);
+        impl->sampling_rate = detail::read_u32(*sampling_input, "SA sampling rate");
+        const auto recorded_count = detail::read_u64(*sampling_input, "sampled suffix count");
+        if (impl->sampling_rate <= 1)
+            throw Error(ErrorCode::corrupt_index, "invalid SA sampling rate");
+        const auto expected = sampled_suffix_count(impl->text.size(), impl->sampling_rate);
+        if (recorded_count != expected || sampling_input->peek() != std::char_traits<char>::eof())
+            throw Error(ErrorCode::corrupt_index, "invalid sampled SA metadata");
+    }
     auto sa_input = detail::open_section_stream(container, detail::SectionType::suffix_array);
     const auto count = detail::read_u64(*sa_input, "suffix-array length");
-    if (count != impl->text.size()) throw Error(ErrorCode::corrupt_index, "suffix-array length does not match text length");
+    const auto expected_count = sampled_suffix_count(impl->text.size(), impl->sampling_rate);
+    if (count != expected_count) throw Error(ErrorCode::corrupt_index, "suffix-array length does not match sampling metadata");
     std::vector<bool> seen(static_cast<std::size_t>(count), false);
+    const auto accept_position = [&](std::uint64_t raw) {
+        if (raw >= impl->text.size() || raw % impl->sampling_rate != 0)
+            throw Error(ErrorCode::corrupt_index, "suffix array contains a non-sampled position");
+        const auto sample = raw / impl->sampling_rate;
+        if (sample >= count || seen[static_cast<std::size_t>(sample)])
+            throw Error(ErrorCode::corrupt_index, "suffix array is not a sampled permutation");
+        seen[static_cast<std::size_t>(sample)] = true;
+    };
     const bool backend_is_32 = container.spec.backend == detail::StoredBackend::divsufsort32 ||
                                container.spec.backend == detail::StoredBackend::caps32;
     const bool backend_is_caps = container.spec.backend == detail::StoredBackend::caps32 ||
@@ -1218,16 +1513,14 @@ SuffixArray SuffixArray::load(const std::filesystem::path& path) {
             CapsSa32 values(static_cast<std::size_t>(count));
             for (auto& value : values) {
                 const auto raw = detail::read_u32(*sa_input, "suffix-array value");
-                if (raw >= count || seen[raw]) throw Error(ErrorCode::corrupt_index, "suffix array is not a permutation");
-                seen[raw] = true; value = raw;
+                accept_position(raw); value = raw;
             }
             impl->suffix_array = std::move(values);
         } else {
             Sa32 values(static_cast<std::size_t>(count));
             for (auto& value : values) {
                 const auto raw = detail::read_u32(*sa_input, "suffix-array value");
-                if (raw >= count || seen[raw]) throw Error(ErrorCode::corrupt_index, "suffix array is not a permutation");
-                seen[raw] = true; value = static_cast<std::int32_t>(raw);
+                accept_position(raw); value = static_cast<std::int32_t>(raw);
             }
             impl->suffix_array = std::move(values);
         }
@@ -1237,26 +1530,20 @@ SuffixArray SuffixArray::load(const std::filesystem::path& path) {
             CapsSa64 values(static_cast<std::size_t>(count));
             for (auto& value : values) {
                 const auto raw = detail::read_u64(*sa_input, "suffix-array value");
-                if (raw >= count || seen[static_cast<std::size_t>(raw)]) throw Error(ErrorCode::corrupt_index, "suffix array is not a permutation");
-                seen[static_cast<std::size_t>(raw)] = true; value = raw;
+                accept_position(raw); value = raw;
             }
             impl->suffix_array = std::move(values);
         } else {
             Sa64 values(static_cast<std::size_t>(count));
             for (auto& value : values) {
                 const auto raw = detail::read_u64(*sa_input, "suffix-array value");
-                if (raw >= count || seen[static_cast<std::size_t>(raw)]) throw Error(ErrorCode::corrupt_index, "suffix array is not a permutation");
-                seen[static_cast<std::size_t>(raw)] = true; value = static_cast<std::int64_t>(raw);
+                accept_position(raw); value = static_cast<std::int64_t>(raw);
             }
             impl->suffix_array = std::move(values);
         }
     }
     if (sa_input->peek() != std::char_traits<char>::eof()) throw Error(ErrorCode::corrupt_index, "suffix-array section has trailing bytes");
 
-    const auto has_section = [&](detail::SectionType type) {
-        return std::any_of(container.sections.begin(), container.sections.end(),
-            [type](const auto& section) { return section.type == type; });
-    };
     const bool has_isa = has_section(detail::SectionType::inverse_suffix_array);
     const bool has_lcp = has_section(detail::SectionType::lcp);
     const bool has_child = has_section(detail::SectionType::child);
@@ -1276,7 +1563,7 @@ SuffixArray SuffixArray::load(const std::filesystem::path& path) {
                                         container.spec.coordinate_width, "inverse suffix array");
         for (std::uint64_t position = 0; position < count; ++position) {
             const auto row = impl->isa[static_cast<std::size_t>(position)];
-            if (row >= count || sa_value(impl->suffix_array, row) != position)
+            if (row >= count || sa_value(impl->suffix_array, row) != position * impl->sampling_rate)
                 throw Error(ErrorCode::corrupt_index, "inverse suffix array is inconsistent with suffix array");
         }
     }
@@ -1288,7 +1575,8 @@ SuffixArray SuffixArray::load(const std::filesystem::path& path) {
         for (std::uint64_t row = 1; row < count; ++row) {
             const auto suffix = sa_value(impl->suffix_array, row);
             const auto previous = sa_value(impl->suffix_array, row - 1);
-            if (impl->lcp[static_cast<std::size_t>(row)] > std::min(count - suffix, count - previous))
+            if (impl->lcp[static_cast<std::size_t>(row)] >
+                std::min(impl->text.size() - suffix, impl->text.size() - previous))
                 throw Error(ErrorCode::corrupt_index, "LCP value exceeds suffix bounds");
         }
     }
@@ -1302,6 +1590,9 @@ SuffixArray SuffixArray::load(const std::filesystem::path& path) {
     }
     if (has_learned) impl->learned = read_learned_index(container, count);
     impl->index_info = detail::index_info_from_container(container);
+    if (impl->index_info.sa_sampling_rate != impl->sampling_rate ||
+        impl->index_info.suffix_count != count)
+        throw Error(ErrorCode::corrupt_index, "sampled SA metadata is inconsistent");
     impl->index_info.sa_acceleration = impl->acceleration;
     const auto width_bytes = static_cast<std::uint64_t>(container.spec.coordinate_width / 8);
     const auto lcp_bytes = impl->lcp.size() *

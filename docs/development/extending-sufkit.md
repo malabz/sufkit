@@ -14,9 +14,10 @@ local implementation detail from becoming an incompatible public format.
 4. Keep third-party headers in private source and record fixed revision,
    license, and patches.
 5. Feed the common encoded text including one sentinel and produce a complete
-   generic SA permutation.
-6. Route into the common ISA/LCP/CHILD/PWL pipeline; do not fork query
-   semantics.
+   generic SA permutation before any optional text-position compaction.
+6. Route into the common ISA/LCP/CHILD/PWL semantics. A backend may return
+   validated ISA/LCP phase data to avoid redundant work, but must not fork
+   persisted or query semantics.
 7. Assign permanent stored backend IDs/signatures if constructor provenance is
    persisted. Confirm whether old builds can read the generic payload.
 8. Add availability descriptors, CLI values, inspection, save/load, disabled
@@ -25,6 +26,8 @@ local implementation detail from becoming an incompatible public format.
    serialization, and concurrency against divsufsort.
 10. Add an isolated constructor benchmark with time, CPU, peak RSS, checksum,
     threads, and explicit auto-routing evidence.
+11. Verify K=1 and sampled K>1 paths, including backend-provided LCP, against
+    the same exact/MEM checksums.
 
 CaPS is the reference example: optional compile-time availability, private
 Parlay scheduler, stable IDs 3/4, generic payload, and a conservative 1 GiB

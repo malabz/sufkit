@@ -190,11 +190,11 @@ struct LearnedSaOptions {
 
 /** Optional phase timings written by SuffixArray::build(). */
 struct SuffixArrayBuildStatistics {
-    /** Complete-SA constructor wall time in seconds. */
+    /** Backend complete-SA construction plus optional in-adapter compaction. */
     double sa_seconds = 0.0;
     /** ISA construction wall time in seconds. */
     double isa_seconds = 0.0;
-    /** Kasai LCP construction wall time in seconds. */
+    /** LCP construction/retention wall time; algorithm is backend-dependent. */
     double lcp_seconds = 0.0;
     /** CHILD construction wall time in seconds. */
     double child_seconds = 0.0;
@@ -210,6 +210,12 @@ struct SuffixArrayBuildOptions {
     CoordinateWidth coordinate_width = CoordinateWidth::auto_select;
     /** Positive build thread count; divsufsort itself remains serial. */
     std::uint32_t threads = 1;
+    /**
+     * Keep suffixes whose text position is divisible by this positive value.
+     * One stores the complete suffix array. Sampling reduces resident and
+     * serialized SA memory, but not full-SA constructor peak memory.
+     */
+    std::uint32_t sampling_rate = 1;
     /** Persisted ESA layout; defaults to SA+ISA+LCP. */
     SaAcceleration acceleration = SaAcceleration::lcp_suffix_link;
     /** Independent optional learned exact-lookup configuration. */
@@ -390,6 +396,10 @@ struct IndexInfo {
     std::uint64_t total_bases = 0;
     /** Number of logical indexed symbols including the sentinel. */
     std::uint64_t text_symbols = 0;
+    /** Number of stored suffix rows after optional text-position sampling. */
+    std::uint64_t suffix_count = 0;
+    /** Text-position sampling rate; one denotes a complete suffix array. */
+    std::uint32_t sa_sampling_rate = 1;
     /** Number of normalized N bases. */
     std::uint64_t ambiguous_bases = 0;
     /** FNV-1a-64 normalized-content fingerprint. */

@@ -47,6 +47,7 @@ every canonical example. Generated HTML is not committed.
 |---|---|
 | Reference model | Plain/gzip parity, boundaries, normalized fingerprint |
 | SA constructor | Full order/permutation, 32/64 parity, exact/MEM parity |
+| SA sampling/LCP | K=1/K>1 order, sampled ISA/LCP, recovery parity, 1.3 corruption |
 | Exact algorithm | Range/count/sorted locate parity for all strands |
 | MEM algorithm | Brute-force random oracle plus all internal-mode parity |
 | FM backend/batch | Scalar/width/backend range, count, locate checksum parity |
@@ -70,7 +71,9 @@ every canonical example. Generated HTML is not committed.
 8. Confirm licenses and `THIRD_PARTY_NOTICES.md` cover every bundled source.
 9. Confirm no local paths, hostnames, build products, raw benchmark TSVs,
    generated HTML, or plans are tracked.
-10. Create commit, tag, push, or release only with explicit authorization.
+10. Run sampled-SA differential tests and confirm formats 1.0-1.3 remain
+    readable whenever SA sampling or LCP construction changes.
+11. Create commit, tag, push, or release only with explicit authorization.
 
 ## Documentation source of truth
 

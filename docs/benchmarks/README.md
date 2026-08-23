@@ -35,6 +35,25 @@ a 64 MiB global threshold. The current auto threshold remains 1 GiB.
 See [CaPS construction results](results/unreleased-caps.md) and
 [methodology](sa-construction-methodology.md).
 
+## Sampled standalone SA
+
+Unreleased 1 MiB smoke evidence with `acceleration=full`:
+
+| Builder | K | Stored rows | Peak RSS | Serialized size |
+|---|---:|---:|---:|---:|
+| divsufsort32 | 1 | 1,048,581 | 40.74 MiB | 17.83 MB |
+| divsufsort32 | 8 | 131,073 | 9.06 MiB | 3.15 MB |
+| CaPS32 | 1 | 1,048,581 | 40.87 MiB | 17.83 MB |
+| CaPS32 | 8 | 131,073 | 24.80 MiB | 3.15 MB |
+
+K=8 reduced the serialized full-ESA index by 82.3%. The divsufsort worker RSS
+fell 77.8% because sampled auxiliaries are built after compaction; CaPS still
+must own complete SA/LCP and working data first. This one-repetition smoke run
+is correctness and memory-shape evidence, not a stable build-time claim.
+
+See [sampled-SA results](results/unreleased-sampled-sa.md) and the
+[algorithm contract](../concepts/sampled-suffix-arrays.md).
+
 ## Exact suffix-array lookup
 
 Unreleased 4 MiB quick results; QPS aggregates selected pattern lengths and

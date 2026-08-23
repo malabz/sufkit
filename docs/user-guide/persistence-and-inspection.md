@@ -26,11 +26,12 @@ delete an existing target.
 | 1.0 | SA-only or FM container using existing header fields |
 | 1.1 | Optional ISA, LCP, and CHILD SA sections |
 | 1.2 | Optional learned-SA section, independently combinable with legal ESA layouts |
+| 1.3 | Text-position sampled SA metadata and sampled row payload |
 
-The current reader accepts all three. SA-only output remains 1.0, an auxiliary
-SA without PWL uses 1.1, and a learned SA uses 1.2. FM alternatives use the
-existing 1.0 outer layout because backend identity is already stored in the
-header.
+The current reader accepts all four. SA-only output remains 1.0, an auxiliary
+SA without PWL uses 1.1, and a learned SA uses 1.2. Any SA with K>1 uses 1.3.
+FM alternatives use the existing 1.0 outer layout because backend identity is
+already stored in the header.
 
 Backend IDs are permanent. divsufsort32/64 are 1/2, CaPS32/64 are 3/4, SDSL
 Huffman/balanced/reserved Sada/EPR are 10/11/12/13.
@@ -44,6 +45,7 @@ Before returning an index, loading checks:
 - section bounds, overlap, required/unknown sections, and integer overflow;
 - metadata IDs, names, offsets, lengths, ambiguous counts, and fingerprint;
 - text/sentinel length and SA permutation;
+- sampled rate/count and divisibility/permutation constraints;
 - legal ISA/LCP/CHILD combinations and internal consistency;
 - learned model ID, widths, monotonic anchors, terminal anchor, and budget
   metadata; and
@@ -69,6 +71,7 @@ Important fields:
 | `sdsl_version` | Required native payload version for FM indexes |
 | `coordinate_width` | Stored SA-style row width |
 | `total_bases` / `text_symbols` | Biological bases and logical encoded symbols |
+| `suffix_count` / `sa_sampling_rate` | Stored SA rows and text-position sampling rate |
 | `fingerprint` | FNV-1a-64 normalized-content fingerprint |
 | `auxiliary_bytes` | Persisted ISA/LCP/CHILD payload bytes |
 | `lookup_acceleration` | Binary or Sapling PWL capability |

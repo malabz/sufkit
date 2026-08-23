@@ -12,6 +12,7 @@ operation first, then by build time, query throughput, and memory budget.
 | MEM search | SA+ISA+LCP | Suffix-link MEM is the current default and strongest general path |
 | Direct SA row access or ESA research | Standalone SA | Exposes `suffix_at` and supports optional auxiliary structures |
 | Large, multithreaded SA construction | CaPS-SA | Shared-memory parallel construction; measure peak memory first |
+| Smaller resident/serialized standalone SA | Text-position sampled SA | Complete exact/MEM results with extra query work and constraints |
 | Experimental exact lookup acceleration | SA + Sapling PWL | Can narrow binary search for patterns at least model k |
 | Suffix-tree-style interval research | SA+LCP+CHILD | Explicit capability; not an automatic performance choice |
 
@@ -44,6 +45,18 @@ An explicit `caps` request never silently falls back. A build with
 
 The coordinate width affects the stored SA/ISA/CHILD rows. Public reference
 coordinates remain `uint64_t`.
+
+## Complete or sampled standalone SA
+
+Sampling rate K is independent of constructor and coordinate width. K=1 is the
+complete-SA default. K>1 retains suffix positions divisible by K, so final SA
+and row-based auxiliaries use approximately 1/K the entries.
+
+Use sampling when loaded memory or serialized size matters more than the extra
+residue recovery work. It does not reduce the complete-SA construction peak.
+Exact count/locate remain complete; patterns shorter than K use a direct
+contig scan, `equal_range` is unavailable, and MEM requires `min_length>=K`.
+See [sampled suffix arrays](../concepts/sampled-suffix-arrays.md).
 
 ## SA acceleration layout
 

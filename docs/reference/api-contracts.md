@@ -22,11 +22,17 @@ may be called concurrently.
 - MEM query non-ACGT symbols are hard breaks.
 - `min_length=0`, `threads=0`, invalid widths, budgets, batch widths, and
   incompatible explicit algorithms are rejected.
+- `sampling_rate=0` is rejected; sampled MEM also rejects `min_length < K`.
 
 ## Ranges and coordinates
 
 `SuffixRange` is half-open and `size()` is `end-begin`. Empty searches return
 `[0,0)` and do not expose a lexical insertion point.
+
+For complete standalone SA, `equal_range` returns one SA interval. For sampled
+SA (`sampling_rate>1`) complete exact results span residue-specific intervals,
+so `equal_range` explicitly returns `unsupported_backend`; use `count` or
+`locate` instead.
 
 `Match::position` and `MemMatch::reference_position` are zero-based,
 contig-local positions. `MemMatch::query_position` is zero-based in the
@@ -75,6 +81,20 @@ availability and implementation signatures. A reserved name can be reported
 unavailable. Availability is runtime-visible build metadata, not permission
 to silently replace an explicit request.
 
+## Sampled standalone SA
+
+`SuffixArrayBuildOptions::sampling_rate=K` keeps text positions divisible by
+K. `SuffixArray::sampling_rate()` reports the effective K. `IndexInfo` keeps
+logical text length and stored row count separate:
+
+- `text_symbols`: encoded text plus sentinel;
+- `suffix_count`: retained SA rows;
+- `sa_sampling_rate`: K.
+
+`suffix_at(row)` addresses `[0,suffix_count)`. Exact count/locate preserve
+complete results through residue recovery; patterns shorter than K use a
+correct per-contig scan. MEM requires `min_length>=K`.
+
 ## Complexity notes
 
 Complexity depends on backend and result size. High-level guidance:
@@ -83,7 +103,8 @@ Complexity depends on backend and result size. High-level guidance:
 - LCP-aware/PWL/CHILD: same result with workload-dependent comparison savings;
 - FM range: O(m) rank transitions at the abstract level;
 - locate: at least O(z) result work plus backend recovery;
-- Kasai LCP and ISA: O(n);
+- Complete or sampled generalized Kasai LCP and ISA: O(n) construction work,
+  with O(ceil(n/K)) persisted rows for sampling rate K;
 - MEM: depends on query positions, interval reuse success, repeats, and output
   size; use statistics and benchmark representative queries.
 

@@ -22,8 +22,29 @@ min(8192, max(1, symbols/4096), max(1, 128*threads))
 ```
 
 Each build uses a private Parlay scheduler and does not read or modify
-`PARLAY_NUM_THREADS`. CaPS's internal merge LCP is discarded; sufkit's common
-ISA/Kasai LCP/CHILD pipeline determines persisted auxiliary data.
+`PARLAY_NUM_THREADS`. When an acceleration needs LCP, sufkit retains the LCP
+already produced by CaPS merge stages rather than running a second Kasai pass.
+ISA and CHILD remain part of the common auxiliary pipeline. With sampling,
+complete CaPS LCP is compacted by taking the interval minimum between adjacent
+retained rows.
+
+The private divsufsort adapter constructs the complete SA, compacts it when
+requested, and returns sampled ISA/LCP phase data to the common builder. This
+avoids rebuilding ISA/LCP after backend dispatch. divsufsort itself remains
+serial; threads apply only to safe auxiliary work.
+
+## Standalone-SA sampling
+
+`SuffixArrayBuildOptions::sampling_rate=K` is orthogonal to constructor,
+coordinate width, ESA acceleration, and PWL lookup. K=1 stores every suffix.
+K>1 retains text positions divisible by K and reduces stored SA/ISA/LCP/CHILD
+rows to `ceil(n/K)`.
+
+Both backends still form the complete suffix order before compaction. Sampling
+therefore reduces loaded/serialized size, not the fundamental full-SA
+constructor peak. Exact count/locate and MEM recover complete results; direct
+`equal_range` is unavailable for sampled SA because the result is not one row
+interval. See [sampled suffix arrays](../concepts/sampled-suffix-arrays.md).
 
 ## FM-index backends
 
@@ -49,6 +70,9 @@ not exposed. A template or sampling-density change requires a new backend ID.
 | LCP MEM | SA+LCP | Auto after suffix-link is unavailable |
 | Suffix-link MEM | SA+ISA+LCP | Default SA build and MEM auto choice |
 | CHILD/full MEM | CHILD combinations | Explicit only |
+
+For a sampled SA, all row-based accelerations operate over sampled order.
+Sampled MEM additionally requires `min_length >= K`.
 
 See [index selection](../getting-started/choosing-an-index.md) and the
 [benchmark summary](../benchmarks/README.md) for policy evidence.

@@ -17,16 +17,17 @@ reference text → suffixes sorted by content → SA rows
 pattern        → lower bound + upper bound → matching SA interval
 ```
 
-sufkit provides two complete-SA constructors:
+sufkit provides two constructors that first establish a complete suffix order:
 
 - libdivsufsort32/64: serial, mature, and generally preferable for small or
   medium references;
 - CaPS-SA32/64: shared-memory parallel construction for large references.
 
-Both receive identical encoded text and produce the same suffix order. CaPS
-internally computes LCP information during merging, but sufkit intentionally
-discards it and runs the common post-SA pipeline. Constructor choice therefore
-does not change exact or MEM semantics.
+Both receive identical encoded text and produce the same suffix order. When
+LCP is requested, CaPS exposes the vector already computed by its merge stages;
+divsufsort uses a private adapter that constructs ISA/LCP after sorting without
+a second common-pipeline pass. Constructor choice does not change exact or MEM
+semantics.
 
 Construction is generally O(n) or near-linear in practical suffix sorters;
 the public contract promises correctness and width limits rather than one
@@ -45,6 +46,23 @@ row probes and result interval.
 `locate` visits the matched SA rows, maps them to contigs, and sorts results,
 so its lower bound includes O(z) output work regardless of range-search speed.
 
+## Text-position sampled SA
+
+With sampling rate K, sufkit retains suffixes whose logical-text position is
+divisible by K. The stored order is a subsequence of the complete SA and has
+approximately n/K rows. ISA, LCP, CHILD, and PWL are defined over this sampled
+row domain.
+
+Exact matches are recovered over all K residue classes. MEMs are anchored on
+sampled reference positions and extended to their true maximal boundaries.
+The trade-off is additional query work and `min_length>=K` for MEM. Because
+one exact result becomes a union of intervals, sampled SA cannot expose a
+single `equal_range`.
+
+Both backends still create a complete SA before compaction. Sampling reduces
+the loaded and serialized index, not full-SA constructor peak memory. See
+[sampled suffix arrays](sampled-suffix-arrays.md) for the full contract.
+
 ## ISA and LCP
 
 The inverse suffix array satisfies:
@@ -53,8 +71,11 @@ The inverse suffix array satisfies:
 ISA[SA[row]] = row
 ```
 
-LCP stores the common-prefix length of adjacent suffixes, with `LCP[0]=0`.
-sufkit constructs it with the linear Kasai algorithm using SA and ISA.
+LCP stores the common-prefix length of adjacent stored suffixes, with
+`LCP[0]=0`. The divsufsort path constructs it with a linear generalized Kasai
+scan using SA and ISA. For sampled positions, the retained common prefix is
+reduced by K per text step. CaPS instead retains its merge-built complete LCP;
+sampling compacts it by range minima between retained rows.
 
 LCP supports interval reasoning and reduces repeated comparisons. ISA enables
 moving from a text position back to the row of its suffix, which is central to

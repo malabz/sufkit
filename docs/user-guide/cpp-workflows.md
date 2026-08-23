@@ -60,6 +60,19 @@ share one statistics object across concurrent calls. `threads` controls CaPS
 construction and parallelizable auxiliary work; divsufsort itself remains
 serial.
 
+Build a text-position sampled SA independently of constructor choice:
+
+```cpp
+sufkit::SuffixArrayBuildOptions sampled_options;
+sampled_options.sampling_rate = 4;
+sampled_options.acceleration = sufkit::SaAcceleration::lcp_suffix_link;
+auto sampled = sufkit::SuffixArray::build(reference, sampled_options);
+```
+
+`sampled.sampling_rate()` returns four and
+`sampled.info().suffix_count` is the retained row count. Use `count` or
+`locate`, not `equal_range`, and keep MEM `min_length` at least four.
+
 Enable the experimental PWL lookup independently:
 
 ```cpp

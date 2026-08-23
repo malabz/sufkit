@@ -13,6 +13,7 @@ under [`zh-CN/`](zh-CN/README.md).
 | Embed sufkit in C++ | [Installation](getting-started/installation.md) | [C++ workflows](user-guide/cpp-workflows.md), [API contracts](reference/api-contracts.md) |
 | Choose SA, CaPS, or an FM backend | [Choosing an index](getting-started/choosing-an-index.md) | [Backend reference](reference/backends.md), [performance tuning](user-guide/performance-tuning.md) |
 | Understand the algorithms | [Algorithm overview](concepts/algorithm-overview.md) | [Algorithm contracts](development/algorithm-contracts.md) |
+| Reduce standalone-SA resident size | [Sampled suffix arrays](concepts/sampled-suffix-arrays.md) | [Exact search](user-guide/exact-search.md), [sampled-SA results](benchmarks/results/unreleased-sampled-sa.md) |
 | Add a backend or search algorithm | [Architecture](development/architecture.md) | [Extending sufkit](development/extending-sufkit.md) |
 | Interpret performance claims | [Benchmark summary](benchmarks/README.md) | [Methodology](benchmarks/methodology.md), versioned result reports |
 | Understand `.sufidx` | [Persistence guide](user-guide/persistence-and-inspection.md) | [Format reference](reference/index-format-v1.md), [compatibility](reference/compatibility.md) |
@@ -39,6 +40,7 @@ under [`zh-CN/`](zh-CN/README.md).
 
 - [Genome data model](concepts/genome-data-model.md)
 - [Algorithm overview](concepts/algorithm-overview.md)
+- [Text-position sampled suffix arrays](concepts/sampled-suffix-arrays.md)
 - [API contracts](reference/api-contracts.md)
 - [Backend reference](reference/backends.md)
 - [Compatibility policy](reference/compatibility.md)
@@ -58,6 +60,7 @@ under [`zh-CN/`](zh-CN/README.md).
 - [Concise benchmark summary](benchmarks/README.md)
 - [Benchmark methodology](benchmarks/methodology.md)
 - [CaPS construction results](benchmarks/results/unreleased-caps.md)
+- [Sampled-SA development results](benchmarks/results/unreleased-sampled-sa.md)
 - [MEM 0.1.1 results](benchmarks/results/v0.1.1-mem.md)
 - [Sapling development results](benchmarks/results/unreleased-sapling.md)
 - [FM backend development results](benchmarks/results/unreleased-fm.md)

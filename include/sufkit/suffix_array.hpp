@@ -78,6 +78,8 @@ public:
      * Find the forward pattern row range using automatic binary/PWL selection.
      * @param pattern Non-empty case-insensitive A/C/G/T pattern.
      * @return Half-open matching range, or `[0,0)` when absent.
+     * @throws Error with unsupported_backend for a sampled SA because complete
+     *         matches span multiple residue-specific intervals.
      */
     SuffixRange equal_range(std::string_view pattern) const;
 
@@ -88,7 +90,8 @@ public:
      * @param algorithm Required range-search algorithm.
      * @param statistics Optional caller-owned output reset/populated by call.
      * @return Half-open matching range, or `[0,0)` when absent.
-     * @throws Error for invalid pattern or missing explicit capability.
+     * @throws Error for invalid pattern, missing explicit capability, or a
+     *         sampled SA whose result is not representable by one interval.
      */
     SuffixRange equal_range(
         std::string_view pattern,
@@ -177,10 +180,12 @@ public:
     SaAcceleration acceleration() const noexcept;
     /** @return Binary or present PWL lookup capability. */
     SaLookupAcceleration lookup_acceleration() const noexcept;
+    /** @return Text-position SA sampling rate; one denotes a complete SA. */
+    std::uint32_t sampling_rate() const noexcept;
 
     /**
      * Read a global logical-text position stored at one SA row.
-     * @param row Zero-based SA row.
+     * @param row Zero-based stored SA row in `[0,info().suffix_count)`.
      * @return Global encoded-text position, possibly separator/sentinel.
      * @throws Error with invalid_input when row is out of range.
      */

@@ -17,9 +17,11 @@ implementation suggestions.
 
 ## SA and auxiliary structures
 
-1. SA is a complete permutation of `[0,n)`.
+1. For K=1, SA is a complete permutation of `[0,n)`. For K>1 it is the
+   lexicographically sorted permutation of positions `p` satisfying `p%K=0`.
 2. Adjacent SA suffixes are lexicographically non-decreasing.
-3. `ISA[SA[row]]=row` for every row.
+3. Complete ISA satisfies `ISA[SA[row]]=row`; sampled ISA satisfies
+   `ISA[SA[row]/K]=row`.
 4. `LCP[0]=0`; each remaining LCP is bounded by both adjacent suffix lengths.
 5. CHILD indices are in range and reproduce the deterministic table derived
    from persisted LCP.
@@ -27,8 +29,12 @@ implementation suggestions.
    `SaAcceleration`.
 7. Constructor choice cannot alter SA order, auxiliary semantics, exact
    results, or MEM results.
-8. CaPS internal LCP is not persisted or substituted for the common Kasai
-   implementation without a separate compatibility decision.
+8. When LCP is requested, CaPS merge-built LCP is the authoritative complete
+   vector; sampling compacts it with interval minima. divsufsort uses the
+   generalized Kasai path in its private adapter.
+9. `suffix_count=ceil(text_symbols/K)` and every stored suffix is divisible by
+   positive sampling rate K.
+10. Sampling cannot alter recovered exact count/locate or MEM result sets.
 
 ## Learned model
 
@@ -52,6 +58,8 @@ implementation suggestions.
 6. Both-strand exact palindromes are returned once per coordinate with strand
    `both`.
 7. `total_hits` is complete even when retained hits are bounded.
+8. Sampled count/locate search all residue classes, while sampled
+   `equal_range` fails explicitly because no single interval represents them.
 
 ## MEM
 
@@ -64,6 +72,8 @@ implementation suggestions.
    multiset.
 7. Invalid reuse always returns to a correct root state.
 8. `total_matches` is complete under output retention limits.
+9. Sampled MEM requires `min_length>=K`, recovers the complete MEM multiset,
+   and does not emit duplicate anchors.
 
 ## FM-index
 
@@ -87,6 +97,8 @@ implementation suggestions.
 5. Save is non-overwriting unless explicit and publishes only a completely
    validated temporary file.
 6. Loading never depends on the original FASTA path.
+7. Format 1.3 sampling metadata agrees with section count, every stored suffix,
+   ISA/LCP/CHILD row counts, and learned anchor bounds.
 
 ## API and dependencies
 

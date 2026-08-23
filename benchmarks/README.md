@@ -41,4 +41,5 @@ not couple to the unified query benchmark:
 
 See `docs/benchmarks/sa-construction-methodology.md` for timing boundaries and
 TSV fields, and `docs/benchmarks/results/unreleased-caps.md` for the measured
-smoke/quick results.
+smoke/quick results. Sampled-SA methodology and measurements are documented in
+`docs/benchmarks/results/unreleased-sampled-sa.md`.

@@ -19,6 +19,18 @@ reference/query MEM pair whose length is at least `min_length`.
 An empty query, an all-break query, or a query shorter than `min_length`
 returns no matches. `min_length=0` is invalid.
 
+## Sampled standalone SA
+
+For sampling rate K>1, MEM requires `min_length>=K`. The query is divided into
+K residue classes, candidates are anchored on sampled reference positions,
+then extended to the true left and right maximal boundaries. Duplicate anchors
+inside one MEM are suppressed, so the normalized result remains identical to
+the complete SA.
+
+Suffix-link steps advance by K positions on this path and the stored ISA/LCP/
+CHILD structures refer to sampled rows. The restriction is checked explicitly;
+there is no silent fallback to a different MEM definition.
+
 ## Algorithms
 
 | Mode | Persisted requirement | Main strategy |

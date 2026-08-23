@@ -30,8 +30,10 @@ release behavior is not confused with development behavior.
 | SDSL balanced and DNA EPR CSA | Unreleased | Explicit only |
 | FM batched count | Unreleased | Scalar remains the ordinary API |
 | Sapling-style piecewise-linear SA lookup | Unreleased, experimental | Disabled unless requested |
+| Text-position sampled SA | Unreleased, experimental | Disabled (`sampling_rate=1`) unless requested |
 | `.sufidx` 1.0/1.1 read support | Released | Old indexes remain readable |
 | `.sufidx` 1.2 learned section | Unreleased | Written only when PWL is present |
+| `.sufidx` 1.3 sampled-SA section | Unreleased | Written only when `sampling_rate > 1` |
 
 All FM data structures are provided by the bundled SDSL 3.0.3 implementation.
 `sufkit` does not reimplement BWT rank/select, C/Occ, LF mapping, SA sampling,
@@ -117,6 +119,13 @@ options.strands = sufkit::StrandMode::both;
 auto result = index.find_mems("GGGACGTACGTNNNGATTACA", options);
 ```
 
+To reduce resident and serialized SA memory, set
+`SuffixArrayBuildOptions::sampling_rate` or pass `--sa-sampling-rate K`.
+The builder still constructs a complete SA before compacting it, so sampling
+does not reduce constructor peak memory. Sampled MEM search requires
+`min_length >= K`; direct `equal_range()` is intentionally unavailable because
+the sampled rows do not represent the complete suffix order.
+
 See the [installation guide](docs/getting-started/installation.md),
 [quick start](docs/getting-started/quickstart.md), and
 [index selection guide](docs/getting-started/choosing-an-index.md) before
@@ -128,7 +137,9 @@ choosing a production backend.
 - FM construction currently uses SDSL's in-memory `construct_im` path.
 - CaPS is a shared-memory builder and can use substantially more peak memory
   than divsufsort; it is not a disk-backed constructor.
-- MUM, MAM, sparse SA, r-index/RLBWT, BigBWT/PFP, approximate matching, and
+- Sampled SA is text-position sampling over an initially complete SA, not a
+  direct sparse-SA constructor.
+- MUM, MAM, r-index/RLBWT, BigBWT/PFP, approximate matching, and
   disk-cached construction are not implemented.
 - Synthetic profiles are useful for controlled comparisons but are not a
   substitute for application-specific real-genome measurements.

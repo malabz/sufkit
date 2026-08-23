@@ -69,6 +69,7 @@ add_library(sufkit ${_sufkit_library_type}
     src/query.cpp
     src/serialization.cpp
     src/caps_backend.cpp
+    src/divsufsort_backend.cpp
     src/suffix_array.cpp
     src/fm_index.cpp
     src/inspect.cpp
@@ -156,6 +157,10 @@ if(SUFKIT_BUILD_TESTS)
     target_compile_definitions(sufkit_caps_tests PRIVATE
         SUFKIT_TEST_CAPS_ENABLED=$<BOOL:${SUFKIT_ENABLE_CAPS}>)
     add_test(NAME sufkit_caps_tests COMMAND sufkit_caps_tests)
+    add_executable(sufkit_sampled_sa_tests tests/test_sampled_sa.cpp)
+    target_link_libraries(sufkit_sampled_sa_tests PRIVATE sufkit::sufkit)
+    target_compile_features(sufkit_sampled_sa_tests PRIVATE cxx_std_17)
+    add_test(NAME sufkit_sampled_sa_tests COMMAND sufkit_sampled_sa_tests)
     if(SUFKIT_BUILD_CLI AND SUFKIT_BUILD_BENCHMARKS)
         add_test(NAME sufkit_benchmark_smoke
             COMMAND ${CMAKE_COMMAND}

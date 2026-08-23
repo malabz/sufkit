@@ -70,8 +70,10 @@ inputs.
 
 With `acceleration=full`, div32 and caps32 produced the same SA checksum,
 exact checksum, and MEM checksum `17567547818709499406`. CaPS still pays for
-its internal LCP and sufkit subsequently runs the unchanged Kasai/CHILD path,
-as intended for this low-conflict integration.
+its internal LCP. This original result predates commit `0162c34`, which changed
+the integration to retain CaPS merge-built LCP directly instead of running a
+second Kasai pass. The historical timings above must not be used to quantify
+the newer LCP path.
 
 ## Quick results
 
@@ -110,3 +112,6 @@ claim is made about human-genome wall time, NUMA scaling, external-memory
 behavior, or a crossover threshold on other CPUs. The 1 GiB automatic rule is
 a conservative routing policy selected before these measurements, not a
 threshold fitted from the 64 MiB result.
+
+Sampling/LCP follow-up evidence is reported separately in
+[the sampled-SA smoke benchmark](unreleased-sampled-sa.md).

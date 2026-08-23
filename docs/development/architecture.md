@@ -20,7 +20,8 @@ flowchart LR
     REF --> MODEL[Normalized reference model]
     SA --> DIV[libdivsufsort]
     SA --> CAPS[CaPS-SA / ParlayLib]
-    SA --> ESA[ISA / LCP / CHILD / PWL]
+    SA --> SAMPLE[Optional text-position sampling]
+    SAMPLE --> ESA[ISA / LCP / CHILD / PWL]
     FM --> SDSL[SDSL 3.0.3 CSA]
 
     SA --> QUERY[Common result semantics]
@@ -59,10 +60,11 @@ flowchart TD
 
     K -->|SA| Z[Append explicit zero sentinel]
     Z --> C{Constructor policy}
-    C -->|divsufsort| D[Complete SA]
-    C -->|CaPS| P[Parallel complete SA]
-    D --> A[Common auxiliary pipeline]
-    P --> A
+    C -->|divsufsort| D[Complete SA, adapter ISA/LCP]
+    C -->|CaPS| P[Parallel complete SA + merge LCP]
+    D --> Q[Optional position sampling]
+    P --> Q
+    Q --> A[Validated auxiliary pipeline]
     A --> E[Optional ISA / LCP / CHILD / PWL]
 
     K -->|FM| S[SDSL construct_im adds zero sentinel]
@@ -72,9 +74,11 @@ flowchart TD
     W --> O
 ```
 
-CaPS and divsufsort differ only in complete-SA construction. CaPS's internal
-merge LCP is discarded so persisted auxiliary semantics remain constructor
-independent.
+CaPS and divsufsort first produce the same complete suffix order. CaPS can
+return its merge-built LCP; the divsufsort adapter can return generalized
+Kasai ISA/LCP. Optional sampling compacts rows before the remaining auxiliary
+pipeline. Persisted invariants and query results remain constructor
+independent even though phase ownership differs.
 
 ## Exact query flow
 
@@ -84,9 +88,12 @@ flowchart TD
     V --> R{Strand mode}
     R --> Q1[Forward encoded query]
     R --> Q2[Reverse complement]
-    Q1 --> X[Backend range search]
-    Q2 --> X
+    Q1 --> K{Complete or sampled SA / FM}
+    Q2 --> K
+    K -->|Complete SA or FM| X[One backend range search]
+    K -->|Sampled SA| Y[Residue intervals or short-pattern contig scan]
     X --> C{count or locate}
+    Y --> C
     C -->|count| T[Complete interval sizes]
     C -->|locate| L[Recover global positions]
     L --> B[Contig-boundary verification]
@@ -96,7 +103,8 @@ flowchart TD
 
 SA range search dispatches among binary, LCP-aware binary, eligible PWL, or
 explicit CHILD. FM range search uses SDSL `backward_search`. Backend paths must
-converge before public result finalization.
+converge before public result finalization. A sampled standalone SA cannot
+return one `equal_range`, but count/locate recover all residue classes.
 
 ## MEM query flow
 
@@ -104,7 +112,10 @@ converge before public result finalization.
 flowchart TD
     Q[Raw query] --> H[Encode canonical runs and hard breaks]
     H --> O[Forward / reverse orientation]
-    O --> I[Initialize min-length interval]
+    O --> R{Complete or sampled SA}
+    R -->|K=1| I[Initialize min-length interval]
+    R -->|K>1| A[Residue anchors, min_length >= K]
+    A --> I
     I --> E[Extend and enumerate candidate rows]
     E --> M[Check left and right maximality]
     M --> C[Map valid reference coordinates]
@@ -127,7 +138,8 @@ flowchart TD
     V --> M[Read and validate common metadata]
     M --> K{Index kind / backend ID}
     K -->|SA| S[Read text + generic integer SA]
-    S --> A[Validate permutation and auxiliary sections]
+    S --> P[Read optional sampling metadata]
+    P --> A[Validate complete/sampled permutation and auxiliary sections]
     K -->|FM| D[Instantiate exact fixed SDSL type]
     D --> B[Bounded native load + CSA validation]
     A --> I[Immutable SuffixArray]

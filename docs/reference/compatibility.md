@@ -3,9 +3,9 @@
 ## Version status
 
 The released version is 0.1.1. The current `main` development binary still
-reports 0.1.1 while CaPS, multiple FM types, FM batch count, and Sapling PWL
-are classified as Unreleased. Documentation preserves this distinction until
-a new release changes the project version and changelog section.
+reports 0.1.1 while CaPS, sampled SA, multiple FM types, FM batch count, and
+Sapling PWL are classified as Unreleased. Documentation preserves this
+distinction until a new release changes the project version and changelog.
 
 ## Source and binary compatibility
 
@@ -20,16 +20,18 @@ should be treated as stable contracts.
 
 ## `.sufidx` compatibility
 
-| Reader on current `main` | 1.0 | 1.1 | 1.2 |
-|---|---:|---:|---:|
-| SA | Yes | Yes | Yes |
-| FM | Yes | Header minor accepted; no SA-only sections | Header minor accepted; no SA-only sections |
+| Reader on current `main` | 1.0 | 1.1 | 1.2 | 1.3 |
+|---|---:|---:|---:|---:|
+| SA | Yes | Yes | Yes | Yes |
+| FM | Yes | Header minor accepted; no SA-only sections | Header minor accepted; no SA-only sections | Header minor accepted; no SA-only sections |
 
 Output selection:
 
 - SA only: 1.0;
 - SA plus ISA/LCP/CHILD: 1.1;
 - any SA with a learned section: 1.2;
+- any SA with sampling rate greater than one: 1.3, including sampled learned
+  and ESA combinations;
 - FM alternatives: 1.0 outer layout, backend identity in the existing byte.
 
 Readers reject a newer major or unsupported minor. Unknown required sections,

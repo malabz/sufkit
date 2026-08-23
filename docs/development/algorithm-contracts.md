@@ -41,19 +41,34 @@ divsufsort32 by signed `saidx_t`; otherwise use 64 bits. Explicit backend or
 width violations fail. CaPS subproblems are deterministic from symbols and
 threads and do not affect suffix order.
 
-After any constructor, the common permutation/sortedness tests and common
-auxiliary pipeline apply.
+After any constructor, common order/result tests apply. CaPS may directly
+supply its merge-built LCP; divsufsort may directly supply sampled ISA/LCP.
+These backend phase results must satisfy the same persisted invariants.
 
-## ISA and Kasai LCP
+## Sampling, ISA, and LCP
 
-Build ISA by assigning each SA row to its text position. Parallel chunks may
-write disjoint positions.
+For sampling rate K, retain complete-SA rows whose suffix position is divisible
+by K, preserving lexicographic order. Build ISA by assigning row to
+`suffix_position/K`. Parallel chunks may write disjoint positions.
 
-Kasai scans text positions in order. For suffix at position p with row r>0,
-compare against `SA[r-1]` from the previous retained common-prefix length;
-store at `LCP[r]`, then decrement the retained length by one when positive.
-Hard encoded symbols participate in suffix ordering but MEM code treats them
-as boundaries.
+The generalized Kasai scan visits sampled positions `p=sample*K`. For row r>0,
+compare against `SA[r-1]` from the previous retained common-prefix length,
+store `LCP[r]`, then reduce retained length by K with saturation at zero. K=1
+is ordinary Kasai. Hard encoded symbols participate in suffix ordering but MEM
+code treats them as boundaries.
+
+CaPS produces complete LCP during merging. When K>1, the LCP between adjacent
+retained rows is the minimum complete LCP over the intervening row interval;
+this equals the common prefix of the retained suffix pair.
+
+Exact sampled recovery searches pattern suffixes for every residue r in
+`[0,K)`, maps each candidate sampled position back by r, and verifies the
+omitted prefix and contig boundary. If pattern length is below K, direct contig
+scan is the correctness fallback. `equal_range` is rejected for K>1.
+
+Sampled MEM uses anchor length `min_length-K+1`, iterates query residue classes
+in K steps, extends candidates left by at most K and right to maximality, and
+rejects an anchor when an earlier sampled anchor belongs to the same MEM.
 
 ## CHILD table
 

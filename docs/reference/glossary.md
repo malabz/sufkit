@@ -8,6 +8,7 @@
 | ESA | Enhanced suffix array: SA with auxiliary structures such as LCP/CHILD |
 | CHILD | Compact LCP-interval navigation table with up/down/next-L relations |
 | CSA | Compressed suffix array; SDSL's FM-capable indexed representation |
+| Sampled SA | Standalone SA retaining suffixes at text positions divisible by K; distinct from SDSL CSA sampling |
 | BWT | Burrows–Wheeler transform used by FM-index search |
 | FM-index | Backward-search index based on BWT rank and cumulative counts |
 | rank/select | Succinct sequence primitives; supplied by SDSL in FM backends |

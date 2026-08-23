@@ -71,6 +71,18 @@ for suffix-link MEM search. To request CaPS explicitly:
 CaPS has parallel setup and larger working-memory costs. It is intended for
 large references, not this small example.
 
+To trade query work for a smaller loaded and serialized standalone SA:
+
+```bash
+./build/release/sufkit build --type sa \
+  --input reference.fa --output reference.sampled.sufidx \
+  --sa-sampling-rate 4
+```
+
+This retains suffix positions divisible by four. It does not reduce the peak
+memory of the underlying complete-SA constructor, and sampled MEM requires
+`min_length >= 4`.
+
 ## Search MEMs
 
 Create `queries.fa`:

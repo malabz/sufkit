@@ -15,9 +15,10 @@ namespace sufkit::detail {
 namespace {
 
 template <class Index>
-std::vector<Index> build_caps(
+CapsBuildResult<Index> build_caps(
     const std::vector<std::uint8_t>& text,
-    std::uint32_t threads) {
+    std::uint32_t threads,
+    bool retain_lcp) {
 #if SUFKIT_HAS_CAPS
     if (text.size() < 16) {
         throw Error(
@@ -42,9 +43,14 @@ std::vector<Index> build_caps(
         parlay::execute_with_scheduler(threads, [&] {
             suffix_array.construct();
         });
-        return std::vector<Index>(
-            suffix_array.SA(),
-            suffix_array.SA() + text.size());
+        CapsBuildResult<Index> result;
+        result.suffix_array.assign(suffix_array.SA(), suffix_array.SA() + text.size());
+        if (retain_lcp) {
+            result.lcp.reserve(text.size());
+            for (std::size_t row = 0; row < text.size(); ++row)
+                result.lcp.push_back(static_cast<std::uint64_t>(suffix_array.LCP()[row]));
+        }
+        return result;
     } catch (const std::bad_alloc&) {
         throw Error(ErrorCode::build_failure, "CaPS-SA allocation failed");
     } catch (const std::exception& error) {
@@ -57,6 +63,7 @@ std::vector<Index> build_caps(
 #else
     (void)text;
     (void)threads;
+    (void)retain_lcp;
     throw Error(
         ErrorCode::unsupported_backend,
         "CaPS-SA support was disabled when sufkit was built");
@@ -73,16 +80,18 @@ bool caps_build_available() noexcept {
 #endif
 }
 
-std::vector<std::uint32_t> build_caps32(
+CapsBuildResult<std::uint32_t> build_caps32(
     const std::vector<std::uint8_t>& text,
-    std::uint32_t threads) {
-    return build_caps<std::uint32_t>(text, threads);
+    std::uint32_t threads,
+    bool retain_lcp) {
+    return build_caps<std::uint32_t>(text, threads, retain_lcp);
 }
 
-std::vector<std::uint64_t> build_caps64(
+CapsBuildResult<std::uint64_t> build_caps64(
     const std::vector<std::uint8_t>& text,
-    std::uint32_t threads) {
-    return build_caps<std::uint64_t>(text, threads);
+    std::uint32_t threads,
+    bool retain_lcp) {
+    return build_caps<std::uint64_t>(text, threads, retain_lcp);
 }
 
 } // namespace sufkit::detail

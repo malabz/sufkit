@@ -7,6 +7,7 @@
 - SDSL Huffman、balanced 和 DNA EPR compressed suffix array；
 - exact count、equal range 和 locate；
 - ISA、Kasai LCP、CHILD 与 suffix-link MEM 搜索；
+- 可选的文本位置采样 SA，保持完整 exact count/locate 和 MEM 结果；
 - 可选的 Sapling 风格分段线性 learned index；
 - FASTA/FASTA.gz、多 contig、正向、反向互补和双链查询；
 - 自包含、带版本和 CRC 校验的 `.sufidx` 文件；
@@ -19,12 +20,15 @@
 
 ## 当前版本口径
 
-已发布版本是 `0.1.1`。当前 `main` 还包含尚未重新发布的 CaPS、balanced/EPR FM-index、FM batch count 和 Sapling PWL 等能力，因此这些功能在文档中统一标记为 `Unreleased`，不会倒写成已经发布的 0.1.1 功能。
+已发布版本是 `0.1.1`。当前 `main` 还包含尚未重新发布的 CaPS、采样
+SA、balanced/EPR FM-index、FM batch count 和 Sapling PWL 等能力，因此这些
+功能在文档中统一标记为 `Unreleased`，不会倒写成已经发布的 0.1.1 功能。
 
 默认选择保持保守：
 
 - 普通 SA 构建使用 divsufsort；只有逻辑文本至少 1 GiB、线程数大于 1 且 CaPS 可用时，`auto` 才选择 CaPS。
 - SA 默认构建 `SA+ISA+LCP`，MEM 自动使用 suffix-link；CHILD 只在显式请求时使用。
+- 采样 SA 默认关闭。`K>1` 主要减少最终索引内存和文件大小，不降低底层完整 SA 构建的峰值内存；采样 MEM 要求 `min_length >= K`。
 - FM-index 默认使用 Huffman；EPR 适合查询速度优先且能接受更大索引的场景。
 - Sapling PWL 默认关闭，因为其收益与数据重复结构和查询负载有关。
 

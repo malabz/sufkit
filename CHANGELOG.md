@@ -19,6 +19,12 @@ All notable changes to sufkit are documented in this file.
   with ParlayLib, configurable build availability, stable persisted backend
   identities, conservative large-input auto-selection, and a dedicated
   isolated construction benchmark.
+- Added optional text-position sampled standalone suffix arrays with complete
+  exact count/locate and MEM recovery, format 1.3 persistence, CLI/inspection
+  controls, and sampled-SA correctness/benchmark coverage.
+- Avoided redundant LCP construction: divsufsort now returns sampled ISA/LCP
+  through a private fused adapter, while CaPS directly retains its merge-built
+  LCP and compacts it by interval minima when sampling is enabled.
 - Added fixed SDSL balanced and DNA EPR `csa_wt` backends while retaining
   Huffman as the default and Sada as a reserved unavailable identity.
 - Added ordered FM `equal_range_batch` and `count_batch` APIs with fixed-width
@@ -55,5 +61,5 @@ All notable changes to sufkit are documented in this file.
   correctness-gated count/locate workloads.
 
 The 0.1.x development line uses pinned vendored SDSL, libdivsufsort, CaPS-SA,
-ParlayLib, and kseq snapshots. Disk-backed construction, MUM/MAM, sparse SA,
-r-index/RLBWT, and BigBWT/PFP remain future work.
+ParlayLib, and kseq snapshots. Disk-backed construction, MUM/MAM, direct
+sparse-SA construction, r-index/RLBWT, and BigBWT/PFP remain future work.

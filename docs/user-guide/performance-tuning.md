@@ -12,7 +12,22 @@ count, locate, and MEM have different bottlenecks.
   selected auxiliary construction work.
 - 32-bit SA storage is preferable when the effective backend can represent the
   logical text. Public coordinates are unaffected.
-- Building ISA/LCP/CHILD or PWL adds phase time after the SA is constructed.
+- divsufsort now returns sampled ISA/LCP from a private adapter; CaPS retains
+  its merge-built LCP. This avoids a redundant second LCP pass.
+- Building CHILD or PWL still adds work after the backend SA/LCP phases.
+
+## Standalone-SA sampling
+
+- K>1 reduces loaded and serialized SA/ISA/LCP/CHILD rows approximately by K.
+- The backend still forms a complete SA, so sampling is not a solution for
+  constructor peak memory or out-of-core construction.
+- Exact searches at least K bases perform up to K anchor lookups; shorter
+  patterns use direct contig scan.
+- Sampled MEM requires `min_length>=K` and may trade more interval/extension
+  work for lower resident memory.
+- PWL model size is budgeted against the sampled SA payload when both are used.
+
+Benchmark K=1 and intended K values on the real query-length distribution.
 
 The dedicated `sufkit_sa_build_bench` isolates constructor timing and reports
 method-local peak RSS. Use a representative FASTA before changing automatic
@@ -64,6 +79,8 @@ The full match count still requires complete traversal.
 - Compare full counts and stable result checksums before interpreting timing.
 - Do not compare an external `load+query` process directly with an in-process
   query-only call.
+- Record sampling rate and suffix count; never compare SA checksums across
+  different K as though the stored row sets were identical.
 - Treat synthetic quick results as hypotheses for real references, not final
   deployment thresholds.
 

@@ -19,6 +19,19 @@ For high-hit queries, count can be much cheaper than locate. A learned range
 prediction only accelerates range discovery; it cannot accelerate the cost of
 materializing and sorting a very large result set.
 
+## Sampled standalone SA
+
+For sampling rate K>1, the stored suffixes cover only text positions divisible
+by K. `count` and `locate` still return the complete-SA result by searching up
+to K pattern offsets and verifying the omitted left prefix. Patterns shorter
+than K use a direct per-contig scan because no sampled position is guaranteed
+inside a match.
+
+`equal_range` is deliberately unsupported for sampled SA: the result is a
+union of residue-specific intervals rather than one `SuffixRange`. Explicit
+binary, LCP-binary, PWL, and CHILD selectors apply to each sampled anchor
+lookup, but do not change recovery semantics.
+
 ## Strand semantics
 
 | Mode | Search |
@@ -73,3 +86,6 @@ N, contig separators, and the unique sentinel have codes that cannot occur in
 a legal pattern. Every located global position is still checked against
 contig bounds before it becomes a public match. A malformed position from a
 corrupt payload is rejected rather than returned.
+
+See [text-position sampled suffix arrays](../concepts/sampled-suffix-arrays.md)
+for construction, persistence, and memory trade-offs.

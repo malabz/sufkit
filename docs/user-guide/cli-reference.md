@@ -25,6 +25,7 @@ SA options:
 | `--sa-backend` | `auto`, `divsufsort`, `caps` | `auto` |
 | `--sa-width` | `auto`, `32`, `64` | `auto` |
 | `--threads` | Positive uint32 | `1` |
+| `--sa-sampling-rate` | Positive uint32 K | `1` (complete SA) |
 | `--sa-acceleration` | `none`, `lcp`, `child`, `suffix-link`, `full` | `suffix-link` |
 | `--learned-index` | Flag | Off |
 | `--learned-k` | 1–31 | `20`; specifying it enables the model |
@@ -34,6 +35,10 @@ SA options:
 `auto` chooses CaPS only at at least 1 GiB of logical symbols, with more than
 one thread and a CaPS-enabled build. Explicit CaPS requires at least 16
 logical symbols. SA options are rejected for FM builds.
+
+For K>1, the stored SA retains text positions divisible by K. `count` and
+`locate` recover complete results; `equal_range` is unavailable and MEM
+requires `min_length>=K`.
 
 FM option:
 
@@ -106,8 +111,8 @@ sufkit inspect --index PATH
 Output is a two-column `key/value` TSV. Common fields include format and
 library versions, kind, backend signature, SDSL version, coordinate width,
 sequence/base/symbol counts, fingerprint, and serialized bytes. SA indexes
-also report acceleration, auxiliary bytes, lookup acceleration, learned model
-size, k, bucket bits, and requested budget.
+also report `suffix_count`, `sa_sampling_rate`, acceleration, auxiliary bytes,
+lookup acceleration, learned model size, k, bucket bits, and requested budget.
 
 ## `sufkit bench`
 
@@ -137,7 +142,8 @@ Parallel SA construction has a separate executable:
 ```text
 sufkit_sa_build_bench --profile smoke|quick|standard \
   --methods div32,div64,caps32,caps64 \
-  --threads 1,2,4,8 --acceleration none|full --output-dir DIR
+  --threads 1,2,4,8 --sampling-rates 1,2,4,8 \
+  --acceleration none|full --output-dir DIR
 ```
 
 ## Exit codes
