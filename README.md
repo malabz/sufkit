@@ -92,6 +92,9 @@ sufkit inspect --index reference.fm.sufidx
 sufkit bench --profile quick --output-dir build/bench/quick
 sufkit bench --reference reference.fa.gz --queries queries.fa.gz --output-dir build/bench/real
 sufkit bench --workload mem --profile quick --output-dir build/bench/mem-quick
+sufkit bench --workload mem --profile standard \
+  --scenarios mixed,balanced,gc-skewed,repeat-rich,n-islands,many-contig \
+  --output-dir build/bench/mem-standard
 ```
 
 Existing index files are not overwritten unless `--force` is supplied.

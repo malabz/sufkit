@@ -149,6 +149,12 @@ and `-load` for measured queries. Its reported query time therefore includes
 external process startup and index loading and must not be interpreted as an
 in-process query-only comparison.
 
+The MEM workload also accepts `--profile standard`. It generates 32 MiB per
+scenario with 5,000 queries of 256 bp and five measured query repetitions.
+When comparing the standard profile across the same six scenarios as the main
+benchmark, pass them explicitly with
+`--scenarios mixed,balanced,gc-skewed,repeat-rich,n-islands,many-contig`.
+
 All internal and MUMmer4 rows are normalized to the same zero-based,
 query-first tuple checksum. A mismatch preserves diagnostic TSV files and
 returns nonzero. See `benchmark-mem-v0.1.1.md` for the measured release run.

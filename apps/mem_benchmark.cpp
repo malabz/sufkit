@@ -139,8 +139,9 @@ Options parse(const std::vector<std::string>& arguments) {
             else throw Error(ErrorCode::invalid_input, "unknown MEM benchmark option: " + name);
         }
     }
-    if (!result.reference && result.profile != "smoke" && result.profile != "quick")
-        throw Error(ErrorCode::invalid_input, "MEM benchmark currently runs smoke or quick profiles");
+    if (!result.reference && result.profile != "smoke" && result.profile != "quick" &&
+        result.profile != "standard")
+        throw Error(ErrorCode::invalid_input, "MEM benchmark currently runs smoke, quick, or standard profiles");
     if (result.query_file && !result.reference)
         throw Error(ErrorCode::invalid_input, "--queries requires --reference");
     if (result.output_directory.empty()) throw Error(ErrorCode::invalid_input, "--output-dir is required");
@@ -178,8 +179,10 @@ std::uint64_t hash_bytes(std::uint64_t hash, std::string_view text) {
 Dataset generate_dataset(const Options& options, const std::string& scenario) {
     Dataset dataset;
     dataset.name = "synthetic-mem-" + options.profile + "-" + scenario;
-    const std::uint64_t total_bases = options.profile == "smoke" ? 64ULL * 1024ULL : 4ULL * 1024ULL * 1024ULL;
-    const std::size_t query_count = options.profile == "smoke" ? 100 : 1000;
+    const std::uint64_t total_bases = options.profile == "smoke" ? 64ULL * 1024ULL :
+        (options.profile == "quick" ? 4ULL * 1024ULL * 1024ULL : 32ULL * 1024ULL * 1024ULL);
+    const std::size_t query_count = options.profile == "smoke" ? 100 :
+        (options.profile == "quick" ? 1000 : 5000);
     const std::size_t query_length = options.profile == "smoke" ? 128 : 256;
     std::uint64_t state = options.seed ^ hash_bytes(1469598103934665603ULL, scenario);
     const std::array<char, 4> bases{{'A', 'C', 'G', 'T'}};
