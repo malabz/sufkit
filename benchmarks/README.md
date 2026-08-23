@@ -4,7 +4,7 @@ The V1 benchmark is compiled into the `sufkit bench` command so the same
 installed executable can measure generated or user-supplied genome data.
 Its implementation is split across `apps/benchmark*.cpp`; the benchmark
 contract, TSV schema, correctness gate, and invocation examples are documented in
-`docs/benchmark.md`.
+`docs/benchmarks/methodology.md`.
 
 Use the smoke profile for a fast correctness check:
 
@@ -39,5 +39,6 @@ not couple to the unified query benchmark:
   --output-dir build/bench/sa-quick
 ```
 
-See `docs/benchmark-sa-build.md` for timing boundaries and TSV fields, and
-`docs/benchmark-sa-build-results.md` for the measured smoke/quick results.
+See `docs/benchmarks/sa-construction-methodology.md` for timing boundaries and
+TSV fields, and `docs/benchmarks/results/unreleased-caps.md` for the measured
+smoke/quick results.

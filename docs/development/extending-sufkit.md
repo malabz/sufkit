@@ -1,0 +1,106 @@
+# Extending sufkit
+
+Start with [architecture](architecture.md) and
+[internal invariants](internal-invariants.md). The checklists below prevent a
+local implementation detail from becoming an incompatible public format.
+
+## Add a suffix-array constructor
+
+1. Decide whether it is a new public `SaBackend` or private implementation of
+   an existing permanent backend.
+2. Define availability and auto-selection policy independently of explicit
+   selection. Keep routing deterministic and inspectable.
+3. Define supported coordinate widths and exact input-size limits.
+4. Keep third-party headers in private source and record fixed revision,
+   license, and patches.
+5. Feed the common encoded text including one sentinel and produce a complete
+   generic SA permutation.
+6. Route into the common ISA/LCP/CHILD/PWL pipeline; do not fork query
+   semantics.
+7. Assign permanent stored backend IDs/signatures if constructor provenance is
+   persisted. Confirm whether old builds can read the generic payload.
+8. Add availability descriptors, CLI values, inspection, save/load, disabled
+   build behavior, and 32/64-bit tests.
+9. Differentially compare SA order, exact results, MEM results, deterministic
+   serialization, and concurrency against divsufsort.
+10. Add an isolated constructor benchmark with time, CPU, peak RSS, checksum,
+    threads, and explicit auto-routing evidence.
+
+CaPS is the reference example: optional compile-time availability, private
+Parlay scheduler, stable IDs 3/4, generic payload, and a conservative 1 GiB
+auto threshold.
+
+## Add an FM backend
+
+1. Freeze one exact SDSL template, sampling densities, public enum value,
+   stored ID, name, and signature.
+2. Instantiate it only in `src/fm_index.cpp` and add it to private variant
+   dispatch for build/range/locate/serialize/load/size.
+3. Do not expose SDSL types or add custom C/Occ/LF/rank/select substitutes.
+4. Validate construction size/alphabet and exact SDSL version on load.
+5. Reject recognized but unimplemented IDs explicitly.
+6. Test scalar range/count/locate, strands, palindromes, batch widths,
+   save/load, corruption, inspection, and backend cross-equivalence.
+7. Benchmark build, load, size, count, locate, batch behavior, and peak RSS.
+8. Update backend, compatibility, format, API, CLI, changelog, and benchmark
+   documentation.
+
+Changing a published template or sampling density is a new backend, not a
+compatible edit.
+
+## Add an exact-search algorithm
+
+1. Define required stored capability separately from constructor backend.
+2. Add an explicit selector and a conservative auto-selection rule only after
+   benchmark evidence.
+3. Use public half-open ranges and normalize empty results.
+4. Treat predictions/navigation as hints and provide a correctness-preserving
+   fallback.
+5. Ensure count and locate share the same exact range.
+6. Compare interval and sorted coordinates against binary search over known,
+   repetitive, boundary, no-hit, and randomized patterns.
+7. Check save/load and concurrent const calls.
+8. Add work counters that explain the intended optimization without making
+   the index mutable.
+
+## Add a MEM algorithm
+
+1. Preserve the formal maximality, hard-break, contig, strand, and coordinate
+   contracts.
+2. Declare required `SaAcceleration` data and explicit unavailable behavior.
+3. Share candidate verification and result emission with existing paths.
+4. Reset safely when interval reuse or navigation cannot be proved valid.
+5. Compare the complete normalized multiset against the brute-force oracle and
+   every existing path for random small references and queries.
+6. Test streaming callback, vector ordering, retention N=0/1/many, callback
+   exceptions, both strands, and concurrency.
+7. Use MUMmer4 only as a black-box compatible-subset comparator.
+8. Benchmark query bases/s, matches/s, lookup/reuse counters, index size, and
+   construction phases separately.
+
+## Add a `.sufidx` section or format version
+
+1. Determine whether the data is optional, required, or backend-specific.
+2. Allocate a never-reused section ID and document element layout, width,
+   endianness, counts, and invariants.
+3. Increase format minor when an older reader cannot understand a legal new
+   section; increase major only for incompatible outer interpretation.
+4. Stream payloads without duplicating large sections in memory.
+5. Validate size arithmetic before allocation and restrict backend reads to a
+   bounded section stream.
+6. Add CRC, truncation, duplicate/overlap, width/count, semantic-corruption,
+   trailing-byte, and unknown-required-section tests.
+7. Preserve atomic non-overwriting publication and old fixture loading.
+8. Update inspect, format reference, compatibility matrix, changelog, and
+   release checklist.
+
+## Add CLI or benchmark surface
+
+CLI parameters must validate kind-specific conflicts, defaults, numeric bounds,
+stdout schema, stderr diagnostics, and exit-code mapping. Update `--help` and
+the CLI reference together.
+
+Benchmark methods must run in isolated workers when peak RSS matters, retain
+all measured repetitions locally, calculate stable checksums, refuse success
+on mismatch, and append schema fields without silently changing old meanings.
+Document timing scope and aggregation before publishing performance claims.

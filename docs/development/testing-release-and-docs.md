@@ -1,0 +1,101 @@
+# Testing, releases, and documentation maintenance
+
+## Local validation layers
+
+### Functional suite
+
+```bash
+cmake --preset release
+cmake --build --preset release -j
+ctest --preset release --output-on-failure
+```
+
+The suite must cover reference parsing/normalization, exact semantics, every
+available constructor/backend, MEM differential results, persistence,
+corruption rejection, inspection, CLI integration, and benchmark smoke gates.
+
+### Sanitizers
+
+```bash
+cmake --preset asan
+cmake --build --preset asan -j
+ctest --preset asan --output-on-failure
+```
+
+Do not use sanitizer timings for performance conclusions.
+
+### Static/shared and consumers
+
+Validate `BUILD_SHARED_LIBS=OFF/ON`, `add_subdirectory`, install to a temporary
+prefix, and an installed `find_package(sufkit CONFIG REQUIRED)` consumer. A
+shared ELF library must not export vendored private symbols.
+
+### Documentation
+
+```bash
+cmake -S . -B build/docs -DSUFKIT_BUILD_DOCS=ON
+cmake --build build/docs --target sufkit_docs
+```
+
+Acceptance requires zero Doxygen warnings, no private third-party types in the
+public reference, valid relative Markdown links, and successful compilation of
+every canonical example. Generated HTML is not committed.
+
+## Correctness gates by change
+
+| Change | Required evidence |
+|---|---|
+| Reference model | Plain/gzip parity, boundaries, normalized fingerprint |
+| SA constructor | Full order/permutation, 32/64 parity, exact/MEM parity |
+| Exact algorithm | Range/count/sorted locate parity for all strands |
+| MEM algorithm | Brute-force random oracle plus all internal-mode parity |
+| FM backend/batch | Scalar/width/backend range, count, locate checksum parity |
+| Persistence | Round trip, old fixtures, corruption and allocation-bound tests |
+| Concurrency | Shared immutable index with thread-local statistics |
+| Benchmark | Correctness gate before performance summary |
+
+## Release checklist
+
+1. Set CMake and public macro version intentionally.
+2. Move completed items from `Unreleased` to the exact release section.
+3. Verify README feature status, backend matrix, CLI help, Doxygen `since`
+   labels, and compatibility table agree.
+4. Verify `.sufidx` output minor for every legal index layout and old-reader
+   expectations.
+5. Run Release, sanitizer, static/shared, install, and consumer validation.
+6. Run smoke benchmarks for correctness. Run quick/real performance only when
+   a release claim depends on it.
+7. Record final commit, dependency revisions, environment, fingerprints,
+   checksums, and measurement limits in each result report.
+8. Confirm licenses and `THIRD_PARTY_NOTICES.md` cover every bundled source.
+9. Confirm no local paths, hostnames, build products, raw benchmark TSVs,
+   generated HTML, or plans are tracked.
+10. Create commit, tag, push, or release only with explicit authorization.
+
+## Documentation source of truth
+
+| Fact | Authority | Required mirrors |
+|---|---|---|
+| Public method signature/default | Public header + Doxygen | API contracts, examples |
+| CLI flag/default | CLI parser and `--help` | CLI reference, relevant tutorial |
+| Backend identity/status | Stored enum/signature + discovery API | Backend reference, README, changelog |
+| File layout | Serialization reader/writer | Format and compatibility references |
+| Algorithm semantics | Tests + algorithm contract | User guide and Doxygen |
+| Performance claim | Versioned benchmark report | Concise benchmark summary |
+| Release status | Project version + CHANGELOG | README and compatibility page |
+
+## Documentation review rules
+
+- Keep README and benchmark summary concise; move implementation detail to one
+  focused page and link it.
+- English is authoritative. Chinese pages explain stable workflows and link to
+  English parameter/reference detail rather than duplicating long tables.
+- Use consistent terminology from the glossary.
+- Every diagram needs adjacent prose so the document remains understandable
+  without Mermaid rendering.
+- Code blocks must identify language or use `text` for output.
+- Replace personal paths with placeholders such as `/path/to/mummer`.
+- Distinguish released, unreleased, experimental, reserved, and unavailable.
+- State negative results and unrun workloads explicitly.
+- Do not infer real-genome, NUMA, disk, or cross-machine performance from
+  synthetic quick runs.

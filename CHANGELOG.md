@@ -15,6 +15,17 @@ All notable changes to sufkit are documented in this file.
   retaining 1.0/1.1 compatibility and the unchanged SDSL FM payload.
 - Added learned-index construction/query metrics and exact/MEM benchmark
   ablations. No Python, PyTorch, CUDA, or Sapling runtime dependency was added.
+- Added bundled CaPS-SA 32/64 shared-memory parallel suffix-array construction
+  with ParlayLib, configurable build availability, stable persisted backend
+  identities, conservative large-input auto-selection, and a dedicated
+  isolated construction benchmark.
+- Added fixed SDSL balanced and DNA EPR `csa_wt` backends while retaining
+  Huffman as the default and Sada as a reserved unavailable identity.
+- Added ordered FM `equal_range_batch` and `count_batch` APIs with fixed-width
+  interleaving and scalar-equivalent correctness gates.
+- Added a layered English documentation set, concise Chinese onboarding,
+  contributor architecture/extension contracts, and local Doxygen API
+  generation.
 
 ## 0.1.1
 
@@ -43,6 +54,6 @@ All notable changes to sufkit are documented in this file.
   repetitions, multi-dimensional summaries, six synthetic scenarios, and
   correctness-gated count/locate workloads.
 
-The 0.1.x series uses only the pinned vendored SDSL and libdivsufsort snapshots.
-CaPS, additional SDSL CSA types, disk-backed construction, and MUM/MAM
-remain later-version work.
+The 0.1.x development line uses pinned vendored SDSL, libdivsufsort, CaPS-SA,
+ParlayLib, and kseq snapshots. Disk-backed construction, MUM/MAM, sparse SA,
+r-index/RLBWT, and BigBWT/PFP remain future work.

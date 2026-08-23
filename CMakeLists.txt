@@ -16,10 +16,14 @@ option(SUFKIT_BUILD_TESTS "Build sufkit tests" ${_sufkit_top_level_default})
 option(SUFKIT_BUILD_BENCHMARKS "Build the benchmark suite" ${_sufkit_top_level_default})
 option(SUFKIT_BUILD_EXAMPLES "Build consumer examples" ${_sufkit_top_level_default})
 option(SUFKIT_ENABLE_CAPS "Build the bundled CaPS-SA parallel suffix-array backend" ON)
+option(SUFKIT_BUILD_DOCS "Build local Doxygen API documentation" OFF)
 
 find_package(ZLIB REQUIRED)
 if(SUFKIT_ENABLE_CAPS)
     find_package(Threads REQUIRED)
+endif()
+if(SUFKIT_BUILD_DOCS)
+    find_package(Doxygen REQUIRED)
 endif()
 
 set(_sufkit_divsufsort_sources
@@ -171,6 +175,14 @@ endif()
 if(SUFKIT_BUILD_EXAMPLES)
     add_executable(sufkit_example examples/basic.cpp)
     target_link_libraries(sufkit_example PRIVATE sufkit::sufkit)
+    add_executable(sufkit_example_exact_sa examples/exact_sa.cpp)
+    target_link_libraries(sufkit_example_exact_sa PRIVATE sufkit::sufkit)
+    add_executable(sufkit_example_fm_batch examples/fm_batch.cpp)
+    target_link_libraries(sufkit_example_fm_batch PRIVATE sufkit::sufkit)
+    add_executable(sufkit_example_mem_stream examples/mem_stream.cpp)
+    target_link_libraries(sufkit_example_mem_stream PRIVATE sufkit::sufkit)
+    add_executable(sufkit_example_inspect_error examples/inspect_error.cpp)
+    target_link_libraries(sufkit_example_inspect_error PRIVATE sufkit::sufkit)
 endif()
 
 if(SUFKIT_BUILD_BENCHMARKS)
@@ -181,6 +193,18 @@ if(SUFKIT_BUILD_BENCHMARKS)
     if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
         target_compile_options(sufkit_sa_build_bench PRIVATE -Wall -Wextra -Wpedantic -Wconversion -Wshadow)
     endif()
+endif()
+
+if(SUFKIT_BUILD_DOCS)
+    configure_file(
+        docs/Doxyfile.in
+        ${CMAKE_CURRENT_BINARY_DIR}/Doxyfile
+        @ONLY)
+    add_custom_target(sufkit_docs
+        COMMAND ${DOXYGEN_EXECUTABLE} ${CMAKE_CURRENT_BINARY_DIR}/Doxyfile
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+        COMMENT "Generating sufkit public API documentation"
+        VERBATIM)
 endif()
 
 install(TARGETS sufkit
@@ -197,6 +221,11 @@ endif()
 install(DIRECTORY include/sufkit DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 install(FILES LICENSE THIRD_PARTY_NOTICES.md
     DESTINATION ${CMAKE_INSTALL_DATADIR}/sufkit)
+install(FILES README.md README.zh-CN.md CHANGELOG.md CONTRIBUTING.md
+    DESTINATION ${CMAKE_INSTALL_DATADIR}/sufkit)
+install(DIRECTORY docs/
+    DESTINATION ${CMAKE_INSTALL_DATADIR}/sufkit/docs
+    FILES_MATCHING PATTERN "*.md")
 
 configure_package_config_file(
     cmake/sufkitConfig.cmake.in

@@ -1,23 +1,46 @@
 # sufkit
 
-`sufkit` is a C++17 library for genome-oriented suffix arrays and exact
-pattern and maximal-exact-match search. Version 0.1.1 contains:
+`sufkit` is a C++17 library and command-line toolkit for genome-oriented
+suffix arrays, SDSL compressed suffix arrays (FM-indexes), exact pattern
+search, and maximal exact match (MEM) search.
 
-- libdivsufsort32/64 standalone suffix arrays;
-- fixed SDSL Huffman, balanced, and DNA EPR compressed suffix-array backends;
-- plain/gzip FASTA input through kseq and zlib;
-- multi-contig, forward, reverse-complement, and both-strand queries;
-- versioned, self-contained `.sufidx` files;
-- optional ISA, Kasai LCP, and ESA CHILD structures for suffix arrays;
-- an optional Sapling-style piecewise-linear learned index for exact SA lookup;
-- baseline, LCP, CHILD, suffix-link, and combined MEM search paths;
-- a CLI, tests, and layered deterministic performance benchmarks.
+The library is designed for two audiences:
 
-The FM-index is not reimplemented by sufkit.  Construction, backward search,
-suffix-array sampling, position recovery, and payload serialization are SDSL
-operations.  SDSL types remain private implementation details.
+- applications that need an embeddable, move-only C++ index with no SDSL or
+  divsufsort types in the public API; and
+- users who want to build, query, inspect, and benchmark self-contained
+  `.sufidx` files from FASTA or FASTA.gz input.
 
-## Build
+[中文说明](README.zh-CN.md) · [Documentation](docs/README.md) ·
+[Contributing](CONTRIBUTING.md) · [Benchmark summary](docs/benchmarks/README.md)
+
+## Feature status
+
+The released library version is `0.1.1`. The current `main` branch also
+contains the following unreleased additions; they are marked explicitly so
+release behavior is not confused with development behavior.
+
+| Capability | Status on `main` | Default |
+|---|---|---|
+| divsufsort32/64 suffix-array construction | Released | Used for ordinary SA builds |
+| CaPS-SA 32/64 parallel construction | Unreleased | Auto-selected only for at least 1 GiB of symbols with more than one thread |
+| SA+ISA+Kasai LCP suffix-link MEM search | Released | Default SA acceleration |
+| ESA CHILD construction and traversal | Released, explicit | Never auto-selected |
+| SDSL Huffman CSA | Released | Default FM backend |
+| SDSL balanced and DNA EPR CSA | Unreleased | Explicit only |
+| FM batched count | Unreleased | Scalar remains the ordinary API |
+| Sapling-style piecewise-linear SA lookup | Unreleased, experimental | Disabled unless requested |
+| `.sufidx` 1.0/1.1 read support | Released | Old indexes remain readable |
+| `.sufidx` 1.2 learned section | Unreleased | Written only when PWL is present |
+
+All FM data structures are provided by the bundled SDSL 3.0.3 implementation.
+`sufkit` does not reimplement BWT rank/select, C/Occ, LF mapping, SA sampling,
+or FM locate.
+
+## Five-minute start
+
+Requirements are Linux or WSL, GCC or Clang, CMake 3.20 or newer, a C++17
+toolchain, and ZLIB. Other third-party sources are bundled.
 
 ```bash
 cmake --preset release
@@ -25,11 +48,31 @@ cmake --build --preset release -j
 ctest --preset release --output-on-failure
 ```
 
-The default top-level build includes the library, CLI, tests, benchmark, and
-example.  When sufkit is added as a subdirectory, those auxiliary targets are
-off by default.
+Build and query a compressed index:
 
-## CMake integration
+```bash
+./build/release/sufkit build --type fm \
+  --input reference.fa.gz --output reference.fm.sufidx
+
+./build/release/sufkit query --index reference.fm.sufidx \
+  --pattern ACGTACGT --strand both
+```
+
+Build a suffix array and enumerate MEMs:
+
+```bash
+./build/release/sufkit build --type sa \
+  --input reference.fa.gz --output reference.sa.sufidx
+
+./build/release/sufkit mem --index reference.sa.sufidx \
+  --query queries.fa.gz --min-length 20 --strand both
+```
+
+All public coordinates are zero-based and contig-local. Exact patterns accept
+only A/C/G/T after case normalization. MEM queries treat every other symbol as
+a hard break.
+
+## C++ integration
 
 From a source tree:
 
@@ -49,7 +92,7 @@ find_package(sufkit CONFIG REQUIRED)
 target_link_libraries(my_program PRIVATE sufkit::sufkit)
 ```
 
-## Library example
+Minimal exact-search example:
 
 ```cpp
 #include <sufkit/sufkit.hpp>
@@ -59,75 +102,37 @@ auto index = sufkit::FmIndex::build(reference);
 index.save("reference.sufidx");
 
 auto loaded = sufkit::FmIndex::load("reference.sufidx");
-auto hits = loaded.locate("ACGTACGT");
-
-std::vector<std::string_view> patterns{"ACGT", "GATTACA", "TTTT"};
-sufkit::FmBatchOptions batch;
-batch.strands = sufkit::StrandMode::both;
-batch.batch_width = 16;
-auto counts = loaded.count_batch(patterns, batch);
+auto result = loaded.locate("ACGTACGT");
 ```
 
-MEM search uses a suffix-array index:
+Minimal MEM example:
 
 ```cpp
 auto reference = sufkit::GenomeReference::from_fasta("reference.fa.gz");
-auto index = sufkit::SuffixArray::build(reference); // SA+ISA+LCP by default
+auto index = sufkit::SuffixArray::build(reference); // SA+ISA+LCP
 
 sufkit::MemOptions options;
 options.min_length = 20;
 options.strands = sufkit::StrandMode::both;
-auto mems = index.find_mems(query_sequence, options);
+auto result = index.find_mems("GGGACGTACGTNNNGATTACA", options);
 ```
 
-References are normalized to A/C/G/T/N.  Query patterns are case-insensitive
-but must contain only A/C/G/T.  Returned positions are zero-based and local to
-the reported contig.
+See the [installation guide](docs/getting-started/installation.md),
+[quick start](docs/getting-started/quickstart.md), and
+[index selection guide](docs/getting-started/choosing-an-index.md) before
+choosing a production backend.
 
-## CLI
+## Project boundaries
 
-```bash
-sufkit build --type sa --input reference.fa.gz --output reference.sa.sufidx
-sufkit build --type sa --input reference.fa.gz --output reference.learned.sufidx \
-  --learned-index --learned-k 20 --learned-memory-bp 100
-sufkit build --type fm --input reference.fa.gz --output reference.fm.sufidx
-sufkit build --type fm --fm-backend sdsl-csa-wt-epr \
-  --input reference.fa.gz --output reference.epr.sufidx
+- Linux/WSL x86_64 with GCC and Clang is the validated platform.
+- FM construction currently uses SDSL's in-memory `construct_im` path.
+- CaPS is a shared-memory builder and can use substantially more peak memory
+  than divsufsort; it is not a disk-backed constructor.
+- MUM, MAM, sparse SA, r-index/RLBWT, BigBWT/PFP, approximate matching, and
+  disk-cached construction are not implemented.
+- Synthetic profiles are useful for controlled comparisons but are not a
+  substitute for application-specific real-genome measurements.
 
-sufkit query --index reference.fm.sufidx --pattern ACGTACGT
-sufkit query --index reference.fm.sufidx --query queries.fa --strand both
-sufkit query --index reference.fm.sufidx --pattern ACGT --count-only
-sufkit query --index reference.learned.sufidx --pattern ACGTACGTACGTACGTACGT \
-  --algorithm sapling-pwl --count-only
-sufkit mem --index reference.sa.sufidx --query queries.fa --min-length 20 \
-  --algorithm suffix-link
-
-sufkit inspect --index reference.fm.sufidx
-sufkit bench --profile quick --output-dir build/bench/quick
-sufkit bench --reference reference.fa.gz --queries queries.fa.gz --output-dir build/bench/real
-sufkit bench --workload mem --profile quick --output-dir build/bench/mem-quick
-sufkit bench --profile quick \
-  --methods sa32-binary,sa32-lcp-binary,sa32-sapling,sa32-child,fm \
-  --output-dir build/bench/sapling-exact-quick
-sufkit bench --workload mem --profile standard \
-  --scenarios mixed,balanced,gc-skewed,repeat-rich,n-islands,many-contig \
-  --output-dir build/bench/mem-standard
-```
-
-Existing index files are not overwritten unless `--force` is supplied.
-
-## Current boundaries
-
-- Linux/WSL with GCC or Clang is the validated platform.
-- V1 FM construction uses SDSL's in-memory `construct_im` path.
-- CaPS, balanced `csa_wt`, `csa_sada`, disk-backed construction, MUM/MAM,
-  sparse SA, and BigBWT are roadmap items rather than silent fallbacks.
-- Synthetic benchmark profiles are `smoke`, `quick`, `standard`, and `full`,
-  with six selectable genome-structure scenarios. Large and real-genome runs
-  are always user-triggered.
-
-See [API semantics](docs/api.md), [index format](docs/index-format-v1.md),
-[SDSL backend](docs/sdsl-backend.md), [benchmark methodology](docs/benchmark.md),
-[Sapling-style learned lookup](docs/sapling-learned-index.md),
-[Sapling benchmark results](docs/benchmark-sapling-v0.1.1.md),
-and the [0.1.1 MEM benchmark results](docs/benchmark-mem-v0.1.1.md).
+The [documentation hub](docs/README.md) separates short user guidance from
+API contracts, algorithm descriptions, internal architecture, contributor
+instructions, index-format details, and evidence-bounded benchmark reports.
