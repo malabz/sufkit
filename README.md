@@ -8,7 +8,8 @@ pattern and maximal-exact-match search. Version 0.1.1 contains:
 - plain/gzip FASTA input through kseq and zlib;
 - multi-contig, forward, reverse-complement, and both-strand queries;
 - versioned, self-contained `.sufidx` files;
-- optional ISA, Kasai LCP, and ESA CHILD structures for suffix arrays;
+- optional ISA, backend-produced LCP, and ESA CHILD structures for suffix arrays;
+- text-position sampled suffix arrays with complete exact and MEM recovery;
 - an optional Sapling-style piecewise-linear learned index for exact SA lookup;
 - baseline, LCP, CHILD, suffix-link, and combined MEM search paths;
 - a CLI, tests, and layered deterministic performance benchmarks.
@@ -80,6 +81,9 @@ options.strands = sufkit::StrandMode::both;
 auto mems = index.find_mems(query_sequence, options);
 ```
 
+To reduce resident index memory, set `SuffixArrayBuildOptions::sampling_rate`
+or use `--sa-sampling-rate K`. Sampled MEM search requires `min_length >= K`.
+
 References are normalized to A/C/G/T/N.  Query patterns are case-insensitive
 but must contain only A/C/G/T.  Returned positions are zero-based and local to
 the reported contig.
@@ -90,6 +94,8 @@ the reported contig.
 sufkit build --type sa --input reference.fa.gz --output reference.sa.sufidx
 sufkit build --type sa --input reference.fa.gz --output reference.learned.sufidx \
   --learned-index --learned-k 20 --learned-memory-bp 100
+sufkit build --type sa --input reference.fa.gz --output reference.sampled.sufidx \
+  --sa-sampling-rate 4 --sa-acceleration full
 sufkit build --type fm --input reference.fa.gz --output reference.fm.sufidx
 sufkit build --type fm --fm-backend sdsl-csa-wt-epr \
   --input reference.fa.gz --output reference.epr.sufidx
@@ -120,13 +126,14 @@ Existing index files are not overwritten unless `--force` is supplied.
 
 - Linux/WSL with GCC or Clang is the validated platform.
 - V1 FM construction uses SDSL's in-memory `construct_im` path.
-- CaPS, balanced `csa_wt`, `csa_sada`, disk-backed construction, MUM/MAM,
-  sparse SA, and BigBWT are roadmap items rather than silent fallbacks.
+- `csa_sada`, disk-backed construction, MUM/MAM, direct sparse-SA construction,
+  and BigBWT remain roadmap items rather than silent fallbacks.
 - Synthetic benchmark profiles are `smoke`, `quick`, `standard`, and `full`,
   with six selectable genome-structure scenarios. Large and real-genome runs
   are always user-triggered.
 
 See [API semantics](docs/api.md), [index format](docs/index-format-v1.md),
+[sampled suffix arrays](docs/sampled-sa.md),
 [SDSL backend](docs/sdsl-backend.md), [benchmark methodology](docs/benchmark.md),
 [Sapling-style learned lookup](docs/sapling-learned-index.md),
 [Sapling benchmark results](docs/benchmark-sapling-v0.1.1.md),

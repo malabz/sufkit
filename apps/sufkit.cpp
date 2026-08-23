@@ -123,6 +123,7 @@ int run_build(const std::vector<std::string>& arguments) {
         std::cout <<
             "sufkit build --type sa|fm --input PATH --output PATH [--force]\n"
             "  SA: --sa-backend auto|divsufsort|caps --sa-width auto|32|64 --threads N\n"
+            "      --sa-sampling-rate K\n"
             "      --sa-acceleration none|lcp|child|suffix-link|full\n"
             "      [--learned-index] [--learned-k N] [--learned-memory-bp N]\n"
             "      [--learned-bucket-bits N]\n"
@@ -132,7 +133,7 @@ int run_build(const std::vector<std::string>& arguments) {
     const auto options = parse_options(
         arguments,
         {"--type", "--input", "--output", "--sa-backend", "--sa-width", "--threads", "--fm-backend",
-         "--sa-acceleration", "--learned-k", "--learned-memory-bp", "--learned-bucket-bits"},
+         "--sa-acceleration", "--sa-sampling-rate", "--learned-k", "--learned-memory-bp", "--learned-bucket-bits"},
         {"--force", "--learned-index"});
     const auto type = options.require("--type");
     const auto input = std::filesystem::path(options.require("--input"));
@@ -162,6 +163,12 @@ int run_build(const std::vector<std::string>& arguments) {
             throw sufkit::Error(sufkit::ErrorCode::invalid_input, "--threads is out of range");
         }
         build_options.threads = static_cast<std::uint32_t>(threads);
+        const auto sampling_rate = sufkit::app::parse_unsigned(
+            options.value_or("--sa-sampling-rate", "1"), "--sa-sampling-rate");
+        if (sampling_rate == 0 || sampling_rate > std::numeric_limits<std::uint32_t>::max())
+            throw sufkit::Error(sufkit::ErrorCode::invalid_input,
+                                "--sa-sampling-rate is out of range");
+        build_options.sampling_rate = static_cast<std::uint32_t>(sampling_rate);
         build_options.acceleration = parse_sa_acceleration(
             options.value_or("--sa-acceleration", "suffix-link"));
         const bool learned_option = options.has("--learned-index") || options.has("--learned-k") ||
@@ -202,7 +209,8 @@ int run_build(const std::vector<std::string>& arguments) {
     }
     if (type == "fm") {
         if (options.has("--sa-backend") || options.has("--sa-width") || options.has("--threads") ||
-            options.has("--sa-acceleration") || options.has("--learned-index") ||
+            options.has("--sa-acceleration") || options.has("--sa-sampling-rate") ||
+            options.has("--learned-index") ||
             options.has("--learned-k") || options.has("--learned-memory-bp") ||
             options.has("--learned-bucket-bits")) {
             throw sufkit::Error(
@@ -411,6 +419,8 @@ int run_inspect(const std::vector<std::string>& arguments) {
               << "sequence_count\t" << info.sequence_count << '\n'
               << "total_bases\t" << info.total_bases << '\n'
               << "text_symbols\t" << info.text_symbols << '\n'
+              << "suffix_count\t" << info.suffix_count << '\n'
+              << "sa_sampling_rate\t" << info.sa_sampling_rate << '\n'
               << "ambiguous_bases\t" << info.ambiguous_bases << '\n'
               << "fingerprint\t" << std::hex << std::setfill('0') << std::setw(16)
               << info.fingerprint << std::dec << '\n'

@@ -19,7 +19,7 @@ namespace {
 
 constexpr std::array<std::uint8_t, 8> kMagic{{'S', 'U', 'F', 'K', 'I', 'D', 'X', 0}};
 constexpr std::uint16_t kFormatMajor = 1;
-constexpr std::uint16_t kFormatMinor = 2;
+constexpr std::uint16_t kFormatMinor = 3;
 constexpr std::size_t kBaseHeaderSize = 80;
 constexpr std::size_t kSectionEntrySize = 32;
 constexpr std::size_t kHeaderCrcOffset = 72;
@@ -475,7 +475,7 @@ ParsedContainer read_container(const std::filesystem::path& path) {
         section.crc32 = get_u32(header, offset + 24);
         const auto raw_type = static_cast<std::uint32_t>(section.type);
         const bool known_type = raw_type >= static_cast<std::uint32_t>(SectionType::metadata) &&
-                                raw_type <= static_cast<std::uint32_t>(SectionType::learned_sa);
+                                raw_type <= static_cast<std::uint32_t>(SectionType::sa_sampling);
         if (!known_type && (section.flags & kRequiredSection) != 0) {
             throw Error(ErrorCode::corrupt_index, "unknown required index section");
         }
@@ -631,7 +631,8 @@ IndexInfo index_info_from_container(const ParsedContainer& container) {
         (void)require_section(container, SectionType::sdsl_csa);
         if (has(SectionType::text) || has(SectionType::suffix_array) ||
             has(SectionType::inverse_suffix_array) || has(SectionType::lcp) ||
-            has(SectionType::child) || has(SectionType::learned_sa))
+            has(SectionType::child) || has(SectionType::learned_sa) ||
+            has(SectionType::sa_sampling))
             throw Error(ErrorCode::corrupt_index,
                         "FM-index container has suffix-array-only sections");
     }
@@ -661,6 +662,7 @@ IndexInfo index_info_from_container(const ParsedContainer& container) {
         const bool lcp = has(SectionType::lcp);
         const bool child = has(SectionType::child);
         const bool learned = has(SectionType::learned_sa);
+        const bool sampled = has(SectionType::sa_sampling);
         if (!isa && !lcp && !child) info.sa_acceleration = SaAcceleration::none;
         else if (!isa && lcp && !child) info.sa_acceleration = SaAcceleration::lcp;
         else if (!isa && lcp && child) info.sa_acceleration = SaAcceleration::lcp_child;
@@ -701,6 +703,24 @@ IndexInfo index_info_from_container(const ParsedContainer& container) {
             }
             info.sa_lookup_acceleration = SaLookupAcceleration::sapling_pwl;
             info.learned_index_bytes = require_section(container, SectionType::learned_sa).size;
+        }
+        if (sampled) {
+            if (container.spec.format_minor < 3)
+                throw Error(ErrorCode::corrupt_index,
+                            "sampled SA data requires sufidx format 1.3");
+            auto input = open_section_stream(container, SectionType::sa_sampling);
+            info.sa_sampling_rate = read_u32(*input, "SA sampling rate");
+            info.suffix_count = read_u64(*input, "sampled suffix count");
+            if (info.sa_sampling_rate <= 1)
+                throw Error(ErrorCode::corrupt_index, "invalid sampled SA metadata");
+            const auto expected_count = info.text_symbols == 0 ? 0 :
+                1 + (info.text_symbols - 1) / info.sa_sampling_rate;
+            if (info.suffix_count != expected_count ||
+                input->peek() != std::char_traits<char>::eof())
+                throw Error(ErrorCode::corrupt_index, "invalid sampled SA metadata");
+        } else {
+            info.sa_sampling_rate = 1;
+            info.suffix_count = info.text_symbols;
         }
     }
     return info;

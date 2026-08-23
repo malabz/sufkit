@@ -114,6 +114,7 @@ struct SuffixArrayBuildOptions {
     SaBackend backend = SaBackend::auto_select;
     CoordinateWidth coordinate_width = CoordinateWidth::auto_select;
     std::uint32_t threads = 1;
+    std::uint32_t sampling_rate = 1;
     SaAcceleration acceleration = SaAcceleration::lcp_suffix_link;
     LearnedSaOptions learned_index;
     SuffixArrayBuildStatistics* statistics = nullptr;
@@ -218,6 +219,8 @@ struct IndexInfo {
     std::uint64_t sequence_count = 0;
     std::uint64_t total_bases = 0;
     std::uint64_t text_symbols = 0;
+    std::uint64_t suffix_count = 0;
+    std::uint32_t sa_sampling_rate = 1;
     std::uint64_t ambiguous_bases = 0;
     std::uint64_t fingerprint = 0;
     std::uint64_t serialized_bytes = 0;

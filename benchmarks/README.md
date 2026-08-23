@@ -41,3 +41,4 @@ not couple to the unified query benchmark:
 
 See `docs/benchmark-sa-build.md` for timing boundaries and TSV fields, and
 `docs/benchmark-sa-build-results.md` for the measured smoke/quick results.
+Sampled-SA memory results are in `docs/benchmark-sa-sampling.md`.

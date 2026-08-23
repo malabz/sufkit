@@ -60,6 +60,7 @@ public:
         std::optional<std::uint64_t> max_matches = {}) const;
     SaAcceleration acceleration() const noexcept;
     SaLookupAcceleration lookup_acceleration() const noexcept;
+    std::uint32_t sampling_rate() const noexcept;
 
     Position suffix_at(std::uint64_t row) const;
     SequenceInfo sequence_info(SequenceId id) const;

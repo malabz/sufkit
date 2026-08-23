@@ -15,10 +15,15 @@ sufkit build --type sa \
 
 The backend receives the same byte text as divsufsort, including contig
 separators and sufkit's unique zero sentinel. Bounded-context construction is
-not used. CaPS internally constructs an LCP array as part of its merge
-algorithm, but this integration deliberately discards that result: existing
-ISA, Kasai LCP, CHILD, suffix-link, exact-search, and MEM code remains the sole
-post-SA pipeline.
+not used. When LCP acceleration is requested, sufkit retains the LCP array
+produced by CaPS's LCP-aware merge instead of running a second Kasai pass. ISA
+and CHILD remain sufkit-owned structures.
+
+With `--sa-sampling-rate K`, CaPS constructs its complete SA/LCP pair and then
+sufkit compacts it to suffixes whose text positions are divisible by K. The
+LCP between retained neighbours is the range minimum across the removed full
+LCP rows. This reduces resident and serialized index memory, but does not
+reduce CaPS construction peak memory.
 
 ## Threads and subproblems
 

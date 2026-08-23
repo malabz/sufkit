@@ -22,6 +22,13 @@ cross a separator or an N.  Sequence IDs and positions are zero-based.
 `equal_range` returns a half-open index-row range.  Empty results are `[0,0)`;
 no insertion-point meaning is promised for an empty SA or SDSL range.
 
+For a sampled suffix array (`sampling_rate > 1`), exact occurrences may be a
+union of up to K sparse-SA intervals. `count` and `locate` still return the
+complete result, including for patterns shorter than K, but `equal_range`
+throws `unsupported_backend` because one half-open interval cannot represent
+that union. `suffix_at(row)` addresses the retained sparse-SA rows and
+`IndexInfo::suffix_count` reports their number.
+
 `FmIndex::equal_range_batch` and `count_batch` preserve input order and reject
 the whole call if any pattern is invalid. `FmBatchOptions::batch_width=0`
 selects width 16; explicit widths are limited to 1-256. Batch count supports
@@ -62,6 +69,10 @@ never selected automatically. An explicitly requested MEM algorithm must be supp
 the loaded auxiliary sections; otherwise the query fails with
 `unsupported_backend`. MEM `auto_select` chooses suffix-link, then LCP, then
 baseline. It does not select CHILD or full.
+
+Sparse-SA MEM search requires `min_length >= sampling_rate`. It anchors on
+sampled reference positions, extends left and right to maximality, and emits a
+match only from its first sampled anchor so that results are not duplicated.
 
 ## Learned suffix-array lookup
 

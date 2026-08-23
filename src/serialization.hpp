@@ -36,7 +36,8 @@ enum class SectionType : std::uint32_t {
     inverse_suffix_array = 5,
     lcp = 6,
     child = 7,
-    learned_sa = 8
+    learned_sa = 8,
+    sa_sampling = 9
 };
 
 struct SectionDescriptor {

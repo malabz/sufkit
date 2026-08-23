@@ -35,3 +35,8 @@ The output directory contains `run_metadata.tsv`, `raw_repetitions.tsv`,
 driver compares two independent SA hashes plus exact and optional MEM
 checksums before reporting success. Raw and summary TSV files are retained if
 the correctness gate fails.
+
+Add `--sampling-rates 1,2,4,8` to compare complete and text-position sampled
+SA layouts. Raw and summary rows include `sampling_rate` and `suffix_count`.
+SA checksums are compared between methods only at the same K; exact and MEM
+checksums must agree across every K.

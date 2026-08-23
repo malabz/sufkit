@@ -13,6 +13,12 @@ inline constexpr std::uint64_t kCapsAutoThresholdSymbols = 1ULL << 30;
 
 bool caps_build_available() noexcept;
 
+template <class Index>
+struct CapsBuildResult {
+    std::vector<Index> suffix_array;
+    std::vector<std::uint64_t> lcp;
+};
+
 inline SaBackend resolve_sa_backend(
     SaBackend requested,
     std::uint64_t text_symbols,
@@ -47,12 +53,14 @@ inline std::uint64_t caps_subproblem_count(
     return std::min<std::uint64_t>({8192, by_text, by_threads});
 }
 
-std::vector<std::uint32_t> build_caps32(
+CapsBuildResult<std::uint32_t> build_caps32(
     const std::vector<std::uint8_t>& text,
-    std::uint32_t threads);
+    std::uint32_t threads,
+    bool retain_lcp);
 
-std::vector<std::uint64_t> build_caps64(
+CapsBuildResult<std::uint64_t> build_caps64(
     const std::vector<std::uint8_t>& text,
-    std::uint32_t threads);
+    std::uint32_t threads,
+    bool retain_lcp);
 
 } // namespace sufkit::detail

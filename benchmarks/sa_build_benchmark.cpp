@@ -37,6 +37,7 @@ struct Options {
     std::filesystem::path output_dir;
     std::vector<std::string> methods;
     std::vector<std::uint32_t> threads;
+    std::vector<std::uint32_t> sampling_rates;
     sufkit::SaAcceleration acceleration = sufkit::SaAcceleration::none;
     std::uint32_t repetitions = 0;
     std::uint64_t seed = 20260822;
@@ -48,6 +49,7 @@ struct WorkerResult {
     char signature[128]{};
     char status[160]{};
     std::uint64_t text_symbols = 0;
+    std::uint64_t suffix_count = 0;
     std::uint64_t fingerprint = 0;
     std::uint64_t subproblems = 0;
     std::uint64_t serialized_bytes = 0;
@@ -56,6 +58,7 @@ struct WorkerResult {
     std::uint64_t exact_checksum = 0;
     std::uint64_t mem_checksum = 0;
     std::uint32_t threads = 0;
+    std::uint32_t sampling_rate = 1;
     std::uint32_t repetition = 0;
     std::uint8_t coordinate_width = 0;
     double build_seconds = 0.0;
@@ -122,7 +125,7 @@ Options parse_options(int argc, char** argv) {
             std::cout
                 << "sufkit_sa_build_bench (--profile smoke|quick|standard | --reference REF.fa[.gz])\n"
                 << "  --output-dir DIR [--methods div32,div64,caps32,caps64]\n"
-                << "  [--threads 1,2,4,8] [--acceleration none|full]\n"
+                << "  [--threads 1,2,4,8] [--sampling-rates 1,2,4,8] [--acceleration none|full]\n"
                 << "  [--repetitions N] [--seed N]\n";
             std::exit(0);
         }
@@ -138,6 +141,13 @@ Options parse_options(int argc, char** argv) {
                 if (parsed == 0 || parsed > std::numeric_limits<std::uint32_t>::max())
                     throw sufkit::Error(sufkit::ErrorCode::invalid_input, "thread count is out of range");
                 options.threads.push_back(static_cast<std::uint32_t>(parsed));
+            }
+        } else if (name == "--sampling-rates") {
+            for (const auto& item : split(value)) {
+                const auto parsed = parse_u64(item, "sampling rate");
+                if (parsed == 0 || parsed > std::numeric_limits<std::uint32_t>::max())
+                    throw sufkit::Error(sufkit::ErrorCode::invalid_input, "sampling rate is out of range");
+                options.sampling_rates.push_back(static_cast<std::uint32_t>(parsed));
             }
         } else if (name == "--acceleration") {
             if (value == "none") options.acceleration = sufkit::SaAcceleration::none;
@@ -165,6 +175,7 @@ Options parse_options(int argc, char** argv) {
         else if (options.profile == "standard") options.threads = {1, 2, 4, 8, 16, 32};
         else options.threads = {1, 2, 4, 8};
     }
+    if (options.sampling_rates.empty()) options.sampling_rates = {1};
     if (options.repetitions == 0) options.repetitions = options.profile == "smoke" ? 1 : 3;
     return options;
 }
@@ -212,7 +223,7 @@ void mix(std::uint64_t& hash, std::uint64_t value) {
 std::pair<std::uint64_t, std::uint64_t> sa_checksum(const sufkit::SuffixArray& index) {
     std::uint64_t first = 1469598103934665603ULL;
     std::uint64_t second = 0x6a09e667f3bcc909ULL;
-    for (std::uint64_t row = 0; row < index.info().text_symbols; ++row) {
+    for (std::uint64_t row = 0; row < index.info().suffix_count; ++row) {
         const auto suffix = index.suffix_at(row);
         first ^= suffix;
         first *= 1099511628211ULL;
@@ -255,6 +266,7 @@ std::uint64_t mem_checksum(const sufkit::SuffixArray& index) {
 sufkit::SuffixArrayBuildOptions build_options(
     const std::string& method,
     std::uint32_t threads,
+    std::uint32_t sampling_rate,
     sufkit::SaAcceleration acceleration) {
     sufkit::SuffixArrayBuildOptions options;
     options.backend = method.rfind("caps", 0) == 0
@@ -264,6 +276,7 @@ sufkit::SuffixArrayBuildOptions build_options(
         ? sufkit::CoordinateWidth::bits32
         : sufkit::CoordinateWidth::bits64;
     options.threads = threads;
+    options.sampling_rate = sampling_rate;
     options.acceleration = acceleration;
     return options;
 }
@@ -273,11 +286,13 @@ WorkerResult run_worker(
     const std::filesystem::path& reference_path,
     const std::string& method,
     std::uint32_t threads,
+    std::uint32_t sampling_rate,
     std::uint32_t repetition,
     const std::filesystem::path& index_path) {
     WorkerResult result;
     copy_text(result.method, sizeof(result.method), method);
     result.threads = threads;
+    result.sampling_rate = sampling_rate;
     result.repetition = repetition;
     try {
         const auto reference = sufkit::GenomeReference::from_fasta(reference_path);
@@ -285,7 +300,7 @@ WorkerResult run_worker(
         const auto begin = Clock::now();
         auto index = sufkit::SuffixArray::build(
             reference,
-            build_options(method, threads, options.acceleration));
+            build_options(method, threads, sampling_rate, options.acceleration));
         result.build_seconds = std::chrono::duration<double>(Clock::now() - begin).count();
         const auto usage_end = usage_now();
         result.user_seconds = usage_end.user - usage_begin.user;
@@ -293,6 +308,7 @@ WorkerResult run_worker(
         result.peak_rss_mb = peak_rss_mb();
         const auto info = index.info();
         result.text_symbols = info.text_symbols;
+        result.suffix_count = info.suffix_count;
         result.fingerprint = info.fingerprint;
         result.coordinate_width = info.coordinate_width;
         result.subproblems = method.rfind("caps", 0) == 0
@@ -353,17 +369,20 @@ WorkerResult isolated_worker(
     const std::filesystem::path& reference,
     const std::string& method,
     std::uint32_t threads,
+    std::uint32_t sampling_rate,
     std::uint32_t repetition) {
     std::array<int, 2> descriptors{};
     if (pipe(descriptors.data()) != 0)
         throw sufkit::Error(sufkit::ErrorCode::build_failure, "benchmark pipe failed");
     const auto index_path = options.output_dir /
-        ("worker-" + method + "-t" + std::to_string(threads) + "-r" + std::to_string(repetition) + ".sufidx");
+        ("worker-" + method + "-t" + std::to_string(threads) + "-k" +
+         std::to_string(sampling_rate) + "-r" + std::to_string(repetition) + ".sufidx");
     const auto child = fork();
     if (child < 0) throw sufkit::Error(sufkit::ErrorCode::build_failure, "benchmark fork failed");
     if (child == 0) {
         close(descriptors[0]);
-        const auto result = run_worker(options, reference, method, threads, repetition, index_path);
+        const auto result = run_worker(
+            options, reference, method, threads, sampling_rate, repetition, index_path);
         const bool written = write_all(descriptors[1], &result, sizeof(result));
         close(descriptors[1]);
         std::_Exit(written ? 0 : 1);
@@ -411,7 +430,7 @@ void write_outputs(
              << (first_ok == results.end() ? 0 : first_ok->fingerprint) << '\n';
 
     std::ofstream raw(options.output_dir / "raw_repetitions.tsv");
-    raw << "method\teffective_backend\tbackend_signature\tcoordinate_width\tthreads\t"
+    raw << "method\teffective_backend\tbackend_signature\tcoordinate_width\tthreads\tsampling_rate\tsuffix_count\t"
            "subproblem_count\tacceleration\trepetition\tbuild_wall_seconds\tuser_cpu_seconds\t"
            "system_cpu_seconds\tpeak_rss_mb\tserialized_bytes\tsa_checksum\texact_checksum\t"
            "mem_checksum\tstatus\n";
@@ -419,6 +438,7 @@ void write_outputs(
     for (const auto& result : results) {
         raw << result.method << '\t' << result.backend << '\t' << result.signature << '\t'
             << static_cast<unsigned>(result.coordinate_width) << '\t' << result.threads << '\t'
+            << result.sampling_rate << '\t' << result.suffix_count << '\t'
             << result.subproblems << '\t' << sufkit::to_string(options.acceleration) << '\t'
             << result.repetition << '\t' << result.build_seconds << '\t' << result.user_seconds << '\t'
             << result.system_seconds << '\t' << result.peak_rss_mb << '\t'
@@ -426,10 +446,11 @@ void write_outputs(
             << result.exact_checksum << '\t' << result.mem_checksum << '\t' << result.status << '\n';
     }
 
-    using Key = std::pair<std::string, std::uint32_t>;
+    using Key = std::tuple<std::string, std::uint32_t, std::uint32_t>;
     std::map<Key, std::vector<const WorkerResult*>> groups;
     for (const auto& result : results)
-        if (std::string(result.status) == "ok") groups[{result.method, result.threads}].push_back(&result);
+        if (std::string(result.status) == "ok")
+            groups[{result.method, result.threads, result.sampling_rate}].push_back(&result);
     std::map<Key, double> medians;
     for (const auto& [key, group] : groups) {
         std::vector<double> times;
@@ -438,7 +459,7 @@ void write_outputs(
     }
 
     std::ofstream summary(options.output_dir / "build_results.tsv");
-    summary << "method\teffective_backend\tcoordinate_width\tthreads\tacceleration\trepetitions\t"
+    summary << "method\teffective_backend\tcoordinate_width\tthreads\tsampling_rate\tsuffix_count\tacceleration\trepetitions\t"
                "build_seconds_median\tbuild_seconds_min\tbuild_seconds_max\tpeak_rss_mb_median\t"
                "serialized_bytes\tspeedup_vs_divsufsort_same_width\tparallel_efficiency_vs_caps_1_thread\tstatus\n";
     summary << std::fixed << std::setprecision(6);
@@ -450,19 +471,22 @@ void write_outputs(
             rss.push_back(value->peak_rss_mb);
         }
         const auto current = medians[key];
-        const std::string method = key.first;
+        const std::string method = std::get<0>(key);
+        const auto threads = std::get<1>(key);
+        const auto sampling_rate = std::get<2>(key);
         const bool is32 = method.size() >= 2 && method.substr(method.size() - 2) == "32";
         const std::string baseline = is32 ? "div32" : "div64";
-        const auto baseline_it = medians.find({baseline, key.second});
+        const auto baseline_it = medians.find({baseline, threads, sampling_rate});
         const double speedup = baseline_it == medians.end() || current == 0.0
             ? 0.0 : baseline_it->second / current;
         const std::string caps = is32 ? "caps32" : "caps64";
-        const auto one_thread = medians.find({caps, 1});
+        const auto one_thread = medians.find({caps, 1, sampling_rate});
         const double efficiency = method.rfind("caps", 0) != 0 ||
                                   one_thread == medians.end() || current == 0.0
-            ? 0.0 : one_thread->second / (current * static_cast<double>(key.second));
+            ? 0.0 : one_thread->second / (current * static_cast<double>(threads));
         summary << method << '\t' << group.front()->backend << '\t'
-                << static_cast<unsigned>(group.front()->coordinate_width) << '\t' << key.second << '\t'
+                << static_cast<unsigned>(group.front()->coordinate_width) << '\t' << threads << '\t'
+                << sampling_rate << '\t' << group.front()->suffix_count << '\t'
                 << sufkit::to_string(options.acceleration) << '\t' << group.size() << '\t'
                 << median(times) << '\t' << *std::min_element(times.begin(), times.end()) << '\t'
                 << *std::max_element(times.begin(), times.end()) << '\t' << median(rss) << '\t'
@@ -472,6 +496,7 @@ void write_outputs(
         if (std::string(result.status) == "ok") continue;
         summary << result.method << '\t' << result.backend << '\t'
                 << static_cast<unsigned>(result.coordinate_width) << '\t' << result.threads << '\t'
+                << result.sampling_rate << '\t' << result.suffix_count << '\t'
                 << sufkit::to_string(options.acceleration) << "\t0\t0\t0\t0\t0\t0\t0\t0\t"
                 << result.status << '\n';
     }
@@ -479,15 +504,18 @@ void write_outputs(
 
 void correctness_gate(const std::vector<WorkerResult>& results) {
     const WorkerResult* reference = nullptr;
+    std::map<std::uint32_t, const WorkerResult*> sampling_references;
     for (const auto& result : results) {
         if (std::string(result.status) != "ok") continue;
-        if (reference == nullptr) { reference = &result; continue; }
+        if (reference == nullptr) reference = &result;
+        const auto [it, inserted] = sampling_references.emplace(result.sampling_rate, &result);
+        const auto* same_sampling = it->second;
         if (result.text_symbols != reference->text_symbols ||
             result.fingerprint != reference->fingerprint ||
-            result.sa_hash_1 != reference->sa_hash_1 ||
-            result.sa_hash_2 != reference->sa_hash_2 ||
             result.exact_checksum != reference->exact_checksum ||
-            result.mem_checksum != reference->mem_checksum) {
+            result.mem_checksum != reference->mem_checksum ||
+            (!inserted && (result.sa_hash_1 != same_sampling->sa_hash_1 ||
+                           result.sa_hash_2 != same_sampling->sa_hash_2))) {
             throw sufkit::Error(
                 sufkit::ErrorCode::build_failure,
                 std::string("correctness mismatch between ") + reference->method + " and " + result.method);
@@ -515,19 +543,24 @@ int run(int argc, char** argv) {
     std::vector<WorkerResult> results;
     for (const auto& method : options.methods) {
         for (const auto threads : options.threads) {
+          for (const auto sampling_rate : options.sampling_rates) {
             if (threads > static_cast<std::uint64_t>(logical_cpus)) {
                 WorkerResult skipped;
                 copy_text(skipped.method, sizeof(skipped.method), method);
                 copy_text(skipped.status, sizeof(skipped.status), "not_applicable:threads_exceed_logical_cpus");
                 skipped.threads = threads;
+                skipped.sampling_rate = sampling_rate;
                 results.push_back(skipped);
                 continue;
             }
             for (std::uint32_t repetition = 1; repetition <= options.repetitions; ++repetition) {
                 std::cerr << "running " << method << " threads=" << threads
+                          << " sampling=" << sampling_rate
                           << " repetition=" << repetition << '/' << options.repetitions << '\n';
-                results.push_back(isolated_worker(options, reference, method, threads, repetition));
+                results.push_back(isolated_worker(
+                    options, reference, method, threads, sampling_rate, repetition));
             }
+          }
         }
     }
     write_outputs(options, results, logical_cpus);
