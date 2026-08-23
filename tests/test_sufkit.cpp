@@ -345,6 +345,169 @@ void test_fm_index(const std::filesystem::path& directory) {
     }
 }
 
+using MemTuple = std::tuple<std::uint64_t, sufkit::SequenceId, sufkit::Position,
+                            std::uint64_t, sufkit::Strand>;
+
+std::vector<MemTuple> mem_tuples(const sufkit::MemResult& result);
+std::vector<std::pair<sufkit::SequenceId, sufkit::Position>> naive_positions(
+    const std::vector<sufkit::SequenceRecord>& records,
+    const std::string& pattern);
+
+void test_learned_sa(const std::filesystem::path& directory) {
+    const auto reference = sufkit::GenomeReference::from_records({
+        {"learned-1", "", "ACGTACGTACGTAAAACCCCGGGGTTTTACGTACGT"},
+        {"learned-2", "", "TTTTGGGGCCCCAAAANACGTTGCATGCAACGT"}
+    });
+    sufkit::SuffixArrayBuildOptions options;
+    CHECK(options.acceleration == sufkit::SaAcceleration::lcp_suffix_link);
+    options.learned_index.enabled = true;
+    options.learned_index.k = 4;
+    options.learned_index.bucket_bits = 3;
+    auto index = sufkit::SuffixArray::build(reference, options);
+    CHECK(index.acceleration() == sufkit::SaAcceleration::lcp_suffix_link);
+    CHECK(index.lookup_acceleration() == sufkit::SaLookupAcceleration::sapling_pwl);
+    CHECK(index.info().format_version == "1.2");
+    CHECK(index.info().learned_k == 4);
+    CHECK(index.info().learned_bucket_bits == 3);
+    CHECK(index.info().learned_index_bytes != 0);
+
+    const std::array<std::string, 10> patterns{{
+        "A", "ACG", "ACGT", "ACGTA", "TTTT", "CCCCAAAA", "TGCA", "GGGGG", "AAAA", "CGTT"}};
+    for (const auto& pattern : patterns) {
+        const auto binary = index.equal_range(pattern, sufkit::SaSearchAlgorithm::binary);
+        const auto lcp = index.equal_range(pattern, sufkit::SaSearchAlgorithm::lcp_binary);
+        sufkit::SaSearchStatistics learned_stats;
+        const auto learned = index.equal_range(
+            pattern, sufkit::SaSearchAlgorithm::sapling_pwl, &learned_stats);
+        const auto automatic = index.equal_range(pattern);
+        CHECK(binary.begin == lcp.begin && binary.end == lcp.end);
+        CHECK(binary.begin == learned.begin && binary.end == learned.end);
+        CHECK(binary.begin == automatic.begin && binary.end == automatic.end);
+        CHECK(index.count(pattern, sufkit::StrandMode::forward,
+                          sufkit::SaSearchAlgorithm::sapling_pwl) == binary.size());
+        sufkit::LocateOptions locate_options;
+        const auto binary_hits = index.locate(
+            pattern, locate_options, sufkit::SaSearchAlgorithm::binary);
+        const auto learned_hits = index.locate(
+            pattern, locate_options, sufkit::SaSearchAlgorithm::sapling_pwl);
+        CHECK(binary_hits.total_hits == learned_hits.total_hits);
+        std::vector<std::pair<sufkit::SequenceId, sufkit::Position>> learned_positions;
+        for (const auto& match : learned_hits.hits)
+            learned_positions.emplace_back(match.sequence_id, match.position);
+        CHECK(learned_positions == naive_positions({
+            {"learned-1", "", "ACGTACGTACGTAAAACCCCGGGGTTTTACGTACGT"},
+            {"learned-2", "", "TTTTGGGGCCCCAAAANACGTTGCATGCAACGT"}}, pattern));
+        if (pattern.size() < 4) CHECK(learned_stats.full_binary_fallbacks != 0);
+    }
+
+    sufkit::MemOptions mem_options;
+    mem_options.min_length = 4;
+    mem_options.algorithm = sufkit::MemSearchAlgorithm::suffix_link;
+    mem_options.lookup_algorithm = sufkit::SaSearchAlgorithm::binary;
+    const auto binary_mems = index.find_mems("GGACGTACGTNNNTGCATG", mem_options);
+    sufkit::MemSearchStatistics mem_stats;
+    mem_options.lookup_algorithm = sufkit::SaSearchAlgorithm::sapling_pwl;
+    mem_options.statistics = &mem_stats;
+    const auto learned_mems = index.find_mems("GGACGTACGTNNNTGCATG", mem_options);
+    CHECK(mem_tuples(binary_mems) == mem_tuples(learned_mems));
+    CHECK(mem_stats.learned_lookup_calls != 0);
+
+    const auto path = directory / "learned.sa.sufidx";
+    index.save(path);
+    const auto deterministic_path = directory / "learned.sa.copy.sufidx";
+    index.save(deterministic_path);
+    {
+        std::ifstream left(path, std::ios::binary);
+        std::ifstream right(deterministic_path, std::ios::binary);
+        const std::vector<char> left_bytes{
+            std::istreambuf_iterator<char>(left), std::istreambuf_iterator<char>()};
+        const std::vector<char> right_bytes{
+            std::istreambuf_iterator<char>(right), std::istreambuf_iterator<char>()};
+        CHECK(left_bytes == right_bytes);
+    }
+    const auto inspected = sufkit::inspect_index(path);
+    CHECK(inspected.format_version == "1.2");
+    CHECK(inspected.sa_lookup_acceleration == sufkit::SaLookupAcceleration::sapling_pwl);
+    CHECK(inspected.learned_k == 4);
+    CHECK(inspected.learned_bucket_bits == 3);
+    auto loaded = sufkit::SuffixArray::load(path);
+    for (const auto& pattern : patterns) {
+        const auto expected = index.equal_range(pattern, sufkit::SaSearchAlgorithm::binary);
+        const auto observed = loaded.equal_range(pattern, sufkit::SaSearchAlgorithm::sapling_pwl);
+        CHECK(expected.begin == observed.begin && expected.end == observed.end);
+    }
+    std::atomic<bool> learned_concurrent_ok{true};
+    std::vector<std::thread> learned_workers;
+    for (int worker = 0; worker < 4; ++worker) {
+        learned_workers.emplace_back([&] {
+            for (int repetition = 0; repetition < 100; ++repetition) {
+                const auto binary = loaded.equal_range("ACGTAC", sufkit::SaSearchAlgorithm::binary);
+                const auto learned_range = loaded.equal_range(
+                    "ACGTAC", sufkit::SaSearchAlgorithm::sapling_pwl);
+                if (binary.begin != learned_range.begin || binary.end != learned_range.end)
+                    learned_concurrent_ok.store(false);
+            }
+        });
+    }
+    for (auto& worker : learned_workers) worker.join();
+    CHECK(learned_concurrent_ok.load());
+
+    const auto damaged = directory / "learned-damaged.sufidx";
+    std::filesystem::copy_file(path, damaged);
+    {
+        std::fstream file(damaged, std::ios::binary | std::ios::in | std::ios::out);
+        file.seekg(-1, std::ios::end);
+        char value = 0;
+        file.read(&value, 1);
+        file.clear();
+        file.seekp(-1, std::ios::end);
+        value ^= 0x31;
+        file.write(&value, 1);
+    }
+    check_error(sufkit::ErrorCode::corrupt_index, [&] {
+        (void)sufkit::SuffixArray::load(damaged);
+    });
+
+    std::string budget_sequence(10000, 'A');
+    for (std::size_t position = 0; position < budget_sequence.size(); ++position) {
+        static constexpr std::array<char, 4> bases{{'A', 'C', 'G', 'T'}};
+        budget_sequence[position] = bases[(position * 17 + position / 7) % bases.size()];
+    }
+    const auto budget_reference = sufkit::GenomeReference::from_records({
+        {"budget", "", std::move(budget_sequence)}});
+    sufkit::SuffixArrayBuildOptions budget_options;
+    budget_options.acceleration = sufkit::SaAcceleration::none;
+    budget_options.learned_index.enabled = true;
+    budget_options.learned_index.k = 4;
+    auto budget_index = sufkit::SuffixArray::build(budget_reference, budget_options);
+    const auto budget_info = budget_index.info();
+    const auto sa_payload_bytes = budget_info.text_symbols * 4ULL;
+    CHECK(budget_info.learned_index_bytes * 10000ULL <= sa_payload_bytes * 100ULL);
+
+    const auto short_reference = sufkit::GenomeReference::from_records({
+        {"short-1", "", "ACGTACGTACGTACGT"},
+        {"short-2", "", "NNNNNNNNNNNNNNNN"}});
+    sufkit::SuffixArrayBuildOptions short_options;
+    short_options.acceleration = sufkit::SaAcceleration::none;
+    short_options.learned_index.enabled = true;
+    short_options.learned_index.k = 20;
+    short_options.learned_index.bucket_bits = 2;
+    auto short_index = sufkit::SuffixArray::build(short_reference, short_options);
+    CHECK(short_index.lookup_acceleration() == sufkit::SaLookupAcceleration::sapling_pwl);
+    CHECK(short_index.count(std::string(20, 'A'), sufkit::StrandMode::forward,
+                            sufkit::SaSearchAlgorithm::sapling_pwl) == 0);
+
+    sufkit::SuffixArrayBuildOptions no_learned;
+    no_learned.acceleration = sufkit::SaAcceleration::full;
+    auto full = sufkit::SuffixArray::build(reference, no_learned);
+    sufkit::SaSearchStatistics auto_stats;
+    (void)full.equal_range("ACGT", sufkit::SaSearchAlgorithm::auto_select, &auto_stats);
+    CHECK(auto_stats.suffix_comparisons != 0); // auto uses binary, never CHILD
+    check_error(sufkit::ErrorCode::unsupported_backend, [&] {
+        (void)full.equal_range("ACGT", sufkit::SaSearchAlgorithm::sapling_pwl);
+    });
+}
+
 std::vector<std::pair<sufkit::SequenceId, sufkit::Position>> naive_positions(
     const std::vector<sufkit::SequenceRecord>& records,
     const std::string& pattern) {
@@ -399,6 +562,13 @@ void test_randomized_differential() {
         auto sa64 = sufkit::SuffixArray::build(
             reference,
             {sufkit::SaBackend::divsufsort, sufkit::CoordinateWidth::bits64, 1});
+        sufkit::SuffixArrayBuildOptions learned_options;
+        learned_options.coordinate_width = sufkit::CoordinateWidth::bits32;
+        learned_options.acceleration = sufkit::SaAcceleration::full;
+        learned_options.learned_index.enabled = true;
+        learned_options.learned_index.k = 4;
+        learned_options.learned_index.bucket_bits = 3;
+        auto learned = sufkit::SuffixArray::build(reference, learned_options);
         auto fm = sufkit::FmIndex::build(reference);
         for (int query_index = 0; query_index < 12; ++query_index) {
             std::string pattern(static_cast<std::size_t>(1 + next() % 8), 'A');
@@ -409,15 +579,22 @@ void test_randomized_differential() {
             CHECK(sa32.count(pattern) == expected.size());
             CHECK(sa64.count(pattern) == expected.size());
             CHECK(fm.count(pattern) == expected.size());
+            const auto binary_range = learned.equal_range(
+                pattern, sufkit::SaSearchAlgorithm::binary);
+            for (const auto algorithm : {
+                    sufkit::SaSearchAlgorithm::lcp_binary,
+                    sufkit::SaSearchAlgorithm::sapling_pwl,
+                    sufkit::SaSearchAlgorithm::child,
+                    sufkit::SaSearchAlgorithm::auto_select}) {
+                const auto observed = learned.equal_range(pattern, algorithm);
+                CHECK(observed.begin == binary_range.begin && observed.end == binary_range.end);
+            }
             CHECK(index_positions(sa32, pattern) == expected);
             CHECK(index_positions(sa64, pattern) == expected);
             CHECK(index_positions(fm, pattern) == expected);
         }
     }
 }
-
-using MemTuple = std::tuple<std::uint64_t, sufkit::SequenceId, sufkit::Position,
-                            std::uint64_t, sufkit::Strand>;
 
 std::vector<MemTuple> mem_tuples(const sufkit::MemResult& result) {
     std::vector<MemTuple> values;
@@ -502,6 +679,12 @@ void test_mem_search(const std::filesystem::path& directory) {
         options.algorithm = algorithm;
         CHECK(mem_tuples(index.find_mems("CCGATTACAT", options)) == mem_tuples(baseline));
     }
+    sufkit::MemSearchStatistics automatic_statistics;
+    options.algorithm = sufkit::MemSearchAlgorithm::auto_select;
+    options.statistics = &automatic_statistics;
+    (void)index.find_mems("CCGATTACAT", options);
+    CHECK(automatic_statistics.suffix_link_attempts != 0); // full index still auto-selects suffix-link
+    options.statistics = nullptr;
 
     options.algorithm = sufkit::MemSearchAlgorithm::full;
     options.min_length = 3;
@@ -610,7 +793,9 @@ void test_randomized_mem_differential() {
         std::string query(24, 'A');
         for (auto& base : query) base = alphabet[next() % alphabet.size()];
         const auto reference = sufkit::GenomeReference::from_records(records);
-        auto index = sufkit::SuffixArray::build(reference);
+        sufkit::SuffixArrayBuildOptions build_options;
+        build_options.acceleration = sufkit::SaAcceleration::full;
+        auto index = sufkit::SuffixArray::build(reference, build_options);
         for (std::uint64_t min_length = 1; min_length <= 5; ++min_length) {
             sufkit::MemOptions options;
             options.min_length = min_length;
@@ -638,6 +823,7 @@ int main() {
     try {
         test_reference_and_fasta(directory);
         test_suffix_array(directory);
+        test_learned_sa(directory);
         test_fm_index(directory);
         test_randomized_differential();
         test_mem_search(directory);

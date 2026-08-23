@@ -29,12 +29,26 @@ public:
         const SaveOptions& options = {}) const;
 
     SuffixRange equal_range(std::string_view pattern) const;
+    SuffixRange equal_range(
+        std::string_view pattern,
+        SaSearchAlgorithm algorithm,
+        SaSearchStatistics* statistics = nullptr) const;
     std::uint64_t count(
         std::string_view pattern,
         StrandMode strands = StrandMode::forward) const;
+    std::uint64_t count(
+        std::string_view pattern,
+        StrandMode strands,
+        SaSearchAlgorithm algorithm,
+        SaSearchStatistics* statistics = nullptr) const;
     QueryResult locate(
         std::string_view pattern,
         const LocateOptions& options = {}) const;
+    QueryResult locate(
+        std::string_view pattern,
+        const LocateOptions& options,
+        SaSearchAlgorithm algorithm,
+        SaSearchStatistics* statistics = nullptr) const;
 
     void for_each_mem(
         std::string_view query,
@@ -45,6 +59,7 @@ public:
         const MemOptions& options = {},
         std::optional<std::uint64_t> max_matches = {}) const;
     SaAcceleration acceleration() const noexcept;
+    SaLookupAcceleration lookup_acceleration() const noexcept;
 
     Position suffix_at(std::uint64_t row) const;
     SequenceInfo sequence_info(SequenceId id) const;

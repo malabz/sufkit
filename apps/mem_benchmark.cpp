@@ -17,6 +17,7 @@
 #include <set>
 #include <sstream>
 #include <string>
+#include <type_traits>
 #include <tuple>
 #include <vector>
 
@@ -41,6 +42,9 @@ struct Options {
     std::string mummer_version;
     std::string mummer_sha256;
     std::uint64_t seed = 20260822;
+    std::uint32_t learned_k = 20;
+    std::uint32_t learned_memory_overhead_basis_points = 100;
+    std::optional<std::uint32_t> learned_bucket_bits;
 };
 
 struct Dataset {
@@ -58,11 +62,17 @@ struct BuildResult {
     std::string algorithm;
     std::string acceleration;
     double build_seconds = 0;
+    double sa_build_seconds = 0;
+    double isa_build_seconds = 0;
+    double lcp_build_seconds = 0;
+    double child_build_seconds = 0;
+    double learned_index_build_seconds = 0;
     double save_seconds = 0;
     double load_seconds = 0;
     double peak_rss_mb = 0;
     std::uint64_t serialized_bytes = 0;
     std::uint64_t auxiliary_bytes = 0;
+    std::uint64_t learned_index_bytes = 0;
     std::string status = "ok";
 };
 
@@ -77,6 +87,7 @@ struct QueryResultRow {
     std::vector<double> seconds;
     std::uint64_t total_matches = 0;
     std::uint64_t checksum = 0;
+    MemSearchStatistics statistics;
     std::string status = "ok";
 };
 
@@ -89,6 +100,7 @@ struct RawRow {
     double seconds = 0;
     std::uint64_t total_matches = 0;
     std::uint64_t checksum = 0;
+    MemSearchStatistics statistics;
     std::string status = "ok";
 };
 
@@ -136,6 +148,22 @@ Options parse(const std::vector<std::string>& arguments) {
             else if (name == "--reference") result.reference = std::filesystem::path(value);
             else if (name == "--queries") result.query_file = std::filesystem::path(value);
             else if (name == "--seed") result.seed = parse_number(value, "--seed");
+            else if (name == "--learned-k") {
+                const auto parsed = parse_number(value, "--learned-k");
+                if (parsed == 0 || parsed > 31)
+                    throw Error(ErrorCode::invalid_input, "--learned-k must be in [1,31]");
+                result.learned_k = static_cast<std::uint32_t>(parsed);
+            } else if (name == "--learned-memory-bp") {
+                const auto parsed = parse_number(value, "--learned-memory-bp");
+                if (parsed == 0 || parsed > std::numeric_limits<std::uint32_t>::max())
+                    throw Error(ErrorCode::invalid_input, "--learned-memory-bp is out of range");
+                result.learned_memory_overhead_basis_points = static_cast<std::uint32_t>(parsed);
+            } else if (name == "--learned-bucket-bits") {
+                const auto parsed = parse_number(value, "--learned-bucket-bits");
+                if (parsed > 31)
+                    throw Error(ErrorCode::invalid_input, "--learned-bucket-bits must be at most 31");
+                result.learned_bucket_bits = static_cast<std::uint32_t>(parsed);
+            }
             else throw Error(ErrorCode::invalid_input, "unknown MEM benchmark option: " + name);
         }
     }
@@ -153,7 +181,8 @@ Options parse(const std::vector<std::string>& arguments) {
         if (valid_scenarios.count(scenario) == 0)
             throw Error(ErrorCode::invalid_input, "unknown MEM benchmark scenario: " + scenario);
     const std::set<std::string> valid_methods{
-        "mem-baseline", "mem-lcp", "mem-child", "mem-suffix-link", "mem-full", "mummer4"};
+        "mem-baseline", "mem-lcp", "mem-child", "mem-suffix-link", "mem-full",
+        "mem-suffix-link-binary", "mem-suffix-link-sapling", "mummer4"};
     for (const auto& method : result.methods) {
         if (valid_methods.count(method) == 0) throw Error(ErrorCode::invalid_input, "unknown MEM benchmark method: " + method);
         if (method == "mummer4" && !result.mummer4) throw Error(ErrorCode::invalid_input, "mummer4 method requires --mummer4 PATH");
@@ -223,23 +252,30 @@ Dataset generate_dataset(const Options& options, const std::string& scenario) {
     for (std::size_t id = 0; id < query_count; ++id) {
         const auto contig = static_cast<std::size_t>(next_random(state) % dataset.reference.size());
         const auto& source = dataset.reference[contig].sequence;
+        const auto effective_query_length = std::min(query_length, source.size());
+        if (effective_query_length == 0) continue;
         std::size_t position = 0;
         do {
             if (scenario == "repeat-rich" && id % 200 == 0) {
-                const auto repeat_slots = std::max<std::size_t>(1, (source.size() * 2 / 5 - query_length) /
-                    repeat_template.size());
+                const auto repeat_extent = source.size() * 2 / 5;
+                const auto repeat_slots = repeat_extent > effective_query_length
+                    ? std::max<std::size_t>(1, (repeat_extent - effective_query_length) /
+                        repeat_template.size())
+                    : 1;
                 position = static_cast<std::size_t>(next_random(state) % repeat_slots) * repeat_template.size();
             } else if (scenario == "repeat-rich") {
                 const auto random_begin = source.size() * 2 / 5;
                 position = random_begin + static_cast<std::size_t>(next_random(state) %
-                    (source.size() - random_begin - query_length));
+                    (source.size() - random_begin - effective_query_length + 1));
             } else {
-                position = static_cast<std::size_t>(next_random(state) % (source.size() - query_length));
+                position = static_cast<std::size_t>(next_random(state) %
+                    (source.size() - effective_query_length + 1));
             }
-        } while (source.substr(position, query_length).find('N') != std::string::npos);
-        auto query = source.substr(position, query_length);
+        } while (source.substr(position, effective_query_length).find('N') != std::string::npos);
+        auto query = source.substr(position, effective_query_length);
         if (id % 3 != 0) {
-            const auto mutation = static_cast<std::size_t>(query.size() / 2 + id % 7);
+            const auto mutation = std::min<std::size_t>(
+                query.size() - 1, query.size() / 2 + id % 7);
             const auto original = query[mutation];
             query[mutation] = bases[(static_cast<std::size_t>(original) + id + 1) & 3U];
             if (query[mutation] == original) query[mutation] = original == 'A' ? 'C' : 'A';
@@ -332,7 +368,8 @@ SaAcceleration acceleration_for(const std::string& method) {
     if (method == "mem-baseline") return SaAcceleration::none;
     if (method == "mem-lcp") return SaAcceleration::lcp;
     if (method == "mem-child") return SaAcceleration::lcp_child;
-    if (method == "mem-suffix-link") return SaAcceleration::lcp_suffix_link;
+    if (method == "mem-suffix-link" || method == "mem-suffix-link-binary" ||
+        method == "mem-suffix-link-sapling") return SaAcceleration::lcp_suffix_link;
     return SaAcceleration::full;
 }
 
@@ -340,7 +377,8 @@ MemSearchAlgorithm algorithm_for(const std::string& method) {
     if (method == "mem-baseline") return MemSearchAlgorithm::baseline;
     if (method == "mem-lcp") return MemSearchAlgorithm::lcp;
     if (method == "mem-child") return MemSearchAlgorithm::child;
-    if (method == "mem-suffix-link") return MemSearchAlgorithm::suffix_link;
+    if (method == "mem-suffix-link" || method == "mem-suffix-link-binary" ||
+        method == "mem-suffix-link-sapling") return MemSearchAlgorithm::suffix_link;
     return MemSearchAlgorithm::full;
 }
 
@@ -361,15 +399,30 @@ void benchmark_internal(const Dataset& dataset, const Options& options, const st
     const auto reference = GenomeReference::from_records(dataset.reference);
     SuffixArrayBuildOptions build_options;
     build_options.acceleration = acceleration_for(method);
+    if (method == "mem-suffix-link-sapling") {
+        build_options.learned_index.enabled = true;
+        build_options.learned_index.k = options.learned_k;
+        build_options.learned_index.memory_overhead_basis_points =
+            options.learned_memory_overhead_basis_points;
+        build_options.learned_index.bucket_bits = options.learned_bucket_bits;
+    }
+    SuffixArrayBuildStatistics build_statistics;
+    build_options.statistics = &build_statistics;
     const auto build_begin = Clock::now();
     auto index = SuffixArray::build(reference, build_options);
     build.build_seconds = seconds_since(build_begin);
+    build.sa_build_seconds = build_statistics.sa_seconds;
+    build.isa_build_seconds = build_statistics.isa_seconds;
+    build.lcp_build_seconds = build_statistics.lcp_seconds;
+    build.child_build_seconds = build_statistics.child_seconds;
+    build.learned_index_build_seconds = build_statistics.learned_index_seconds;
     const auto index_path = scratch / (method + ".sufidx");
     const auto save_begin = Clock::now();
     index.save(index_path, {true});
     build.save_seconds = seconds_since(save_begin);
     build.serialized_bytes = serialized_size(index_path);
     build.auxiliary_bytes = index.info().auxiliary_bytes;
+    build.learned_index_bytes = index.info().learned_index_bytes;
     const auto load_begin = Clock::now();
     auto loaded = SuffixArray::load(index_path);
     build.load_seconds = seconds_since(load_begin);
@@ -381,6 +434,10 @@ void benchmark_internal(const Dataset& dataset, const Options& options, const st
         MemOptions mem_options;
         mem_options.min_length = min_length;
         mem_options.algorithm = algorithm_for(method);
+        if (method == "mem-suffix-link-binary")
+            mem_options.lookup_algorithm = SaSearchAlgorithm::binary;
+        else if (method == "mem-suffix-link-sapling")
+            mem_options.lookup_algorithm = SaSearchAlgorithm::sapling_pwl;
         for (const auto& query : dataset.queries) (void)loaded.find_mems(query.sequence, mem_options);
         QueryResultRow summary;
         summary.dataset = dataset.name;
@@ -394,21 +451,260 @@ void benchmark_internal(const Dataset& dataset, const Options& options, const st
             const auto begin = Clock::now();
             std::uint64_t checksum = checksum_seed();
             std::uint64_t total = 0;
+            MemSearchStatistics aggregate_statistics;
             for (std::size_t query_id = 0; query_id < dataset.queries.size(); ++query_id) {
+                MemSearchStatistics search_statistics;
+                mem_options.statistics = &search_statistics;
                 const auto result = loaded.find_mems(dataset.queries[query_id].sequence, mem_options);
                 mix(checksum, query_id);
                 mix(checksum, result.total_matches);
                 total += result.total_matches;
                 for (const auto& match : result.matches) mix_match(checksum, match);
+                aggregate_statistics.lookup_calls += search_statistics.lookup_calls;
+                aggregate_statistics.binary_lookup_calls += search_statistics.binary_lookup_calls;
+                aggregate_statistics.learned_lookup_calls += search_statistics.learned_lookup_calls;
+                aggregate_statistics.suffix_link_attempts += search_statistics.suffix_link_attempts;
+                aggregate_statistics.suffix_link_successes += search_statistics.suffix_link_successes;
+                aggregate_statistics.suffix_link_fallbacks += search_statistics.suffix_link_fallbacks;
+                aggregate_statistics.previous_empty_lookups += search_statistics.previous_empty_lookups;
+                aggregate_statistics.lookup.suffix_comparisons += search_statistics.lookup.suffix_comparisons;
+                aggregate_statistics.lookup.character_comparisons += search_statistics.lookup.character_comparisons;
+                aggregate_statistics.lookup.gallop_probes += search_statistics.lookup.gallop_probes;
+                aggregate_statistics.lookup.local_window_rows += search_statistics.lookup.local_window_rows;
+                aggregate_statistics.lookup.local_window_rows_max = std::max(
+                    aggregate_statistics.lookup.local_window_rows_max,
+                    search_statistics.lookup.local_window_rows_max);
+                aggregate_statistics.lookup.predictions += search_statistics.lookup.predictions;
+                aggregate_statistics.lookup.prediction_absolute_error_sum +=
+                    search_statistics.lookup.prediction_absolute_error_sum;
+                aggregate_statistics.lookup.prediction_absolute_error_max = std::max(
+                    aggregate_statistics.lookup.prediction_absolute_error_max,
+                    search_statistics.lookup.prediction_absolute_error_max);
+                aggregate_statistics.lookup.full_binary_fallbacks +=
+                    search_statistics.lookup.full_binary_fallbacks;
             }
             const auto elapsed = seconds_since(begin);
             summary.seconds.push_back(elapsed);
             summary.total_matches = total;
             summary.checksum = checksum;
-            raw.push_back({dataset.name, method, "mem", min_length, repetition, elapsed, total, checksum, "ok"});
+            summary.statistics = aggregate_statistics;
+            RawRow raw_row;
+            raw_row.dataset = dataset.name;
+            raw_row.method = method;
+            raw_row.operation = "mem";
+            raw_row.min_length = min_length;
+            raw_row.repetition = repetition;
+            raw_row.seconds = elapsed;
+            raw_row.total_matches = total;
+            raw_row.checksum = checksum;
+            raw_row.statistics = aggregate_statistics;
+            raw.push_back(std::move(raw_row));
         }
         queries.push_back(std::move(summary));
     }
+}
+
+template <class Value>
+void write_worker_value(std::ostream& output, const Value& value) {
+    static_assert(std::is_trivially_copyable<Value>::value, "worker value must be POD-like");
+    output.write(reinterpret_cast<const char*>(&value), sizeof(value));
+}
+
+template <class Value>
+Value read_worker_value(std::istream& input, const char* label) {
+    static_assert(std::is_trivially_copyable<Value>::value, "worker value must be POD-like");
+    Value value{};
+    input.read(reinterpret_cast<char*>(&value), sizeof(value));
+    if (!input) throw Error(ErrorCode::build_failure,
+                            std::string("truncated MEM worker field: ") + label);
+    return value;
+}
+
+void write_worker_string(std::ostream& output, const std::string& value) {
+    write_worker_value(output, static_cast<std::uint64_t>(value.size()));
+    output.write(value.data(), static_cast<std::streamsize>(value.size()));
+}
+
+std::string read_worker_string(std::istream& input, const char* label) {
+    const auto size = read_worker_value<std::uint64_t>(input, label);
+    if (size > 1U << 20) throw Error(ErrorCode::build_failure,
+                                     std::string("invalid MEM worker string: ") + label);
+    std::string value(static_cast<std::size_t>(size), '\0');
+    input.read(value.data(), static_cast<std::streamsize>(value.size()));
+    if (!input) throw Error(ErrorCode::build_failure,
+                            std::string("truncated MEM worker string: ") + label);
+    return value;
+}
+
+void write_internal_worker_file(
+    const std::filesystem::path& path,
+    const std::vector<BuildResult>& builds,
+    const std::vector<QueryResultRow>& queries,
+    const std::vector<RawRow>& raw) {
+    std::ofstream output(path, std::ios::binary);
+    if (!output) throw Error(ErrorCode::io_error, "cannot create MEM worker result");
+    write_worker_value(output, static_cast<std::uint64_t>(builds.size()));
+    for (const auto& row : builds) {
+        write_worker_string(output, row.dataset);
+        write_worker_string(output, row.method);
+        write_worker_string(output, row.algorithm);
+        write_worker_string(output, row.acceleration);
+        write_worker_string(output, row.status);
+        write_worker_value(output, row.build_seconds);
+        write_worker_value(output, row.sa_build_seconds);
+        write_worker_value(output, row.isa_build_seconds);
+        write_worker_value(output, row.lcp_build_seconds);
+        write_worker_value(output, row.child_build_seconds);
+        write_worker_value(output, row.learned_index_build_seconds);
+        write_worker_value(output, row.save_seconds);
+        write_worker_value(output, row.load_seconds);
+        write_worker_value(output, row.peak_rss_mb);
+        write_worker_value(output, row.serialized_bytes);
+        write_worker_value(output, row.auxiliary_bytes);
+        write_worker_value(output, row.learned_index_bytes);
+    }
+    write_worker_value(output, static_cast<std::uint64_t>(queries.size()));
+    for (const auto& row : queries) {
+        write_worker_string(output, row.dataset);
+        write_worker_string(output, row.method);
+        write_worker_string(output, row.algorithm);
+        write_worker_string(output, row.acceleration);
+        write_worker_string(output, row.status);
+        write_worker_value(output, row.min_length);
+        write_worker_value(output, row.query_count);
+        write_worker_value(output, row.query_bases);
+        write_worker_value(output, row.total_matches);
+        write_worker_value(output, row.checksum);
+        write_worker_value(output, row.statistics);
+        write_worker_value(output, static_cast<std::uint64_t>(row.seconds.size()));
+        for (const auto seconds : row.seconds) write_worker_value(output, seconds);
+    }
+    write_worker_value(output, static_cast<std::uint64_t>(raw.size()));
+    for (const auto& row : raw) {
+        write_worker_string(output, row.dataset);
+        write_worker_string(output, row.method);
+        write_worker_string(output, row.operation);
+        write_worker_string(output, row.status);
+        write_worker_value(output, row.min_length);
+        write_worker_value(output, row.repetition);
+        write_worker_value(output, row.seconds);
+        write_worker_value(output, row.total_matches);
+        write_worker_value(output, row.checksum);
+        write_worker_value(output, row.statistics);
+    }
+    if (!output) throw Error(ErrorCode::io_error, "cannot finish MEM worker result");
+}
+
+void read_internal_worker_file(
+    const std::filesystem::path& path,
+    std::vector<BuildResult>& builds,
+    std::vector<QueryResultRow>& queries,
+    std::vector<RawRow>& raw) {
+    std::ifstream input(path, std::ios::binary);
+    if (!input) throw Error(ErrorCode::build_failure, "MEM worker result is missing");
+    const auto build_count = read_worker_value<std::uint64_t>(input, "build count");
+    for (std::uint64_t index = 0; index < build_count; ++index) {
+        BuildResult row;
+        row.dataset = read_worker_string(input, "build dataset");
+        row.method = read_worker_string(input, "build method");
+        row.algorithm = read_worker_string(input, "build algorithm");
+        row.acceleration = read_worker_string(input, "build acceleration");
+        row.status = read_worker_string(input, "build status");
+        row.build_seconds = read_worker_value<double>(input, "build seconds");
+        row.sa_build_seconds = read_worker_value<double>(input, "SA seconds");
+        row.isa_build_seconds = read_worker_value<double>(input, "ISA seconds");
+        row.lcp_build_seconds = read_worker_value<double>(input, "LCP seconds");
+        row.child_build_seconds = read_worker_value<double>(input, "CHILD seconds");
+        row.learned_index_build_seconds = read_worker_value<double>(input, "model seconds");
+        row.save_seconds = read_worker_value<double>(input, "save seconds");
+        row.load_seconds = read_worker_value<double>(input, "load seconds");
+        row.peak_rss_mb = read_worker_value<double>(input, "peak RSS");
+        row.serialized_bytes = read_worker_value<std::uint64_t>(input, "serialized bytes");
+        row.auxiliary_bytes = read_worker_value<std::uint64_t>(input, "auxiliary bytes");
+        row.learned_index_bytes = read_worker_value<std::uint64_t>(input, "model bytes");
+        builds.push_back(std::move(row));
+    }
+    const auto query_count = read_worker_value<std::uint64_t>(input, "query count");
+    for (std::uint64_t index = 0; index < query_count; ++index) {
+        QueryResultRow row;
+        row.dataset = read_worker_string(input, "query dataset");
+        row.method = read_worker_string(input, "query method");
+        row.algorithm = read_worker_string(input, "query algorithm");
+        row.acceleration = read_worker_string(input, "query acceleration");
+        row.status = read_worker_string(input, "query status");
+        row.min_length = read_worker_value<std::uint64_t>(input, "minimum length");
+        row.query_count = read_worker_value<std::uint64_t>(input, "query cardinality");
+        row.query_bases = read_worker_value<std::uint64_t>(input, "query bases");
+        row.total_matches = read_worker_value<std::uint64_t>(input, "total matches");
+        row.checksum = read_worker_value<std::uint64_t>(input, "query checksum");
+        row.statistics = read_worker_value<MemSearchStatistics>(input, "query statistics");
+        const auto repetitions = read_worker_value<std::uint64_t>(input, "query repetitions");
+        if (repetitions > 1000) throw Error(ErrorCode::build_failure,
+                                            "invalid MEM worker repetition count");
+        row.seconds.reserve(static_cast<std::size_t>(repetitions));
+        for (std::uint64_t repetition = 0; repetition < repetitions; ++repetition)
+            row.seconds.push_back(read_worker_value<double>(input, "query seconds"));
+        queries.push_back(std::move(row));
+    }
+    const auto raw_count = read_worker_value<std::uint64_t>(input, "raw count");
+    for (std::uint64_t index = 0; index < raw_count; ++index) {
+        RawRow row;
+        row.dataset = read_worker_string(input, "raw dataset");
+        row.method = read_worker_string(input, "raw method");
+        row.operation = read_worker_string(input, "raw operation");
+        row.status = read_worker_string(input, "raw status");
+        row.min_length = read_worker_value<std::uint64_t>(input, "raw minimum length");
+        row.repetition = read_worker_value<std::uint32_t>(input, "raw repetition");
+        row.seconds = read_worker_value<double>(input, "raw seconds");
+        row.total_matches = read_worker_value<std::uint64_t>(input, "raw matches");
+        row.checksum = read_worker_value<std::uint64_t>(input, "raw checksum");
+        row.statistics = read_worker_value<MemSearchStatistics>(input, "raw statistics");
+        raw.push_back(std::move(row));
+    }
+    if (input.peek() != std::char_traits<char>::eof())
+        throw Error(ErrorCode::build_failure, "MEM worker result has trailing bytes");
+}
+
+void benchmark_internal_isolated(
+    const Dataset& dataset,
+    const Options& options,
+    const std::string& method,
+    const std::filesystem::path& scratch,
+    std::vector<BuildResult>& builds,
+    std::vector<QueryResultRow>& queries,
+    std::vector<RawRow>& raw) {
+    const auto result_path = scratch / (method + ".worker.bin");
+    const auto error_path = scratch / (method + ".worker.error");
+    const pid_t pid = fork();
+    if (pid < 0) throw Error(ErrorCode::io_error, "cannot fork MEM benchmark worker");
+    if (pid == 0) {
+        try {
+            std::vector<BuildResult> worker_builds;
+            std::vector<QueryResultRow> worker_queries;
+            std::vector<RawRow> worker_raw;
+            benchmark_internal(
+                dataset, options, method, scratch,
+                worker_builds, worker_queries, worker_raw);
+            write_internal_worker_file(result_path, worker_builds, worker_queries, worker_raw);
+            _exit(0);
+        } catch (const std::exception& error) {
+            std::ofstream error_output(error_path);
+            error_output << error.what() << '\n';
+            error_output.flush();
+            _exit(1);
+        }
+    }
+    int status = 0;
+    if (waitpid(pid, &status, 0) < 0)
+        throw Error(ErrorCode::io_error, "cannot wait for MEM benchmark worker");
+    if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+        std::ifstream error_input(error_path);
+        std::string message;
+        std::getline(error_input, message);
+        throw Error(ErrorCode::build_failure,
+                    message.empty() ? "MEM benchmark worker failed" : message);
+    }
+    read_internal_worker_file(result_path, builds, queries, raw);
 }
 
 struct ProcessResult {
@@ -565,8 +861,16 @@ void benchmark_mummer(const Dataset& dataset, const Options& options,
             summary.seconds.push_back(measured.seconds);
             summary.total_matches = total;
             summary.checksum = checksum;
-            raw.push_back({dataset.name, "mummer4", "load+mem", length, repetition,
-                           measured.seconds, total, checksum, "ok"});
+            RawRow raw_row;
+            raw_row.dataset = dataset.name;
+            raw_row.method = "mummer4";
+            raw_row.operation = "load+mem";
+            raw_row.min_length = length;
+            raw_row.repetition = repetition;
+            raw_row.seconds = measured.seconds;
+            raw_row.total_matches = total;
+            raw_row.checksum = checksum;
+            raw.push_back(std::move(raw_row));
         }
         const auto reverse_output = scratch / ("mummer-reverse-" + std::to_string(length) + ".out");
         const auto reverse_error = scratch / ("mummer-reverse-" + std::to_string(length) + ".err");
@@ -634,6 +938,7 @@ void write_outputs(const Options& options, const std::vector<Dataset>& datasets,
     {
         std::ofstream out(options.output_directory / "run_metadata.tsv");
         out << "profile\tscenario\tseed\tdataset\tdataset_fingerprint\ttotal_bases\tcontigs\tquery_count\tquery_bases"
+               "\tlearned_k\tlearned_memory_overhead_basis_points\tlearned_bucket_bits"
                "\tcompiler\tcmake_version\tbuild_type\tos\tarchitecture\tlogical_cpus\tmummer_version\tmummer_sha256\n";
         for (const auto& dataset : datasets) {
             const auto scenario = dataset.name.find("repeat-rich") != std::string::npos ? "repeat-rich" :
@@ -643,6 +948,8 @@ void write_outputs(const Options& options, const std::vector<Dataset>& datasets,
             << '\t' << options.seed << '\t' << dataset.name << '\t' << std::hex << dataset.fingerprint << std::dec
             << '\t' << dataset.total_bases << '\t' << dataset.reference.size() << '\t'
             << dataset.queries.size() << '\t' << dataset.query_bases << '\t'
+            << options.learned_k << '\t' << options.learned_memory_overhead_basis_points << '\t'
+            << (options.learned_bucket_bits ? std::to_string(*options.learned_bucket_bits) : "auto") << '\t'
             << __VERSION__ << '\t' << SUFKIT_BENCH_CMAKE_VERSION << '\t' << SUFKIT_BENCH_BUILD_TYPE
             << "\tLinux\tx86_64\t" << sysconf(_SC_NPROCESSORS_ONLN) << '\t'
             << options.mummer_version << '\t' << options.mummer_sha256 << '\n';
@@ -650,21 +957,24 @@ void write_outputs(const Options& options, const std::vector<Dataset>& datasets,
     }
     {
         std::ofstream out(options.output_directory / "build_results.tsv");
-        out << "dataset\tmethod\talgorithm\tsa_acceleration\tbuild_seconds\tsave_seconds\tload_seconds\tpeak_rss_mb\tserialized_bytes\tauxiliary_bytes\tbits_per_base\tstatus\n";
+        out << "dataset\tmethod\talgorithm\tsa_acceleration\tbuild_seconds\tsa_build_seconds\tisa_build_seconds\tlcp_build_seconds\tchild_build_seconds\tlearned_index_build_seconds\tsave_seconds\tload_seconds\tpeak_rss_mb\tserialized_bytes\tauxiliary_bytes\tlearned_index_bytes\tbits_per_base\tstatus\n";
         out << std::fixed << std::setprecision(6);
         for (const auto& row : builds) {
             const auto data = std::find_if(datasets.begin(), datasets.end(), [&](const auto& value) { return value.name == row.dataset; });
             const double bits = data == datasets.end() || data->total_bases == 0 ? 0 :
                 static_cast<double>(row.serialized_bytes) * 8.0 / static_cast<double>(data->total_bases);
             out << row.dataset << '\t' << row.method << '\t' << row.algorithm << '\t' << row.acceleration << '\t'
-                << row.build_seconds << '\t' << row.save_seconds << '\t' << row.load_seconds << '\t'
+                << row.build_seconds << '\t' << row.sa_build_seconds << '\t' << row.isa_build_seconds << '\t'
+                << row.lcp_build_seconds << '\t' << row.child_build_seconds << '\t'
+                << row.learned_index_build_seconds << '\t' << row.save_seconds << '\t' << row.load_seconds << '\t'
                 << row.peak_rss_mb << '\t' << row.serialized_bytes << '\t' << row.auxiliary_bytes << '\t'
+                << row.learned_index_bytes << '\t'
                 << bits << '\t' << row.status << '\n';
         }
     }
     {
         std::ofstream out(options.output_directory / "query_results.tsv");
-        out << "dataset\tmethod\talgorithm\tsa_acceleration\tmin_length\tquery_count\tquery_bases\tseconds_median\tseconds_min\tseconds_max\tquery_bases_per_second\tmatches_per_second\ttotal_matches\tresult_checksum\tstatus\n";
+        out << "dataset\tmethod\talgorithm\tsa_acceleration\tmin_length\tquery_count\tquery_bases\tseconds_median\tseconds_min\tseconds_max\tquery_bases_per_second\tmatches_per_second\ttotal_matches\tresult_checksum\tlookup_calls\tbinary_lookup_calls\tlearned_lookup_calls\tsuffix_link_attempts\tsuffix_link_successes\tsuffix_link_success_rate\tsuffix_link_fallbacks\tprevious_empty_lookups\tlookup_character_comparisons\tlookup_sa_row_accesses\tpredictions\tprediction_error_mean\tprediction_error_max\tlocal_window_rows_mean\tlocal_window_rows_max\tfull_binary_fallbacks\tstatus\n";
         out << std::fixed << std::setprecision(6);
         for (const auto& row : queries) {
             const auto med = median(row.seconds);
@@ -673,16 +983,45 @@ void write_outputs(const Options& options, const std::vector<Dataset>& datasets,
                 << *std::min_element(row.seconds.begin(), row.seconds.end()) << '\t'
                 << *std::max_element(row.seconds.begin(), row.seconds.end()) << '\t'
                 << static_cast<double>(row.query_bases) / med << '\t' << static_cast<double>(row.total_matches) / med << '\t'
-                << row.total_matches << '\t' << std::hex << row.checksum << std::dec << '\t' << row.status << '\n';
+                << row.total_matches << '\t' << std::hex << row.checksum << std::dec << '\t'
+                << row.statistics.lookup_calls << '\t' << row.statistics.binary_lookup_calls << '\t'
+                << row.statistics.learned_lookup_calls << '\t' << row.statistics.suffix_link_attempts << '\t'
+                << row.statistics.suffix_link_successes << '\t'
+                << (row.statistics.suffix_link_attempts == 0 ? 0.0 :
+                    static_cast<double>(row.statistics.suffix_link_successes) /
+                    static_cast<double>(row.statistics.suffix_link_attempts)) << '\t'
+                << row.statistics.suffix_link_fallbacks << '\t' << row.statistics.previous_empty_lookups << '\t'
+                << row.statistics.lookup.character_comparisons << '\t'
+                << row.statistics.lookup.suffix_comparisons << '\t'
+                << row.statistics.lookup.predictions << '\t'
+                << (row.statistics.lookup.predictions == 0 ? 0.0 :
+                    static_cast<double>(row.statistics.lookup.prediction_absolute_error_sum) /
+                    static_cast<double>(row.statistics.lookup.predictions)) << '\t'
+                << row.statistics.lookup.prediction_absolute_error_max << '\t'
+                << (row.statistics.lookup.predictions == 0 ? 0.0 :
+                    static_cast<double>(row.statistics.lookup.local_window_rows) /
+                    static_cast<double>(row.statistics.lookup.predictions)) << '\t'
+                << row.statistics.lookup.local_window_rows_max << '\t'
+                << row.statistics.lookup.full_binary_fallbacks << '\t' << row.status << '\n';
         }
     }
     {
         std::ofstream out(options.output_directory / "raw_repetitions.tsv");
-        out << "dataset\tmethod\toperation\tmin_length\trepetition\tseconds\ttotal_matches\tresult_checksum\tstatus\n";
+        out << "dataset\tmethod\toperation\tmin_length\trepetition\tseconds\ttotal_matches\tresult_checksum\tlookup_calls\tbinary_lookup_calls\tlearned_lookup_calls\tsuffix_link_attempts\tsuffix_link_successes\tsuffix_link_fallbacks\tprevious_empty_lookups\tlookup_character_comparisons\tlookup_sa_row_accesses\tpredictions\tprediction_error_sum\tprediction_error_max\tlocal_window_rows\tlocal_window_rows_max\tfull_binary_fallbacks\tstatus\n";
         out << std::fixed << std::setprecision(6);
         for (const auto& row : raw) out << row.dataset << '\t' << row.method << '\t' << row.operation << '\t'
             << row.min_length << '\t' << row.repetition << '\t' << row.seconds << '\t' << row.total_matches
-            << '\t' << std::hex << row.checksum << std::dec << '\t' << row.status << '\n';
+            << '\t' << std::hex << row.checksum << std::dec << '\t'
+            << row.statistics.lookup_calls << '\t' << row.statistics.binary_lookup_calls << '\t'
+            << row.statistics.learned_lookup_calls << '\t' << row.statistics.suffix_link_attempts << '\t'
+            << row.statistics.suffix_link_successes << '\t' << row.statistics.suffix_link_fallbacks << '\t'
+            << row.statistics.previous_empty_lookups << '\t' << row.statistics.lookup.character_comparisons << '\t'
+            << row.statistics.lookup.suffix_comparisons << '\t' << row.statistics.lookup.predictions << '\t'
+            << row.statistics.lookup.prediction_absolute_error_sum << '\t'
+            << row.statistics.lookup.prediction_absolute_error_max << '\t'
+            << row.statistics.lookup.local_window_rows << '\t'
+            << row.statistics.lookup.local_window_rows_max << '\t'
+            << row.statistics.lookup.full_binary_fallbacks << '\t' << row.status << '\n';
     }
 }
 
@@ -724,7 +1063,8 @@ int run(const std::vector<std::string>& arguments) {
         for (const auto& method : options.methods) {
             std::cerr << "benchmarking " << dataset.name << " with " << method << "...\n";
             if (method == "mummer4") benchmark_mummer(dataset, options, dataset_scratch, builds, queries, raw);
-            else benchmark_internal(dataset, options, method, dataset_scratch, builds, queries, raw);
+            else benchmark_internal_isolated(
+                dataset, options, method, dataset_scratch, builds, queries, raw);
         }
     }
     write_outputs(options, datasets, builds, queries, raw);

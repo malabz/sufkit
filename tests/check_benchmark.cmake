@@ -11,7 +11,7 @@ foreach(output_dir IN ITEMS "${first}" "${second}")
         COMMAND "${SUFKIT_EXECUTABLE}" bench
             --profile smoke
             --scenarios balanced
-            --methods naive,sa32,sa64,fm
+            --methods naive,sa32-binary,sa32-lcp-binary,sa32-sapling,sa32-child,fm
             --pattern-lengths 20,50
             --locate-limits 1,all
             --build-repetitions 1
@@ -36,6 +36,9 @@ file(READ "${second}/run_metadata.tsv" second_metadata)
 if(NOT first_metadata MATCHES "methods\tpattern_lengths\tlocate_limits\tbuild_repetitions")
     message(FATAL_ERROR "run_metadata.tsv does not record benchmark parameters")
 endif()
+if(NOT first_metadata MATCHES "learned_k\tlearned_memory_overhead_basis_points\tlearned_bucket_bits")
+    message(FATAL_ERROR "run_metadata.tsv does not record learned-index parameters")
+endif()
 string(REGEX MATCH "synthetic-smoke-balanced\t([0-9a-f]+)" first_match "${first_metadata}")
 set(first_fingerprint "${CMAKE_MATCH_1}")
 string(REGEX MATCH "synthetic-smoke-balanced\t([0-9a-f]+)" second_match "${second_metadata}")
@@ -47,13 +50,24 @@ endif()
 file(READ "${first}/build_results.tsv" build_results)
 file(READ "${first}/query_results.tsv" query_results)
 file(READ "${first}/raw_repetitions.tsv" raw_results)
-foreach(method IN ITEMS naive sa32 sa64 fm)
+foreach(method IN ITEMS naive sa32-binary sa32-lcp-binary sa32-sapling sa32-child fm)
     if(NOT build_results MATCHES "\t${method}\t")
         message(FATAL_ERROR "build_results.tsv is missing ${method}")
     endif()
 endforeach()
 if(NOT query_results MATCHES "query_group\tpattern_length\tstrand\toperation\tmax_hits")
     message(FATAL_ERROR "query_results.tsv has an unexpected schema")
+endif()
+foreach(metric IN ITEMS suffix_comparisons character_comparisons gallop_probes predictions
+                        prediction_error_mean prediction_error_p50 prediction_error_p95
+                        prediction_error_p99 full_binary_fallbacks)
+    if(NOT query_results MATCHES "${metric}")
+        message(FATAL_ERROR "query_results.tsv is missing learned-search metric ${metric}")
+    endif()
+endforeach()
+if(NOT build_results MATCHES "learned_index_build_seconds_median" OR
+   NOT build_results MATCHES "learned_index_bytes")
+    message(FATAL_ERROR "build_results.tsv is missing learned-index build metrics")
 endif()
 if(NOT raw_results MATCHES "phase\tquery_group\tpattern_length\tstrand")
     message(FATAL_ERROR "raw_repetitions.tsv has an unexpected schema")

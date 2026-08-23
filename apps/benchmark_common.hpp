@@ -43,6 +43,9 @@ struct Options {
     std::optional<std::uint32_t> build_repetitions;
     std::optional<std::uint32_t> query_repetitions;
     std::optional<std::uint32_t> warmups;
+    std::uint32_t learned_k = 20;
+    std::uint32_t learned_memory_overhead_basis_points = 100;
+    std::optional<std::uint32_t> learned_bucket_bits;
 };
 
 struct QueryCase {
@@ -79,8 +82,14 @@ struct BuildRaw {
     double build_seconds = 0.0;
     double build_user_seconds = 0.0;
     double build_system_seconds = 0.0;
+    double sa_build_seconds = 0.0;
+    double isa_build_seconds = 0.0;
+    double lcp_build_seconds = 0.0;
+    double child_build_seconds = 0.0;
+    double learned_index_build_seconds = 0.0;
     double save_seconds = 0.0;
     std::uint64_t serialized_bytes = 0;
+    std::uint64_t learned_index_bytes = 0;
     std::string status = "ok";
 };
 
@@ -106,6 +115,21 @@ struct QueryRaw {
     std::uint64_t total_hits = 0;
     std::uint64_t reported_hits = 0;
     std::uint64_t checksum = 0;
+    std::uint64_t suffix_comparisons = 0;
+    std::uint64_t character_comparisons = 0;
+    std::uint64_t gallop_probes = 0;
+    std::uint64_t local_window_rows = 0;
+    std::uint64_t local_window_rows_max = 0;
+    std::uint64_t predictions = 0;
+    std::uint64_t prediction_absolute_error_sum = 0;
+    std::uint64_t prediction_absolute_error_max = 0;
+    std::uint64_t prediction_error_p50 = 0;
+    std::uint64_t prediction_error_p95 = 0;
+    std::uint64_t prediction_error_p99 = 0;
+    std::uint64_t local_window_rows_p50 = 0;
+    std::uint64_t local_window_rows_p95 = 0;
+    std::uint64_t local_window_rows_p99 = 0;
+    std::uint64_t full_binary_fallbacks = 0;
     std::string status = "ok";
 };
 
@@ -133,6 +157,9 @@ struct RunContext {
     std::string build_repetitions;
     std::string query_repetitions;
     std::string warmups;
+    std::string learned_k;
+    std::string learned_memory_overhead_basis_points;
+    std::string learned_bucket_bits;
 };
 
 const char* to_string(Profile value) noexcept;

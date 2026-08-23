@@ -93,6 +93,21 @@ struct QueryAggregate {
     std::uint64_t reported_hits = 0;
     std::uint64_t checksum = 0;
     std::vector<double> seconds;
+    std::uint64_t suffix_comparisons = 0;
+    std::uint64_t character_comparisons = 0;
+    std::uint64_t gallop_probes = 0;
+    std::uint64_t local_window_rows = 0;
+    std::uint64_t local_window_rows_max = 0;
+    std::uint64_t predictions = 0;
+    std::uint64_t prediction_absolute_error_sum = 0;
+    std::uint64_t prediction_absolute_error_max = 0;
+    std::uint64_t prediction_error_p50 = 0;
+    std::uint64_t prediction_error_p95 = 0;
+    std::uint64_t prediction_error_p99 = 0;
+    std::uint64_t local_window_rows_p50 = 0;
+    std::uint64_t local_window_rows_p95 = 0;
+    std::uint64_t local_window_rows_p99 = 0;
+    std::uint64_t full_binary_fallbacks = 0;
 };
 
 std::vector<QueryAggregate> aggregate_queries(const MethodResult& result) {
@@ -111,6 +126,21 @@ std::vector<QueryAggregate> aggregate_queries(const MethodResult& result) {
         aggregate.total_hits = raw.total_hits;
         aggregate.reported_hits = raw.reported_hits;
         aggregate.checksum = raw.checksum;
+        aggregate.suffix_comparisons = raw.suffix_comparisons;
+        aggregate.character_comparisons = raw.character_comparisons;
+        aggregate.gallop_probes = raw.gallop_probes;
+        aggregate.local_window_rows = raw.local_window_rows;
+        aggregate.local_window_rows_max = raw.local_window_rows_max;
+        aggregate.predictions = raw.predictions;
+        aggregate.prediction_absolute_error_sum = raw.prediction_absolute_error_sum;
+        aggregate.prediction_absolute_error_max = raw.prediction_absolute_error_max;
+        aggregate.prediction_error_p50 = raw.prediction_error_p50;
+        aggregate.prediction_error_p95 = raw.prediction_error_p95;
+        aggregate.prediction_error_p99 = raw.prediction_error_p99;
+        aggregate.local_window_rows_p50 = raw.local_window_rows_p50;
+        aggregate.local_window_rows_p95 = raw.local_window_rows_p95;
+        aggregate.local_window_rows_p99 = raw.local_window_rows_p99;
+        aggregate.full_binary_fallbacks = raw.full_binary_fallbacks;
         if (raw.status == "ok") aggregate.seconds.push_back(raw.seconds);
     }
     std::vector<QueryAggregate> result_values;
@@ -170,6 +200,7 @@ void write_result_directory(
                 "total_bases\tcontigs\tgc_fraction\tambiguous_fraction\trepeat_fraction\t"
                 "methods\tpattern_lengths\tlocate_limits\tbuild_repetitions\t"
                 "query_repetitions\twarmups\t"
+                "learned_k\tlearned_memory_overhead_basis_points\tlearned_bucket_bits\t"
                 "reference_seconds\tnormalization_seconds\tcompiler\tcompiler_version\t"
                 "cmake_version\tbuild_type\tos\tarchitecture\tcpu_model\tlogical_cpus\n";
     for (const auto& dataset : datasets) {
@@ -181,6 +212,9 @@ void write_result_directory(
                  << context.methods << '\t' << context.pattern_lengths << '\t'
                  << context.locate_limits << '\t' << context.build_repetitions << '\t'
                  << context.query_repetitions << '\t' << context.warmups << '\t'
+                 << context.learned_k << '\t'
+                 << context.learned_memory_overhead_basis_points << '\t'
+                 << context.learned_bucket_bits << '\t'
                  << std::fixed << std::setprecision(6) << dataset.reference_seconds << '\t'
                  << dataset.normalization_seconds << '\t' << compiler_name() << '\t'
                  << compiler_version() << '\t' << SUFKIT_BENCH_CMAKE_VERSION << '\t'
@@ -190,15 +224,25 @@ void write_result_directory(
 
     builds << "run_id\tdataset\tscenario\tmethod\tbackend\tbackend_signature\tsdsl_version\t"
               "coordinate_width\tthreads\tbuild_seconds_median\tbuild_seconds_min\tbuild_seconds_max\t"
-              "build_user_cpu_seconds_median\tbuild_system_cpu_seconds_median\tpeak_rss_mb\t"
-              "save_seconds_median\tserialized_bytes\tbits_per_base\tload_seconds_median\tstatus\n";
+              "build_user_cpu_seconds_median\tbuild_system_cpu_seconds_median\tsa_build_seconds_median\t"
+              "isa_build_seconds_median\tlcp_build_seconds_median\tchild_build_seconds_median\t"
+              "learned_index_build_seconds_median\tpeak_rss_mb\t"
+              "save_seconds_median\tserialized_bytes\tlearned_index_bytes\tbits_per_base\t"
+              "load_seconds_median\tstatus\n";
     queries << "run_id\tdataset\tscenario\tmethod\tquery_group\tpattern_length\tstrand\toperation\t"
                "max_hits\tquery_count\tseconds_median\tseconds_min\tseconds_max\tqps_median\t"
-               "nanoseconds_per_query_median\ttotal_hits\treported_hits\tresult_checksum\tstatus\n";
+               "nanoseconds_per_query_median\ttotal_hits\treported_hits\tresult_checksum\t"
+               "suffix_comparisons\tcharacter_comparisons\tgallop_probes\tlocal_window_rows\t"
+               "local_window_rows_max\tpredictions\tprediction_error_mean\t"
+               "prediction_error_p50\tprediction_error_p95\tprediction_error_p99\t"
+               "prediction_error_max\tlocal_window_rows_p50\tlocal_window_rows_p95\t"
+               "local_window_rows_p99\tfull_binary_fallbacks\tstatus\n";
     raw << "run_id\tdataset\tscenario\tmethod\tphase\tquery_group\tpattern_length\tstrand\t"
            "operation\tmax_hits\trepetition\tquery_count\tseconds\tuser_cpu_seconds\t"
            "system_cpu_seconds\tpeak_rss_mb\ttotal_hits\treported_hits\tresult_checksum\tstatus\t"
-           "query_id\tquery_source\n";
+           "query_id\tquery_source\tsuffix_comparisons\tcharacter_comparisons\t"
+           "gallop_probes\tlocal_window_rows\tlocal_window_rows_max\tpredictions\t"
+           "prediction_error_sum\tprediction_error_max\tfull_binary_fallbacks\n";
     builds << std::fixed << std::setprecision(6);
     queries << std::fixed << std::setprecision(6);
     raw << std::fixed << std::setprecision(6);
@@ -209,12 +253,17 @@ void write_result_directory(
             raw << context.run_id << '\t' << dataset.name << '\t' << to_string(dataset.scenario)
                 << "\tdataset\tquery_definition\t" << query.group << '\t' << query.pattern_length
                 << "\tNA\tdefinition\tNA\t0\t1\t0\t0\t0\t0\t0\t0\t0000000000000000\tok\t"
-                << query.id << '\t' << query.source << '\n';
+                << query.id << '\t' << query.source << "\t0\t0\t0\t0\t0\t0\t0\t0\t0\n";
         }
         for (const auto& result : results[dataset_index]) {
             const auto build_seconds = values_for(result.builds, [](const auto& value) { return value.build_seconds; });
             const auto build_user = values_for(result.builds, [](const auto& value) { return value.build_user_seconds; });
             const auto build_system = values_for(result.builds, [](const auto& value) { return value.build_system_seconds; });
+            const auto sa_build = values_for(result.builds, [](const auto& value) { return value.sa_build_seconds; });
+            const auto isa_build = values_for(result.builds, [](const auto& value) { return value.isa_build_seconds; });
+            const auto lcp_build = values_for(result.builds, [](const auto& value) { return value.lcp_build_seconds; });
+            const auto child_build = values_for(result.builds, [](const auto& value) { return value.child_build_seconds; });
+            const auto learned_build = values_for(result.builds, [](const auto& value) { return value.learned_index_build_seconds; });
             const auto save_seconds = values_for(result.builds, [](const auto& value) { return value.save_seconds; });
             const auto load_seconds = values_for(result.loads, [](const auto& value) { return value.seconds; });
             const auto serialized = result.builds.empty() ? 0 : result.builds.front().serialized_bytes;
@@ -225,8 +274,13 @@ void write_result_directory(
                    << result.sdsl_version << '\t' << static_cast<unsigned>(result.coordinate_width) << '\t'
                    << 1 << '\t' << median(build_seconds) << '\t' << minimum(build_seconds) << '\t'
                    << maximum(build_seconds) << '\t' << median(build_user) << '\t'
-                   << median(build_system) << '\t' << result.peak_rss_mb << '\t'
-                   << median(save_seconds) << '\t' << serialized << '\t' << bits_per_base << '\t'
+                   << median(build_system) << '\t' << median(sa_build) << '\t'
+                   << median(isa_build) << '\t' << median(lcp_build) << '\t'
+                   << median(child_build) << '\t' << median(learned_build) << '\t'
+                   << result.peak_rss_mb << '\t'
+                    << median(save_seconds) << '\t' << serialized << '\t'
+                    << (result.builds.empty() ? 0 : result.builds.front().learned_index_bytes) << '\t'
+                    << bits_per_base << '\t'
                    << median(load_seconds) << '\t' << build_status(result) << '\n';
 
             for (const auto& value : aggregate_queries(result)) {
@@ -241,7 +295,18 @@ void write_result_directory(
                         << value.query_count << '\t' << seconds_median << '\t' << minimum(value.seconds) << '\t'
                         << maximum(value.seconds) << '\t' << qps << '\t' << ns_per_query << '\t'
                         << value.total_hits << '\t' << value.reported_hits << '\t'
-                        << fingerprint_hex(value.checksum) << '\t' << value.status << '\n';
+                        << fingerprint_hex(value.checksum) << '\t' << value.suffix_comparisons << '\t'
+                        << value.character_comparisons << '\t' << value.gallop_probes << '\t'
+                        << value.local_window_rows << '\t' << value.local_window_rows_max << '\t'
+                        << value.predictions << '\t'
+                        << (value.predictions == 0 ? 0.0 :
+                            static_cast<double>(value.prediction_absolute_error_sum) /
+                            static_cast<double>(value.predictions)) << '\t'
+                        << value.prediction_error_p50 << '\t' << value.prediction_error_p95 << '\t'
+                        << value.prediction_error_p99 << '\t' << value.prediction_absolute_error_max << '\t'
+                        << value.local_window_rows_p50 << '\t' << value.local_window_rows_p95 << '\t'
+                        << value.local_window_rows_p99 << '\t'
+                        << value.full_binary_fallbacks << '\t' << value.status << '\n';
             }
 
             for (const auto& value : result.builds) {
@@ -249,18 +314,21 @@ void write_result_directory(
                     << result.method << "\tbuild\tNA\tNA\tNA\tbuild\tNA\t" << value.repetition
                     << "\t0\t" << value.build_seconds << '\t' << value.build_user_seconds << '\t'
                     << value.build_system_seconds << '\t' << result.peak_rss_mb
-                    << "\t0\t0\t0000000000000000\t" << value.status << "\tNA\tNA\n";
+                    << "\t0\t0\t0000000000000000\t" << value.status
+                    << "\tNA\tNA\t0\t0\t0\t0\t0\t0\t0\t0\t0\n";
                 raw << context.run_id << '\t' << dataset.name << '\t' << to_string(dataset.scenario) << '\t'
                     << result.method << "\tsave\tNA\tNA\tNA\tsave\tNA\t" << value.repetition
                     << "\t0\t" << value.save_seconds << "\t0\t0\t" << result.peak_rss_mb
-                    << "\t0\t0\t0000000000000000\t" << value.status << "\tNA\tNA\n";
+                    << "\t0\t0\t0000000000000000\t" << value.status
+                    << "\tNA\tNA\t0\t0\t0\t0\t0\t0\t0\t0\t0\n";
             }
             for (const auto& value : result.loads) {
                 raw << context.run_id << '\t' << dataset.name << '\t' << to_string(dataset.scenario) << '\t'
                     << result.method << "\tload\tNA\tNA\tNA\tload\tNA\t" << value.repetition
                     << "\t0\t" << value.seconds << '\t' << value.user_seconds << '\t'
                     << value.system_seconds << '\t' << result.peak_rss_mb
-                    << "\t0\t0\t0000000000000000\t" << value.status << "\tNA\tNA\n";
+                    << "\t0\t0\t0000000000000000\t" << value.status
+                    << "\tNA\tNA\t0\t0\t0\t0\t0\t0\t0\t0\t0\n";
             }
             for (const auto& value : result.queries) {
                 raw << context.run_id << '\t' << dataset.name << '\t' << to_string(dataset.scenario) << '\t'
@@ -269,7 +337,13 @@ void write_result_directory(
                     << value.repetition << '\t' << value.query_count << '\t' << value.seconds << '\t'
                     << value.user_seconds << '\t' << value.system_seconds << '\t' << result.peak_rss_mb << '\t'
                     << value.total_hits << '\t' << value.reported_hits << '\t'
-                    << fingerprint_hex(value.checksum) << '\t' << value.status << "\tNA\tNA\n";
+                    << fingerprint_hex(value.checksum) << '\t' << value.status << "\tNA\tNA\t"
+                    << value.suffix_comparisons << '\t' << value.character_comparisons << '\t'
+                    << value.gallop_probes << '\t' << value.local_window_rows << '\t'
+                    << value.local_window_rows_max << '\t' << value.predictions << '\t'
+                    << value.prediction_absolute_error_sum << '\t'
+                    << value.prediction_absolute_error_max << '\t'
+                    << value.full_binary_fallbacks << '\n';
             }
         }
     }
