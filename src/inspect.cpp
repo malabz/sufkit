@@ -1,5 +1,6 @@
 #include <sufkit/inspect.hpp>
 
+#include "caps_backend.hpp"
 #include "serialization.hpp"
 
 namespace sufkit {
@@ -9,10 +10,13 @@ IndexInfo inspect_index(const std::filesystem::path& path) {
 }
 
 std::vector<BackendDescriptor> available_sa_backends() {
+    const bool caps = detail::caps_build_available();
     return {
-        {"auto", true, false, "selects divsufsort32 or divsufsort64 by text length"},
+        {"auto", true, true, "selects CaPS-SA at >=1 GiB with threads>1; otherwise divsufsort"},
         {"divsufsort", true, false, "bundled libdivsufsort 2.0.2"},
-        {"caps", false, true, "reserved for sufkit V1.1"}
+        {"caps", caps, true, caps
+            ? "bundled CaPS-SA 2597b373 with ParlayLib e1f1dc0"
+            : "disabled by SUFKIT_ENABLE_CAPS=OFF"}
     };
 }
 
@@ -25,4 +29,3 @@ std::vector<BackendDescriptor> available_fm_backends() {
 }
 
 } // namespace sufkit
-

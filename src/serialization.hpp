@@ -20,6 +20,8 @@ namespace sufkit::detail {
 enum class StoredBackend : std::uint8_t {
     divsufsort32 = 1,
     divsufsort64 = 2,
+    caps32 = 3,
+    caps64 = 4,
     sdsl_csa_wt_huff = 10
 };
 

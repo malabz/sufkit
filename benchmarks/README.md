@@ -26,3 +26,18 @@ are needed:
 `standard` and `full` are opt-in large profiles. User FASTA input is accepted
 with `--reference` and optional `--queries`; the benchmark never downloads a
 dataset automatically.
+
+Parallel suffix-array construction has a separate executable so CaPS work does
+not couple to the unified query benchmark:
+
+```bash
+./build/release/sufkit_sa_build_bench \
+  --profile quick \
+  --methods div32,caps32 \
+  --threads 1,2,4,8 \
+  --acceleration none \
+  --output-dir build/bench/sa-quick
+```
+
+See `docs/benchmark-sa-build.md` for timing boundaries and TSV fields, and
+`docs/benchmark-sa-build-results.md` for the measured smoke/quick results.

@@ -15,8 +15,12 @@ option(SUFKIT_BUILD_CLI "Build the sufkit command-line application" ${_sufkit_to
 option(SUFKIT_BUILD_TESTS "Build sufkit tests" ${_sufkit_top_level_default})
 option(SUFKIT_BUILD_BENCHMARKS "Build the benchmark suite" ${_sufkit_top_level_default})
 option(SUFKIT_BUILD_EXAMPLES "Build consumer examples" ${_sufkit_top_level_default})
+option(SUFKIT_ENABLE_CAPS "Build the bundled CaPS-SA parallel suffix-array backend" ON)
 
 find_package(ZLIB REQUIRED)
+if(SUFKIT_ENABLE_CAPS)
+    find_package(Threads REQUIRED)
+endif()
 
 set(_sufkit_divsufsort_sources
     third_party/libdivsufsort/lib/divsufsort.c
@@ -33,6 +37,23 @@ foreach(_target IN ITEMS sufkit_divsufsort32 sufkit_divsufsort64)
 endforeach()
 target_compile_definitions(sufkit_divsufsort64 PRIVATE BUILD_DIVSUFSORT64)
 
+if(SUFKIT_ENABLE_CAPS)
+    add_library(sufkit_caps OBJECT
+        third_party/caps-sa/src/Suffix_Array.cpp)
+    target_compile_features(sufkit_caps PRIVATE cxx_std_17)
+    target_include_directories(sufkit_caps SYSTEM PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/third_party/caps-sa/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/third_party/parlaylib/include)
+    target_link_libraries(sufkit_caps PRIVATE Threads::Threads)
+    set_target_properties(sufkit_caps PROPERTIES
+        POSITION_INDEPENDENT_CODE ON
+        CXX_VISIBILITY_PRESET hidden
+        VISIBILITY_INLINES_HIDDEN YES)
+    set(_sufkit_caps_objects $<TARGET_OBJECTS:sufkit_caps>)
+else()
+    set(_sufkit_caps_objects)
+endif()
+
 set(_sufkit_library_type STATIC)
 if(BUILD_SHARED_LIBS)
     set(_sufkit_library_type SHARED)
@@ -43,15 +64,19 @@ add_library(sufkit ${_sufkit_library_type}
     src/genome_reference.cpp
     src/query.cpp
     src/serialization.cpp
+    src/caps_backend.cpp
     src/suffix_array.cpp
     src/fm_index.cpp
     src/inspect.cpp
     $<TARGET_OBJECTS:sufkit_divsufsort32>
-    $<TARGET_OBJECTS:sufkit_divsufsort64>)
+    $<TARGET_OBJECTS:sufkit_divsufsort64>
+    ${_sufkit_caps_objects})
 add_library(sufkit::sufkit ALIAS sufkit)
 
 target_compile_features(sufkit PUBLIC cxx_std_17)
-target_compile_definitions(sufkit PRIVATE SUFKIT_BUILDING_LIBRARY)
+target_compile_definitions(sufkit PRIVATE
+    SUFKIT_BUILDING_LIBRARY
+    SUFKIT_HAS_CAPS=$<BOOL:${SUFKIT_ENABLE_CAPS}>)
 if(NOT BUILD_SHARED_LIBS)
     target_compile_definitions(sufkit PUBLIC SUFKIT_STATIC)
 endif()
@@ -66,11 +91,22 @@ target_include_directories(sufkit SYSTEM PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/kseq
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/sdsl/include)
 target_link_libraries(sufkit PUBLIC ZLIB::ZLIB)
+if(SUFKIT_ENABLE_CAPS)
+    target_include_directories(sufkit SYSTEM PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/third_party/caps-sa/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/third_party/parlaylib/include)
+    target_link_libraries(sufkit PRIVATE Threads::Threads)
+endif()
 set_target_properties(sufkit PROPERTIES
     CXX_VISIBILITY_PRESET hidden
     VISIBILITY_INLINES_HIDDEN YES
     VERSION ${PROJECT_VERSION}
     SOVERSION 0)
+
+if(BUILD_SHARED_LIBS AND UNIX AND NOT APPLE AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    target_link_options(sufkit PRIVATE
+        "LINKER:--version-script=${CMAKE_CURRENT_SOURCE_DIR}/cmake/sufkit-private-symbols.map")
+endif()
 
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     target_compile_options(sufkit PRIVATE -Wall -Wextra -Wpedantic -Wconversion -Wshadow)
@@ -109,6 +145,13 @@ if(SUFKIT_BUILD_TESTS)
     target_link_libraries(sufkit_tests PRIVATE sufkit::sufkit)
     target_compile_features(sufkit_tests PRIVATE cxx_std_17)
     add_test(NAME sufkit_tests COMMAND sufkit_tests)
+    add_executable(sufkit_caps_tests tests/test_caps_backend.cpp)
+    target_link_libraries(sufkit_caps_tests PRIVATE sufkit::sufkit)
+    target_compile_features(sufkit_caps_tests PRIVATE cxx_std_17)
+    target_include_directories(sufkit_caps_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_compile_definitions(sufkit_caps_tests PRIVATE
+        SUFKIT_TEST_CAPS_ENABLED=$<BOOL:${SUFKIT_ENABLE_CAPS}>)
+    add_test(NAME sufkit_caps_tests COMMAND sufkit_caps_tests)
     if(SUFKIT_BUILD_CLI AND SUFKIT_BUILD_BENCHMARKS)
         add_test(NAME sufkit_benchmark_smoke
             COMMAND ${CMAKE_COMMAND}
@@ -130,6 +173,16 @@ if(SUFKIT_BUILD_EXAMPLES)
     target_link_libraries(sufkit_example PRIVATE sufkit::sufkit)
 endif()
 
+if(SUFKIT_BUILD_BENCHMARKS)
+    add_executable(sufkit_sa_build_bench benchmarks/sa_build_benchmark.cpp)
+    target_link_libraries(sufkit_sa_build_bench PRIVATE sufkit::sufkit)
+    target_compile_features(sufkit_sa_build_bench PRIVATE cxx_std_17)
+    target_include_directories(sufkit_sa_build_bench PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        target_compile_options(sufkit_sa_build_bench PRIVATE -Wall -Wextra -Wpedantic -Wconversion -Wshadow)
+    endif()
+endif()
+
 install(TARGETS sufkit
     EXPORT sufkitTargets
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
@@ -137,6 +190,9 @@ install(TARGETS sufkit
     ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
 if(SUFKIT_BUILD_CLI)
     install(TARGETS sufkit_cli RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+endif()
+if(SUFKIT_BUILD_BENCHMARKS)
+    install(TARGETS sufkit_sa_build_bench RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 endif()
 install(DIRECTORY include/sufkit DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 install(FILES LICENSE THIRD_PARTY_NOTICES.md

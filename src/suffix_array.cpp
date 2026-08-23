@@ -17,6 +17,7 @@ extern "C" {
 
 #include <sufkit/version.hpp>
 
+#include "caps_backend.hpp"
 #include "genome_reference_internal.hpp"
 #include "query.hpp"
 #include "reference_data.hpp"
@@ -27,7 +28,9 @@ namespace {
 
 using Sa32 = std::vector<std::int32_t>;
 using Sa64 = std::vector<std::int64_t>;
-using SaStorage = std::variant<Sa32, Sa64>;
+using CapsSa32 = std::vector<std::uint32_t>;
+using CapsSa64 = std::vector<std::uint64_t>;
+using SaStorage = std::variant<Sa32, Sa64, CapsSa32, CapsSa64>;
 
 using ChildTable = std::vector<std::uint64_t>;
 
@@ -459,17 +462,37 @@ SuffixArray::~SuffixArray() = default;
 
 SuffixArray SuffixArray::build(const GenomeReference& reference, const SuffixArrayBuildOptions& options) {
     if (options.threads == 0) throw Error(ErrorCode::invalid_input, "suffix-array thread count must be greater than zero");
-    if (options.backend == SaBackend::caps) throw Error(ErrorCode::unsupported_backend, "CaPS is not available in sufkit 0.1.1");
     auto impl = std::make_unique<Impl>();
     impl->reference = metadata_copy(reference.impl_->data);
     impl->text = reference.impl_->data.encoded;
     impl->text.push_back(detail::kSentinel);
     if (impl->text.size() < 2) throw Error(ErrorCode::invalid_input, "reference text is empty");
-    CoordinateWidth width = options.coordinate_width;
-    if (width == CoordinateWidth::auto_select)
-        width = impl->text.size() <= static_cast<std::size_t>(std::numeric_limits<saidx_t>::max())
-            ? CoordinateWidth::bits32 : CoordinateWidth::bits64;
-    if (width == CoordinateWidth::bits32) {
+    const auto backend = detail::resolve_sa_backend(
+        options.backend,
+        impl->text.size(),
+        options.threads,
+        detail::caps_build_available());
+    if (backend == SaBackend::caps && !detail::caps_build_available()) {
+        throw Error(
+            ErrorCode::unsupported_backend,
+            "CaPS-SA support was disabled when sufkit was built");
+    }
+    if (backend != SaBackend::caps && backend != SaBackend::divsufsort) {
+        throw Error(ErrorCode::invalid_input, "invalid suffix-array backend");
+    }
+    const CoordinateWidth width = detail::resolve_sa_coordinate_width(
+        backend,
+        options.coordinate_width,
+        impl->text.size());
+    if (backend == SaBackend::caps && width == CoordinateWidth::bits32) {
+        if (impl->text.size() > static_cast<std::uint64_t>(std::numeric_limits<std::uint32_t>::max()))
+            throw Error(ErrorCode::invalid_input, "reference is too large for CaPS-SA uint32_t");
+        impl->suffix_array = detail::build_caps32(impl->text, options.threads);
+        impl->backend = detail::StoredBackend::caps32;
+    } else if (backend == SaBackend::caps && width == CoordinateWidth::bits64) {
+        impl->suffix_array = detail::build_caps64(impl->text, options.threads);
+        impl->backend = detail::StoredBackend::caps64;
+    } else if (backend == SaBackend::divsufsort && width == CoordinateWidth::bits32) {
         if (impl->text.size() > static_cast<std::size_t>(std::numeric_limits<saidx_t>::max()))
             throw Error(ErrorCode::invalid_input, "reference is too large for divsufsort32");
         Sa32 values(impl->text.size());
@@ -477,7 +500,7 @@ SuffixArray SuffixArray::build(const GenomeReference& reference, const SuffixArr
                 static_cast<saidx_t>(impl->text.size())) != 0) throw Error(ErrorCode::build_failure, "divsufsort32 failed");
         impl->suffix_array = std::move(values);
         impl->backend = detail::StoredBackend::divsufsort32;
-    } else if (width == CoordinateWidth::bits64) {
+    } else if (backend == SaBackend::divsufsort && width == CoordinateWidth::bits64) {
         if (impl->text.size() > static_cast<std::size_t>(std::numeric_limits<saidx64_t>::max()))
             throw Error(ErrorCode::invalid_input, "reference is too large for divsufsort64");
         Sa64 values(impl->text.size());
@@ -614,7 +637,10 @@ void SuffixArray::save(const std::filesystem::path& path, const SaveOptions& opt
 SuffixArray SuffixArray::load(const std::filesystem::path& path) {
     const auto container = detail::read_container(path);
     if (container.spec.kind != IndexKind::suffix_array) throw Error(ErrorCode::corrupt_index, "index does not contain a suffix array");
-    if (container.spec.backend != detail::StoredBackend::divsufsort32 && container.spec.backend != detail::StoredBackend::divsufsort64)
+    if (container.spec.backend != detail::StoredBackend::divsufsort32 &&
+        container.spec.backend != detail::StoredBackend::divsufsort64 &&
+        container.spec.backend != detail::StoredBackend::caps32 &&
+        container.spec.backend != detail::StoredBackend::caps64)
         throw Error(ErrorCode::unsupported_backend, "unsupported suffix-array payload");
     auto impl = std::make_unique<Impl>();
     impl->reference = detail::read_metadata(container);
@@ -639,24 +665,48 @@ SuffixArray SuffixArray::load(const std::filesystem::path& path) {
     const auto count = detail::read_u64(*sa_input, "suffix-array length");
     if (count != impl->text.size()) throw Error(ErrorCode::corrupt_index, "suffix-array length does not match text length");
     std::vector<bool> seen(static_cast<std::size_t>(count), false);
-    if (container.spec.backend == detail::StoredBackend::divsufsort32) {
-        if (container.spec.coordinate_width != 32) throw Error(ErrorCode::corrupt_index, "invalid divsufsort32 coordinate width");
-        Sa32 values(static_cast<std::size_t>(count));
-        for (auto& value : values) {
-            const auto raw = detail::read_u32(*sa_input, "suffix-array value");
-            if (raw >= count || seen[raw]) throw Error(ErrorCode::corrupt_index, "suffix array is not a permutation");
-            seen[raw] = true; value = static_cast<std::int32_t>(raw);
+    const bool backend_is_32 = container.spec.backend == detail::StoredBackend::divsufsort32 ||
+                               container.spec.backend == detail::StoredBackend::caps32;
+    const bool backend_is_caps = container.spec.backend == detail::StoredBackend::caps32 ||
+                                 container.spec.backend == detail::StoredBackend::caps64;
+    if (backend_is_32) {
+        if (container.spec.coordinate_width != 32) throw Error(ErrorCode::corrupt_index, "invalid 32-bit suffix-array coordinate width");
+        if (backend_is_caps) {
+            CapsSa32 values(static_cast<std::size_t>(count));
+            for (auto& value : values) {
+                const auto raw = detail::read_u32(*sa_input, "suffix-array value");
+                if (raw >= count || seen[raw]) throw Error(ErrorCode::corrupt_index, "suffix array is not a permutation");
+                seen[raw] = true; value = raw;
+            }
+            impl->suffix_array = std::move(values);
+        } else {
+            Sa32 values(static_cast<std::size_t>(count));
+            for (auto& value : values) {
+                const auto raw = detail::read_u32(*sa_input, "suffix-array value");
+                if (raw >= count || seen[raw]) throw Error(ErrorCode::corrupt_index, "suffix array is not a permutation");
+                seen[raw] = true; value = static_cast<std::int32_t>(raw);
+            }
+            impl->suffix_array = std::move(values);
         }
-        impl->suffix_array = std::move(values);
     } else {
-        if (container.spec.coordinate_width != 64) throw Error(ErrorCode::corrupt_index, "invalid divsufsort64 coordinate width");
-        Sa64 values(static_cast<std::size_t>(count));
-        for (auto& value : values) {
-            const auto raw = detail::read_u64(*sa_input, "suffix-array value");
-            if (raw >= count || seen[static_cast<std::size_t>(raw)]) throw Error(ErrorCode::corrupt_index, "suffix array is not a permutation");
-            seen[static_cast<std::size_t>(raw)] = true; value = static_cast<std::int64_t>(raw);
+        if (container.spec.coordinate_width != 64) throw Error(ErrorCode::corrupt_index, "invalid 64-bit suffix-array coordinate width");
+        if (backend_is_caps) {
+            CapsSa64 values(static_cast<std::size_t>(count));
+            for (auto& value : values) {
+                const auto raw = detail::read_u64(*sa_input, "suffix-array value");
+                if (raw >= count || seen[static_cast<std::size_t>(raw)]) throw Error(ErrorCode::corrupt_index, "suffix array is not a permutation");
+                seen[static_cast<std::size_t>(raw)] = true; value = raw;
+            }
+            impl->suffix_array = std::move(values);
+        } else {
+            Sa64 values(static_cast<std::size_t>(count));
+            for (auto& value : values) {
+                const auto raw = detail::read_u64(*sa_input, "suffix-array value");
+                if (raw >= count || seen[static_cast<std::size_t>(raw)]) throw Error(ErrorCode::corrupt_index, "suffix array is not a permutation");
+                seen[static_cast<std::size_t>(raw)] = true; value = static_cast<std::int64_t>(raw);
+            }
+            impl->suffix_array = std::move(values);
         }
-        impl->suffix_array = std::move(values);
     }
     if (sa_input->peek() != std::char_traits<char>::eof()) throw Error(ErrorCode::corrupt_index, "suffix-array section has trailing bytes");
 

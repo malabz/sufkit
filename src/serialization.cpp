@@ -454,7 +454,8 @@ ParsedContainer read_container(const std::filesystem::path& path) {
     result.spec.fingerprint = get_u64(header, 64);
     const auto backend = result.spec.backend;
     if ((result.spec.kind == IndexKind::suffix_array &&
-         backend != StoredBackend::divsufsort32 && backend != StoredBackend::divsufsort64) ||
+         backend != StoredBackend::divsufsort32 && backend != StoredBackend::divsufsort64 &&
+         backend != StoredBackend::caps32 && backend != StoredBackend::caps64) ||
         (result.spec.kind == IndexKind::fm_index &&
          backend != StoredBackend::sdsl_csa_wt_huff)) {
         throw Error(ErrorCode::unsupported_backend, "unsupported index backend id");
@@ -581,6 +582,8 @@ const char* stored_backend_name(StoredBackend backend) noexcept {
     switch (backend) {
     case StoredBackend::divsufsort32: return "divsufsort32";
     case StoredBackend::divsufsort64: return "divsufsort64";
+    case StoredBackend::caps32: return "caps32";
+    case StoredBackend::caps64: return "caps64";
     case StoredBackend::sdsl_csa_wt_huff: return "sdsl-csa-wt-huff";
     }
     return "unknown";
@@ -590,6 +593,10 @@ const char* stored_backend_signature(StoredBackend backend) noexcept {
     switch (backend) {
     case StoredBackend::divsufsort32: return "libdivsufsort-2.0.2/saidx_t";
     case StoredBackend::divsufsort64: return "libdivsufsort-2.0.2/saidx64_t";
+    case StoredBackend::caps32:
+        return "CaPS-SA@2597b373/uint32_t+ParlayLib@e1f1dc0";
+    case StoredBackend::caps64:
+        return "CaPS-SA@2597b373/uint64_t+ParlayLib@e1f1dc0";
     case StoredBackend::sdsl_csa_wt_huff:
         return "sdsl::csa_wt<sdsl::wt_huff<>,32,64>";
     }

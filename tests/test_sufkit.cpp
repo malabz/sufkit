@@ -207,12 +207,6 @@ void test_suffix_array(const std::filesystem::path& directory) {
 
     check_error(sufkit::ErrorCode::invalid_input, [&] { (void)sa32.count(""); });
     check_error(sufkit::ErrorCode::invalid_input, [&] { (void)sa32.count("ACNT"); });
-    check_error(sufkit::ErrorCode::unsupported_backend, [&] {
-        (void)sufkit::SuffixArray::build(
-            reference,
-            {sufkit::SaBackend::caps, sufkit::CoordinateWidth::auto_select, 2});
-    });
-
     const auto path = directory / "reference.sa.sufidx";
     sa32.save(path);
     CHECK(std::filesystem::exists(path));

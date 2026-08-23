@@ -1,5 +1,25 @@
 # Third-party notices
 
+## CaPS-SA
+
+- Source: https://github.com/jamshed/CaPS-SA
+- Commit: `2597b37306542cf7c25a8d2f4ee89ec1579b71ba`
+- License: MIT
+- Vendored files: `third_party/caps-sa`
+
+The original license is reproduced in `third_party/caps-sa/LICENSE`. The small
+portability and library-integration patch set is documented in
+`third_party/caps-sa/SOURCE.md`.
+
+## ParlayLib
+
+- Source: https://github.com/cmuparlay/parlaylib
+- Commit: `e1f1dc0ccf930492a2723f7fbef8510d35bf57f5`
+- License: MIT
+- Vendored files: `third_party/parlaylib/include/parlay`
+
+The original license is reproduced in `third_party/parlaylib/LICENSE`.
+
 ## SDSL 3.0.3
 
 - Source: https://github.com/xxsds/sdsl-lite
