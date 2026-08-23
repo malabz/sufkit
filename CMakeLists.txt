@@ -13,25 +13,10 @@ endif()
 
 option(SUFKIT_BUILD_CLI "Build the sufkit command-line application" ${_sufkit_top_level_default})
 option(SUFKIT_BUILD_TESTS "Build sufkit tests" ${_sufkit_top_level_default})
-option(SUFKIT_BUILD_BENCHMARKS "Build the quick benchmark" ${_sufkit_top_level_default})
+option(SUFKIT_BUILD_BENCHMARKS "Build the benchmark suite" ${_sufkit_top_level_default})
 option(SUFKIT_BUILD_EXAMPLES "Build consumer examples" ${_sufkit_top_level_default})
-option(SUFKIT_ENABLE_CAPS "Enable the future CaPS suffix-array backend" OFF)
-option(SUFKIT_USE_BUNDLED_DIVSUFSORT "Use the pinned bundled libdivsufsort" ON)
-option(SUFKIT_USE_BUNDLED_SDSL "Use the pinned bundled SDSL headers" ON)
-
-if(SUFKIT_ENABLE_CAPS)
-    message(FATAL_ERROR "SUFKIT_ENABLE_CAPS is reserved for V1.1 and is not implemented in sufkit 0.1.0")
-endif()
 
 find_package(ZLIB REQUIRED)
-
-if(NOT SUFKIT_USE_BUNDLED_DIVSUFSORT)
-    message(FATAL_ERROR "System libdivsufsort discovery is not implemented in sufkit 0.1.0")
-endif()
-
-if(NOT SUFKIT_USE_BUNDLED_SDSL)
-    message(FATAL_ERROR "System SDSL discovery is not implemented in sufkit 0.1.0; use the pinned bundled SDSL 3.0.3")
-endif()
 
 set(_sufkit_divsufsort_sources
     third_party/libdivsufsort/lib/divsufsort.c
@@ -94,7 +79,11 @@ endif()
 if(SUFKIT_BUILD_CLI)
     set(_sufkit_cli_sources apps/sufkit.cpp apps/app_support.cpp)
     if(SUFKIT_BUILD_BENCHMARKS)
-        list(APPEND _sufkit_cli_sources apps/benchmark.cpp)
+        list(APPEND _sufkit_cli_sources
+            apps/benchmark.cpp
+            apps/benchmark_data.cpp
+            apps/benchmark_output.cpp
+            apps/benchmark_runner.cpp)
     else()
         list(APPEND _sufkit_cli_sources apps/benchmark_disabled.cpp)
     endif()
@@ -103,6 +92,14 @@ if(SUFKIT_BUILD_CLI)
     target_link_libraries(sufkit_cli PRIVATE sufkit::sufkit)
     target_compile_features(sufkit_cli PRIVATE cxx_std_17)
     target_include_directories(sufkit_cli SYSTEM PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/third_party/kseq)
+    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        target_compile_options(sufkit_cli PRIVATE -Wall -Wextra -Wpedantic -Wconversion -Wshadow)
+    endif()
+    if(SUFKIT_BUILD_BENCHMARKS)
+        target_compile_definitions(sufkit_cli PRIVATE
+            "SUFKIT_BENCH_CMAKE_VERSION=\"${CMAKE_VERSION}\""
+            "SUFKIT_BENCH_BUILD_TYPE=\"${CMAKE_BUILD_TYPE}\"")
+    endif()
 endif()
 
 if(SUFKIT_BUILD_TESTS)
@@ -111,6 +108,14 @@ if(SUFKIT_BUILD_TESTS)
     target_link_libraries(sufkit_tests PRIVATE sufkit::sufkit)
     target_compile_features(sufkit_tests PRIVATE cxx_std_17)
     add_test(NAME sufkit_tests COMMAND sufkit_tests)
+    if(SUFKIT_BUILD_CLI AND SUFKIT_BUILD_BENCHMARKS)
+        add_test(NAME sufkit_benchmark_smoke
+            COMMAND ${CMAKE_COMMAND}
+                -DSUFKIT_EXECUTABLE=$<TARGET_FILE:sufkit_cli>
+                -DOUTPUT_ROOT=${CMAKE_CURRENT_BINARY_DIR}/test-benchmark
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_benchmark.cmake)
+        set_tests_properties(sufkit_benchmark_smoke PROPERTIES TIMEOUT 180)
+    endif()
 endif()
 
 if(SUFKIT_BUILD_EXAMPLES)
@@ -127,6 +132,8 @@ if(SUFKIT_BUILD_CLI)
     install(TARGETS sufkit_cli RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 endif()
 install(DIRECTORY include/sufkit DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+install(FILES LICENSE THIRD_PARTY_NOTICES.md
+    DESTINATION ${CMAKE_INSTALL_DATADIR}/sufkit)
 
 configure_package_config_file(
     cmake/sufkitConfig.cmake.in

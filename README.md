@@ -8,7 +8,7 @@ pattern search.  Version 0.1.0 contains:
 - plain/gzip FASTA input through kseq and zlib;
 - multi-contig, forward, reverse-complement, and both-strand queries;
 - versioned, self-contained `.sufidx` files;
-- a CLI, tests, and a deterministic quick benchmark.
+- a CLI, tests, and layered deterministic performance benchmarks.
 
 The FM-index is not reimplemented by sufkit.  Construction, backward search,
 suffix-array sampling, position recovery, and payload serialization are SDSL
@@ -74,7 +74,8 @@ sufkit query --index reference.fm.sufidx --query queries.fa --strand both
 sufkit query --index reference.fm.sufidx --pattern ACGT --count-only
 
 sufkit inspect --index reference.fm.sufidx
-sufkit bench --quick --output quick.tsv
+sufkit bench --profile quick --output-dir build/bench/quick
+sufkit bench --reference reference.fa.gz --queries queries.fa.gz --output-dir build/bench/real
 ```
 
 Existing index files are not overwritten unless `--force` is supplied.
@@ -85,9 +86,9 @@ Existing index files are not overwritten unless `--force` is supplied.
 - V1 FM construction uses SDSL's in-memory `construct_im` path.
 - CaPS, balanced `csa_wt`, `csa_sada`, disk-backed construction, LCP,
   MEM/MUM, and BigBWT are roadmap items rather than silent fallbacks.
-- Large real-genome benchmarks are user-triggered; automated validation uses a
-  small smoke dataset.
+- Synthetic benchmark profiles are `smoke`, `quick`, `standard`, and `full`,
+  with six selectable genome-structure scenarios. Large and real-genome runs
+  are always user-triggered.
 
 See [API semantics](docs/api.md), [index format](docs/index-format-v1.md),
 [SDSL backend](docs/sdsl-backend.md), and [benchmark methodology](docs/benchmark.md).
-

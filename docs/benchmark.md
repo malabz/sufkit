@@ -1,36 +1,129 @@
 # Benchmark methodology
 
-`sufkit bench --quick --output quick.tsv` generates four deterministic contigs
-totalling approximately 4 MiB and 1,000 A/C/G/T patterns of length 20, 50, or
-100.  The fixed generator seed is 20260822.  The reference contains random
-base composition, repeat copies, and N islands.
+The benchmark is a correctness-gated, deterministic comparison of the naive
+scanner, standalone divsufsort32/64 suffix arrays, and the fixed SDSL FM-index.
+It records construction, serialization, loading, count, and locate separately.
+Performance numbers are descriptive; sufkit does not impose absolute speed
+thresholds across machines.
 
-The compared methods are `naive`, `sa32`, `sa64`, and `fm`.  Each runs in a
-separate child process.  `wait4` supplies per-worker peak RSS, so one method's
-high-water mark does not contaminate another.  One warm-up precedes five query
-measurements; median count and locate throughput is reported.  Locate
-materializes at most 1,000 hits per query while full counts remain unbounded.
+## Profiles
 
-Before writing a successful table, the driver requires every selected method
-to have identical total hits, reported hits, and a checksum over sorted
-coordinates.  Performance values are descriptive and are not cross-machine
-acceptance thresholds.
+| Profile | Total reference | Queries | Default scenarios | Default methods | Build/query repetitions |
+|---|---:|---:|---|---|---|
+| `smoke` | 16 KiB | 100 | mixed | naive, SA32, SA64, FM | 1 / 3 |
+| `quick` | 4 MiB | 1,000 | mixed | naive, SA32, SA64, FM | 3 / 5 indexed, 1 naive |
+| `standard` | 32 MiB per scenario | 5,000 | all six | SA32, SA64, FM | 3 / 7 |
+| `full` | 256 MiB | 10,000 | mixed | SA32, SA64, FM | 1 / 5 |
 
-For fast automated validation:
+Every profile performs one query warm-up by default, except that the `quick`
+naive baseline uses one measured repetition and no warm-up. This keeps the
+interactive profile near its intended scale while still scanning every query,
+strand, and operation and participating in the complete correctness gate.
+Explicit `--query-repetitions` or `--warmups` values override this policy for
+all methods. `standard` covers
+`mixed`, `balanced`, `gc-skewed`, `repeat-rich`, `n-islands`, and
+`many-contig`; scenarios can be selected explicitly for every synthetic
+profile.
+
+```bash
+sufkit bench \
+  --profile quick \
+  --scenarios mixed,repeat-rich \
+  --methods naive,sa32,sa64,fm \
+  --pattern-lengths 20,50,100,200,500 \
+  --locate-limits 1,10,1000,all \
+  --seed 20260822 \
+  --output-dir results/quick
+```
+
+The compatibility commands still emit the original single-table summary:
 
 ```bash
 sufkit bench --smoke --output smoke.tsv
+sufkit bench --quick --output quick.tsv
 ```
 
-For user data:
+## Synthetic datasets and query groups
+
+The generator uses SplitMix64 and derives all choices from the selected seed.
+The same profile, scenario, pattern lengths, and seed therefore produce the
+same normalized reference fingerprint and query set. Generated metadata
+records GC fraction, ambiguous-base fraction, repeat fraction, contig count,
+total length, selected methods, pattern lengths, locate limits, and repetition
+policy; generated FASTA files are not stored in the repository.
+
+Queries are grouped as:
+
+- `exact_unique`: sampled from low-frequency reference sequence;
+- `exact_repetitive`: sampled from the deterministic repeat template;
+- `mutated_low_hit`: one fixed-position substitution in a sampled window;
+- `random_no_hit`: generated and independently checked to have zero hits;
+- `n_boundary`: joins canonical sequence across an N island and must not match;
+- `contig_boundary`: joins adjacent contig ends and must not match;
+- `reverse_complement`: includes ordinary and reverse-complement-palindromic patterns.
+
+The default pattern lengths are 20, 50, 100, 200, and 500 bp. A group/length
+combination that cannot be generated remains in the output with
+`not_applicable`; it is never silently replaced with a shorter pattern.
+
+Count and locate are measured for `forward`, `reverse-complement`, and `both`.
+Locate limits may contain numeric limits and `all`. Complete locate is skipped
+with status `skipped_high_frequency` if any query in that result group has more
+than 100,000 hits, preventing accidental high-frequency materialization.
+
+## User references
 
 ```bash
 sufkit bench \
   --reference reference.fa.gz \
   --queries queries.fa.gz \
-  --methods naive,sa32,sa64,fm \
-  --output genome.tsv
+  --methods sa32,sa64,fm \
+  --output-dir results/genome
 ```
 
-Large real-genome runs are deliberately not part of automated V1 validation.
+When `--queries` is present, input order is retained inside every query group.
+Queries are grouped by pattern length and actual forward hit count: 0, 1,
+2-10, 11-1,000, and above 1,000. If `--queries` is omitted, exact, mutated,
+and independently verified no-hit queries are generated deterministically from
+the reference. No data is downloaded.
 
+`--profile` and `--reference` are mutually exclusive. A 32-bit input exceeding
+the divsufsort32 limit is recorded as `unsupported_input_size`; other selected
+methods continue.
+
+## Isolation, timing, and correctness
+
+Each method runs in a separate worker process, so peak RSS from an earlier
+method cannot contaminate a later one. Timed query loops exclude TSV formatting
+and output. Wall time and user/system CPU time are retained for every raw
+repetition; summary tables use medians and also report min/max wall time.
+
+Before the command reports success, it checks:
+
+- every measured repetition is deterministic;
+- all selected methods agree on count, reported hits, and coordinate checksum;
+- N-boundary and contig-boundary queries have zero hits;
+- `standard` and `full` additionally compare a deterministic sample from each
+  group against the naive implementation when naive is not a timed method.
+
+Result files are written before the final cross-method gate. Consequently, a
+correctness mismatch returns a nonzero status but preserves diagnostic TSV
+files and does not print the successful-completion message.
+
+## Output files
+
+`--output-dir` creates exactly four result files:
+
+- `run_metadata.tsv`: dataset, generator, toolchain, OS, CPU, and composition;
+- `build_results.tsv`: build/save/load medians, RSS, size, and bits per base;
+- `query_results.tsv`: group/length/strand/operation summaries;
+- `raw_repetitions.tsv`: every measured wall/CPU time, hit count, and checksum,
+  plus ordered query-definition rows containing the query ID and synthetic
+  source coordinate/template offset when available.
+
+Metadata deliberately omits the hostname and user-specific input/output paths.
+Existing result files are not overwritten. Use a new or empty result directory
+for every run.
+
+The `standard` and `full` profiles are intended for explicit local runs and are
+not part of the normal release acceptance commands.

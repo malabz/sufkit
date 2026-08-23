@@ -83,7 +83,7 @@ void print_usage(std::ostream& output) {
         "  sufkit build --type sa|fm --input REF.fa[.gz] --output REF.sufidx [options]\n"
         "  sufkit query --index REF.sufidx (--pattern ACGT | --query Q.fa[.gz]) [options]\n"
         "  sufkit inspect --index REF.sufidx\n"
-        "  sufkit bench --quick --output RESULTS.tsv\n\n"
+        "  sufkit bench --profile smoke|quick|standard|full --output-dir DIR\n\n"
         "Run a command with --help for its option summary.\n";
 }
 
