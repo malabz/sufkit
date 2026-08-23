@@ -39,10 +39,15 @@ struct Options {
     std::vector<Scenario> scenarios;
     std::vector<std::uint64_t> pattern_lengths;
     std::vector<LocateLimit> locate_limits;
+    std::vector<std::string> fm_query_modes{"scalar"};
+    std::vector<std::uint32_t> fm_batch_widths{16};
     std::uint64_t seed = 20260822;
     std::optional<std::uint32_t> build_repetitions;
     std::optional<std::uint32_t> query_repetitions;
     std::optional<std::uint32_t> warmups;
+    std::uint32_t learned_k = 20;
+    std::uint32_t learned_memory_overhead_basis_points = 100;
+    std::optional<std::uint32_t> learned_bucket_bits;
 };
 
 struct QueryCase {
@@ -79,8 +84,14 @@ struct BuildRaw {
     double build_seconds = 0.0;
     double build_user_seconds = 0.0;
     double build_system_seconds = 0.0;
+    double sa_build_seconds = 0.0;
+    double isa_build_seconds = 0.0;
+    double lcp_build_seconds = 0.0;
+    double child_build_seconds = 0.0;
+    double learned_index_build_seconds = 0.0;
     double save_seconds = 0.0;
     std::uint64_t serialized_bytes = 0;
+    std::uint64_t learned_index_bytes = 0;
     std::string status = "ok";
 };
 
@@ -98,14 +109,32 @@ struct QueryRaw {
     std::string strand;
     std::string operation;
     std::string max_hits;
+    std::string fm_query_mode = "scalar";
+    std::string fm_batch_width = "NA";
     std::uint32_t repetition = 0;
     std::uint64_t query_count = 0;
+    std::uint64_t query_bases = 0;
     double seconds = 0.0;
     double user_seconds = 0.0;
     double system_seconds = 0.0;
     std::uint64_t total_hits = 0;
     std::uint64_t reported_hits = 0;
     std::uint64_t checksum = 0;
+    std::uint64_t suffix_comparisons = 0;
+    std::uint64_t character_comparisons = 0;
+    std::uint64_t gallop_probes = 0;
+    std::uint64_t local_window_rows = 0;
+    std::uint64_t local_window_rows_max = 0;
+    std::uint64_t predictions = 0;
+    std::uint64_t prediction_absolute_error_sum = 0;
+    std::uint64_t prediction_absolute_error_max = 0;
+    std::uint64_t prediction_error_p50 = 0;
+    std::uint64_t prediction_error_p95 = 0;
+    std::uint64_t prediction_error_p99 = 0;
+    std::uint64_t local_window_rows_p50 = 0;
+    std::uint64_t local_window_rows_p95 = 0;
+    std::uint64_t local_window_rows_p99 = 0;
+    std::uint64_t full_binary_fallbacks = 0;
     std::string status = "ok";
 };
 
@@ -133,6 +162,11 @@ struct RunContext {
     std::string build_repetitions;
     std::string query_repetitions;
     std::string warmups;
+    std::string learned_k;
+    std::string learned_memory_overhead_basis_points;
+    std::string learned_bucket_bits;
+    std::string fm_query_modes;
+    std::string fm_batch_widths;
 };
 
 const char* to_string(Profile value) noexcept;

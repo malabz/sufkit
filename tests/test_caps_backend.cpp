@@ -194,6 +194,34 @@ void test_caps_builds(const std::filesystem::path& directory) {
     compare_suffix_arrays(caps32_2, loaded);
     CHECK(loaded.locate("ACGTACGT").total_hits == caps32_2.locate("ACGTACGT").total_hits);
 
+    sufkit::SuffixArrayBuildStatistics build_statistics;
+    auto learned_options = options(
+        sufkit::SaBackend::caps,
+        sufkit::CoordinateWidth::bits32,
+        2,
+        sufkit::SaAcceleration::full);
+    learned_options.learned_index.enabled = true;
+    learned_options.learned_index.k = 4;
+    learned_options.learned_index.bucket_bits = 4;
+    learned_options.statistics = &build_statistics;
+    auto learned_caps = sufkit::SuffixArray::build(reference, learned_options);
+    CHECK(learned_caps.info().backend == "caps32");
+    CHECK(learned_caps.lookup_acceleration() == sufkit::SaLookupAcceleration::sapling_pwl);
+    CHECK(build_statistics.sa_seconds >= 0.0);
+    for (const std::string pattern : {"ACGT", "GATTACA", "CCCCAAAA", "TGCATGCA"}) {
+        const auto binary = learned_caps.equal_range(pattern, sufkit::SaSearchAlgorithm::binary);
+        const auto learned = learned_caps.equal_range(pattern, sufkit::SaSearchAlgorithm::sapling_pwl);
+        CHECK(binary.begin == learned.begin && binary.end == learned.end);
+    }
+    const auto learned_path = directory / "caps32-learned.sufidx";
+    learned_caps.save(learned_path);
+    auto loaded_learned = sufkit::SuffixArray::load(learned_path);
+    CHECK(loaded_learned.info().backend == "caps32");
+    CHECK(loaded_learned.lookup_acceleration() == sufkit::SaLookupAcceleration::sapling_pwl);
+    const auto loaded_binary = loaded_learned.equal_range("ACGT", sufkit::SaSearchAlgorithm::binary);
+    const auto loaded_sapling = loaded_learned.equal_range("ACGT", sufkit::SaSearchAlgorithm::sapling_pwl);
+    CHECK(loaded_binary.begin == loaded_sapling.begin && loaded_binary.end == loaded_sapling.end);
+
     const std::vector<sufkit::SaAcceleration> accelerations{
         sufkit::SaAcceleration::lcp,
         sufkit::SaAcceleration::lcp_child,

@@ -35,6 +35,25 @@ const char* to_string(SaAcceleration value) noexcept {
     return "unknown";
 }
 
+const char* to_string(SaLookupAcceleration value) noexcept {
+    switch (value) {
+    case SaLookupAcceleration::binary: return "binary";
+    case SaLookupAcceleration::sapling_pwl: return "sapling-pwl";
+    }
+    return "unknown";
+}
+
+const char* to_string(SaSearchAlgorithm value) noexcept {
+    switch (value) {
+    case SaSearchAlgorithm::auto_select: return "auto";
+    case SaSearchAlgorithm::binary: return "binary";
+    case SaSearchAlgorithm::lcp_binary: return "lcp-binary";
+    case SaSearchAlgorithm::sapling_pwl: return "sapling-pwl";
+    case SaSearchAlgorithm::child: return "child";
+    }
+    return "unknown";
+}
+
 const char* to_string(MemSearchAlgorithm value) noexcept {
     switch (value) {
     case MemSearchAlgorithm::auto_select: return "auto";
@@ -52,6 +71,7 @@ const char* to_string(FmBackend value) noexcept {
     case FmBackend::sdsl_csa_wt_huff: return "sdsl-csa-wt-huff";
     case FmBackend::sdsl_csa_wt_balanced: return "sdsl-csa-wt-balanced";
     case FmBackend::sdsl_csa_sada: return "sdsl-csa-sada";
+    case FmBackend::sdsl_csa_wt_epr: return "sdsl-csa-wt-epr";
     }
     return "unknown";
 }

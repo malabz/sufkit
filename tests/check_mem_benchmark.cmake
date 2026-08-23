@@ -7,7 +7,7 @@ execute_process(
     COMMAND "${SUFKIT_EXECUTABLE}" bench
         --workload mem
         --profile smoke
-        --methods mem-baseline,mem-lcp,mem-child,mem-suffix-link,mem-full
+        --methods mem-baseline,mem-suffix-link-binary,mem-suffix-link-sapling,mem-full
         --min-lengths 20,50
         --output-dir "${OUTPUT_ROOT}"
     RESULT_VARIABLE status
@@ -29,7 +29,13 @@ foreach(name IN ITEMS run_metadata.tsv build_results.tsv query_results.tsv raw_r
 endforeach()
 
 file(READ "${OUTPUT_ROOT}/query_results.tsv" query_results)
-foreach(token IN ITEMS "mem-baseline" "mem-lcp" "mem-child" "mem-suffix-link" "mem-full" "result_checksum")
+file(READ "${OUTPUT_ROOT}/run_metadata.tsv" run_metadata)
+if(NOT run_metadata MATCHES "learned_k\tlearned_memory_overhead_basis_points\tlearned_bucket_bits")
+    message(FATAL_ERROR "MEM run_metadata.tsv does not record learned-index parameters")
+endif()
+foreach(token IN ITEMS "mem-baseline" "mem-suffix-link-binary" "mem-suffix-link-sapling" "mem-full"
+                       "result_checksum" "learned_lookup_calls" "suffix_link_success_rate"
+                       "prediction_error_mean" "full_binary_fallbacks")
     string(FIND "${query_results}" "${token}" position)
     if(position EQUAL -1)
         message(FATAL_ERROR "query_results.tsv is missing ${token}")

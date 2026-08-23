@@ -11,7 +11,7 @@ foreach(output_dir IN ITEMS "${first}" "${second}")
         COMMAND "${SUFKIT_EXECUTABLE}" bench
             --profile smoke
             --scenarios balanced
-            --methods naive,sa32,sa64,fm
+            --methods naive,sa32-binary,sa32-lcp-binary,sa32-sapling,sa32-child,fm
             --pattern-lengths 20,50
             --locate-limits 1,all
             --build-repetitions 1
@@ -36,6 +36,9 @@ file(READ "${second}/run_metadata.tsv" second_metadata)
 if(NOT first_metadata MATCHES "methods\tpattern_lengths\tlocate_limits\tbuild_repetitions")
     message(FATAL_ERROR "run_metadata.tsv does not record benchmark parameters")
 endif()
+if(NOT first_metadata MATCHES "learned_k\tlearned_memory_overhead_basis_points\tlearned_bucket_bits")
+    message(FATAL_ERROR "run_metadata.tsv does not record learned-index parameters")
+endif()
 string(REGEX MATCH "synthetic-smoke-balanced\t([0-9a-f]+)" first_match "${first_metadata}")
 set(first_fingerprint "${CMAKE_MATCH_1}")
 string(REGEX MATCH "synthetic-smoke-balanced\t([0-9a-f]+)" second_match "${second_metadata}")
@@ -47,7 +50,7 @@ endif()
 file(READ "${first}/build_results.tsv" build_results)
 file(READ "${first}/query_results.tsv" query_results)
 file(READ "${first}/raw_repetitions.tsv" raw_results)
-foreach(method IN ITEMS naive sa32 sa64 fm)
+foreach(method IN ITEMS naive sa32-binary sa32-lcp-binary sa32-sapling sa32-child fm)
     if(NOT build_results MATCHES "\t${method}\t")
         message(FATAL_ERROR "build_results.tsv is missing ${method}")
     endif()
@@ -55,11 +58,73 @@ endforeach()
 if(NOT query_results MATCHES "query_group\tpattern_length\tstrand\toperation\tmax_hits")
     message(FATAL_ERROR "query_results.tsv has an unexpected schema")
 endif()
+foreach(metric IN ITEMS suffix_comparisons character_comparisons gallop_probes predictions
+                        prediction_error_mean prediction_error_p50 prediction_error_p95
+                        prediction_error_p99 full_binary_fallbacks)
+    if(NOT query_results MATCHES "${metric}")
+        message(FATAL_ERROR "query_results.tsv is missing learned-search metric ${metric}")
+    endif()
+endforeach()
+if(NOT build_results MATCHES "learned_index_build_seconds_median" OR
+   NOT build_results MATCHES "learned_index_bytes")
+    message(FATAL_ERROR "build_results.tsv is missing learned-index build metrics")
+endif()
 if(NOT raw_results MATCHES "phase\tquery_group\tpattern_length\tstrand")
     message(FATAL_ERROR "raw_repetitions.tsv has an unexpected schema")
 endif()
 if(NOT raw_results MATCHES "query_definition" OR NOT raw_results MATCHES "query_id\tquery_source")
     message(FATAL_ERROR "raw_repetitions.tsv is missing ordered query definitions")
+endif()
+
+set(fm_dir "${OUTPUT_ROOT}/fm-backends")
+execute_process(
+    COMMAND "${SUFKIT_EXECUTABLE}" bench
+        --profile smoke
+        --scenarios balanced
+        --methods fm-huff,fm-balanced,fm-epr
+        --fm-query-modes scalar,batch
+        --fm-batch-widths 1,4
+        --pattern-lengths 20
+        --locate-limits 1
+        --build-repetitions 1
+        --query-repetitions 1
+        --warmups 0
+        --output-dir "${fm_dir}"
+    RESULT_VARIABLE fm_status
+    OUTPUT_VARIABLE fm_stdout
+    ERROR_VARIABLE fm_stderr)
+if(NOT fm_status EQUAL 0)
+    message(FATAL_ERROR "FM backend benchmark failed (${fm_status}):\n${fm_stdout}\n${fm_stderr}")
+endif()
+file(READ "${fm_dir}/run_metadata.tsv" fm_metadata)
+file(READ "${fm_dir}/build_results.tsv" fm_builds)
+file(READ "${fm_dir}/query_results.tsv" fm_queries)
+file(READ "${fm_dir}/raw_repetitions.tsv" fm_raw)
+if(NOT fm_metadata MATCHES "fm_query_modes\tfm_batch_widths")
+    message(FATAL_ERROR "FM benchmark metadata fields are missing")
+endif()
+foreach(method IN ITEMS fm-huff fm-balanced fm-epr)
+    if(NOT fm_builds MATCHES "\t${method}\t")
+        message(FATAL_ERROR "FM build results are missing ${method}")
+    endif()
+endforeach()
+if(NOT fm_queries MATCHES "fm_query_mode\tfm_batch_width\tquery_bases\tquery_bases_per_second\tspeedup_vs_fm_huff_scalar")
+    message(FATAL_ERROR "FM query summary fields are missing")
+endif()
+if(NOT fm_queries MATCHES "\tbatch\t1\t" OR NOT fm_queries MATCHES "\tbatch\t4\t")
+    message(FATAL_ERROR "FM batch width rows are missing")
+endif()
+if(NOT fm_raw MATCHES "fm_query_mode\tfm_batch_width\tquery_bases")
+    message(FATAL_ERROR "FM raw repetition fields are missing")
+endif()
+
+execute_process(
+    COMMAND "${SUFKIT_EXECUTABLE}" bench
+        --profile smoke --methods fm,fm-huff --output-dir "${OUTPUT_ROOT}/alias-conflict"
+    RESULT_VARIABLE alias_status
+    OUTPUT_QUIET ERROR_QUIET)
+if(alias_status EQUAL 0)
+    message(FATAL_ERROR "fm and fm-huff aliases were accepted together")
 endif()
 
 set(user_dir "${OUTPUT_ROOT}/user-high-frequency")

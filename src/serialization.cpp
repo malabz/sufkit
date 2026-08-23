@@ -19,7 +19,7 @@ namespace {
 
 constexpr std::array<std::uint8_t, 8> kMagic{{'S', 'U', 'F', 'K', 'I', 'D', 'X', 0}};
 constexpr std::uint16_t kFormatMajor = 1;
-constexpr std::uint16_t kFormatMinor = 1;
+constexpr std::uint16_t kFormatMinor = 2;
 constexpr std::size_t kBaseHeaderSize = 80;
 constexpr std::size_t kSectionEntrySize = 32;
 constexpr std::size_t kHeaderCrcOffset = 72;
@@ -457,7 +457,10 @@ ParsedContainer read_container(const std::filesystem::path& path) {
          backend != StoredBackend::divsufsort32 && backend != StoredBackend::divsufsort64 &&
          backend != StoredBackend::caps32 && backend != StoredBackend::caps64) ||
         (result.spec.kind == IndexKind::fm_index &&
-         backend != StoredBackend::sdsl_csa_wt_huff)) {
+         backend != StoredBackend::sdsl_csa_wt_huff &&
+         backend != StoredBackend::sdsl_csa_wt_balanced &&
+         backend != StoredBackend::sdsl_csa_sada &&
+         backend != StoredBackend::sdsl_csa_wt_epr)) {
         throw Error(ErrorCode::unsupported_backend, "unsupported index backend id");
     }
 
@@ -472,7 +475,7 @@ ParsedContainer read_container(const std::filesystem::path& path) {
         section.crc32 = get_u32(header, offset + 24);
         const auto raw_type = static_cast<std::uint32_t>(section.type);
         const bool known_type = raw_type >= static_cast<std::uint32_t>(SectionType::metadata) &&
-                                raw_type <= static_cast<std::uint32_t>(SectionType::child);
+                                raw_type <= static_cast<std::uint32_t>(SectionType::learned_sa);
         if (!known_type && (section.flags & kRequiredSection) != 0) {
             throw Error(ErrorCode::corrupt_index, "unknown required index section");
         }
@@ -585,6 +588,9 @@ const char* stored_backend_name(StoredBackend backend) noexcept {
     case StoredBackend::caps32: return "caps32";
     case StoredBackend::caps64: return "caps64";
     case StoredBackend::sdsl_csa_wt_huff: return "sdsl-csa-wt-huff";
+    case StoredBackend::sdsl_csa_wt_balanced: return "sdsl-csa-wt-balanced";
+    case StoredBackend::sdsl_csa_sada: return "sdsl-csa-sada";
+    case StoredBackend::sdsl_csa_wt_epr: return "sdsl-csa-wt-epr";
     }
     return "unknown";
 }
@@ -599,11 +605,36 @@ const char* stored_backend_signature(StoredBackend backend) noexcept {
         return "CaPS-SA@2597b373/uint64_t+ParlayLib@e1f1dc0";
     case StoredBackend::sdsl_csa_wt_huff:
         return "sdsl::csa_wt<sdsl::wt_huff<>,32,64>";
+    case StoredBackend::sdsl_csa_wt_balanced:
+        return "sdsl::csa_wt<sdsl::wt_blcd<>,32,64>";
+    case StoredBackend::sdsl_csa_sada:
+        return "sdsl::csa_sada<>";
+    case StoredBackend::sdsl_csa_wt_epr:
+        return "sdsl::csa_wt<sdsl::wt_epr<8>,32,64>";
     }
     return "unknown";
 }
 
 IndexInfo index_info_from_container(const ParsedContainer& container) {
+    const auto has = [&](SectionType type) {
+        return std::any_of(container.sections.begin(), container.sections.end(),
+            [type](const SectionDescriptor& section) { return section.type == type; });
+    };
+    (void)require_section(container, SectionType::metadata);
+    if (container.spec.kind == IndexKind::suffix_array) {
+        (void)require_section(container, SectionType::text);
+        (void)require_section(container, SectionType::suffix_array);
+        if (has(SectionType::sdsl_csa))
+            throw Error(ErrorCode::corrupt_index,
+                        "suffix-array container has an FM-index section");
+    } else {
+        (void)require_section(container, SectionType::sdsl_csa);
+        if (has(SectionType::text) || has(SectionType::suffix_array) ||
+            has(SectionType::inverse_suffix_array) || has(SectionType::lcp) ||
+            has(SectionType::child) || has(SectionType::learned_sa))
+            throw Error(ErrorCode::corrupt_index,
+                        "FM-index container has suffix-array-only sections");
+    }
     IndexInfo info;
     info.kind = container.spec.kind;
     info.format_version = "1." + std::to_string(container.spec.format_minor);
@@ -626,13 +657,10 @@ IndexInfo index_info_from_container(const ParsedContainer& container) {
     info.fingerprint = container.spec.fingerprint;
     info.serialized_bytes = container.file_size;
     if (container.spec.kind == IndexKind::suffix_array) {
-        const auto has = [&](SectionType type) {
-            return std::any_of(container.sections.begin(), container.sections.end(),
-                [type](const SectionDescriptor& section) { return section.type == type; });
-        };
         const bool isa = has(SectionType::inverse_suffix_array);
         const bool lcp = has(SectionType::lcp);
         const bool child = has(SectionType::child);
+        const bool learned = has(SectionType::learned_sa);
         if (!isa && !lcp && !child) info.sa_acceleration = SaAcceleration::none;
         else if (!isa && lcp && !child) info.sa_acceleration = SaAcceleration::lcp;
         else if (!isa && lcp && child) info.sa_acceleration = SaAcceleration::lcp_child;
@@ -645,6 +673,34 @@ IndexInfo index_info_from_container(const ParsedContainer& container) {
                 section.type == SectionType::lcp || section.type == SectionType::child) {
                 info.auxiliary_bytes += section.size;
             }
+        }
+        if (learned) {
+            if (container.spec.format_minor < 2) {
+                throw Error(ErrorCode::corrupt_index,
+                            "learned SA data requires sufidx format 1.2");
+            }
+            auto input = open_section_stream(container, SectionType::learned_sa);
+            const auto model_id = read_u32(*input, "learned SA model ID");
+            info.learned_k = read_u32(*input, "learned SA k");
+            info.learned_bucket_bits = read_u32(*input, "learned SA bucket bits");
+            info.learned_memory_overhead_basis_points =
+                read_u32(*input, "learned SA memory budget");
+            const auto width = read_u32(*input, "learned SA coordinate width");
+            const auto anchors = read_u64(*input, "learned SA anchor count");
+            const auto fingerprint = read_u64(*input, "learned SA fingerprint");
+            if (model_id != 1) {
+                throw Error(ErrorCode::unsupported_backend,
+                            "unsupported learned SA model ID");
+            }
+            if (info.learned_k == 0 || info.learned_k > 31 ||
+                info.learned_bucket_bits > 2U * info.learned_k ||
+                info.learned_bucket_bits > 31 || width != info.coordinate_width ||
+                anchors != (1ULL << info.learned_bucket_bits) + 1 ||
+                fingerprint != info.fingerprint) {
+                throw Error(ErrorCode::corrupt_index, "invalid learned SA header");
+            }
+            info.sa_lookup_acceleration = SaLookupAcceleration::sapling_pwl;
+            info.learned_index_bytes = require_section(container, SectionType::learned_sa).size;
         }
     }
     return info;

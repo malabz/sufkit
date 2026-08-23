@@ -22,7 +22,10 @@ enum class StoredBackend : std::uint8_t {
     divsufsort64 = 2,
     caps32 = 3,
     caps64 = 4,
-    sdsl_csa_wt_huff = 10
+    sdsl_csa_wt_huff = 10,
+    sdsl_csa_wt_balanced = 11,
+    sdsl_csa_sada = 12,
+    sdsl_csa_wt_epr = 13
 };
 
 enum class SectionType : std::uint32_t {
@@ -32,7 +35,8 @@ enum class SectionType : std::uint32_t {
     sdsl_csa = 4,
     inverse_suffix_array = 5,
     lcp = 6,
-    child = 7
+    child = 7,
+    learned_sa = 8
 };
 
 struct SectionDescriptor {

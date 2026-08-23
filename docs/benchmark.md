@@ -6,6 +6,11 @@ It records construction, serialization, loading, count, and locate separately.
 Performance numbers are descriptive; sufkit does not impose absolute speed
 thresholds across machines.
 
+Exact-search ablation methods additionally include `sa32-binary`,
+`sa32-lcp-binary`, `sa32-sapling`, and explicit `sa32-child`. Learned-model
+parameters are controlled with `--learned-k`, `--learned-memory-bp`, and
+`--learned-bucket-bits`.
+
 ## Profiles
 
 | Profile | Total reference | Queries | Default scenarios | Default methods | Build/query repetitions |
@@ -42,6 +47,21 @@ The compatibility commands still emit the original single-table summary:
 sufkit bench --smoke --output smoke.tsv
 sufkit bench --quick --output quick.tsv
 ```
+
+FM backend and batched-count comparisons use:
+
+```bash
+sufkit bench --profile quick \
+  --methods fm-huff,fm-balanced,fm-epr \
+  --fm-query-modes scalar,batch \
+  --fm-batch-widths 1,4,8,16,32 \
+  --output-dir results/fm-quick
+```
+
+`fm` remains an alias for `fm-huff`; selecting both in one run is rejected.
+Scalar mode records count and locate. Batch mode records count only and keeps
+one row per batch width. Query summaries append the mode, width, processed
+query bases, bases/s, and speedup relative to the matching Huffman scalar row.
 
 ## Synthetic datasets and query groups
 
@@ -125,6 +145,12 @@ Metadata deliberately omits the hostname and user-specific input/output paths.
 Existing result files are not overwritten. Use a new or empty result directory
 for every run.
 
+Learned exact rows additionally record SA/ISA/LCP/CHILD/model construction
+times, model bytes, suffix and character comparisons, gallop probes, local
+window sizes, prediction counts/errors, and full binary fallbacks. Prediction
+statistics describe performance only; cross-method range, hit, coordinate,
+and checksum equality remains mandatory.
+
 The `standard` and `full` profiles are intended for explicit local runs and are
 not part of the normal release acceptance commands.
 
@@ -148,6 +174,19 @@ smoke or five quick repetitions. The optional MUMmer4 row uses full SA
 and `-load` for measured queries. Its reported query time therefore includes
 external process startup and index loading and must not be interpreted as an
 in-process query-only comparison.
+
+`mem-suffix-link-binary` and `mem-suffix-link-sapling` build the same
+SA+ISA+LCP layout and differ only in initialization/fallback lookup. Their
+outputs report suffix-link success rate, previous-empty states, learned versus
+binary lookup counts, character/row accesses, prediction errors, search
+windows, and learned model space. `mem-full` remains an explicit CHILD
+ablation and is not an automatic default.
+
+The MEM workload also accepts `--profile standard`. It generates 32 MiB per
+scenario with 5,000 queries of 256 bp and five measured query repetitions.
+When comparing the standard profile across the same six scenarios as the main
+benchmark, pass them explicitly with
+`--scenarios mixed,balanced,gc-skewed,repeat-rich,n-islands,many-contig`.
 
 All internal and MUMmer4 rows are normalized to the same zero-based,
 query-first tuple checksum. A mismatch preserves diagnostic TSV files and

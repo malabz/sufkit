@@ -59,14 +59,44 @@ std::uint32_t parse_u32(
 }
 
 std::vector<std::string> parse_methods(const std::string& text) {
-    const std::set<std::string> supported{"naive", "sa32", "sa64", "sa32-none", "sa64-none", "fm"};
+    const std::set<std::string> supported{
+        "naive", "sa32", "sa64", "sa32-none", "sa64-none",
+        "fm", "fm-huff", "fm-balanced", "fm-epr",
+        "sa32-binary", "sa32-lcp-binary", "sa32-sapling", "sa32-child"};
     auto methods = split_csv(text, "--methods");
     for (const auto& method : methods) {
         if (supported.count(method) == 0) {
             throw Error(ErrorCode::invalid_input, "invalid benchmark method: " + method);
         }
     }
+    if (std::find(methods.begin(), methods.end(), "fm") != methods.end() &&
+        std::find(methods.begin(), methods.end(), "fm-huff") != methods.end()) {
+        throw Error(ErrorCode::invalid_input, "fm and fm-huff are aliases and cannot be selected together");
+    }
     return methods;
+}
+
+std::vector<std::string> parse_fm_query_modes(const std::string& text) {
+    const std::set<std::string> supported{"scalar", "batch"};
+    auto modes = split_csv(text, "--fm-query-modes");
+    for (const auto& mode : modes) {
+        if (supported.count(mode) == 0) {
+            throw Error(ErrorCode::invalid_input, "invalid FM query mode: " + mode);
+        }
+    }
+    return modes;
+}
+
+std::vector<std::uint32_t> parse_fm_batch_widths(const std::string& text) {
+    std::vector<std::uint32_t> widths;
+    for (const auto& value : split_csv(text, "--fm-batch-widths")) {
+        const auto width = parse_u32(value, "--fm-batch-widths", false);
+        if (width > 256) {
+            throw Error(ErrorCode::invalid_input, "FM batch width must be in [1,256]");
+        }
+        widths.push_back(width);
+    }
+    return widths;
 }
 
 std::vector<Scenario> parse_scenarios(const std::string& text) {
@@ -122,6 +152,8 @@ Options parse_benchmark_options(const std::vector<std::string>& arguments) {
     std::optional<std::string> scenarios;
     std::optional<std::string> lengths;
     std::optional<std::string> limits;
+    std::optional<std::string> fm_query_modes;
+    std::optional<std::string> fm_batch_widths;
     for (std::size_t index = 0; index < arguments.size(); ++index) {
         const auto& option = arguments[index];
         if (option == "--quick") options.legacy_quick = true;
@@ -137,6 +169,8 @@ Options parse_benchmark_options(const std::vector<std::string>& arguments) {
         else if (option == "--scenarios") scenarios = require_value(arguments, index);
         else if (option == "--pattern-lengths") lengths = require_value(arguments, index);
         else if (option == "--locate-limits") limits = require_value(arguments, index);
+        else if (option == "--fm-query-modes") fm_query_modes = require_value(arguments, index);
+        else if (option == "--fm-batch-widths") fm_batch_widths = require_value(arguments, index);
         else if (option == "--seed") options.seed = parse_unsigned(require_value(arguments, index), option);
         else if (option == "--build-repetitions") {
             options.build_repetitions = parse_u32(require_value(arguments, index), option, false);
@@ -144,6 +178,17 @@ Options parse_benchmark_options(const std::vector<std::string>& arguments) {
             options.query_repetitions = parse_u32(require_value(arguments, index), option, false);
         } else if (option == "--warmups") {
             options.warmups = parse_u32(require_value(arguments, index), option, true);
+        } else if (option == "--learned-k") {
+            options.learned_k = parse_u32(require_value(arguments, index), option, false);
+            if (options.learned_k > 31)
+                throw Error(ErrorCode::invalid_input, "--learned-k must be in [1,31]");
+        } else if (option == "--learned-memory-bp") {
+            options.learned_memory_overhead_basis_points =
+                parse_u32(require_value(arguments, index), option, false);
+        } else if (option == "--learned-bucket-bits") {
+            options.learned_bucket_bits = parse_u32(require_value(arguments, index), option, true);
+            if (*options.learned_bucket_bits > 31)
+                throw Error(ErrorCode::invalid_input, "--learned-bucket-bits must be at most 31");
         } else {
             throw Error(ErrorCode::invalid_input, "unknown benchmark option: " + option);
         }
@@ -196,6 +241,8 @@ Options parse_benchmark_options(const std::vector<std::string>& arguments) {
         ? parse_lengths(*lengths) : std::vector<std::uint64_t>{20, 50, 100, 200, 500};
     options.locate_limits = limits
         ? parse_locate_limits(*limits) : std::vector<LocateLimit>{{false, 1}, {false, 10}, {false, 1000}};
+    if (fm_query_modes) options.fm_query_modes = parse_fm_query_modes(*fm_query_modes);
+    if (fm_batch_widths) options.fm_batch_widths = parse_fm_batch_widths(*fm_batch_widths);
     if (options.output_path && options.scenarios.size() != 1) {
         throw Error(ErrorCode::invalid_input, "--output supports one scenario; use --output-dir for multiple scenarios");
     }
@@ -258,15 +305,20 @@ void print_help() {
         "Compatibility: sufkit bench --smoke|--quick --output RESULTS.tsv\n\n"
         "Options:\n"
         "  --scenarios mixed,balanced,gc-skewed,repeat-rich,n-islands,many-contig\n"
-        "  --methods naive,sa32,sa64,sa32-none,sa64-none,fm\n"
+        "  --methods naive,sa32,sa64,sa32-none,sa64-none,fm,fm-huff,fm-balanced,"
+        "fm-epr,sa32-binary,sa32-lcp-binary,sa32-sapling,sa32-child\n"
+        "  --fm-query-modes scalar,batch --fm-batch-widths 1,4,8,16,32\n"
+        "  --learned-k 20 --learned-memory-bp 100 [--learned-bucket-bits N]\n"
         "  --pattern-lengths 20,50,100,200,500\n"
         "  --locate-limits 1,10,1000,all\n"
         "  --seed 20260822\n"
         "  --build-repetitions N --query-repetitions N --warmups N\n\n"
         "MEM workload:\n"
         "  --workload mem --profile smoke|quick --output-dir DIR\n"
-        "  --methods mem-baseline,mem-lcp,mem-child,mem-suffix-link,mem-full,mummer4\n"
+        "  --methods mem-baseline,mem-lcp,mem-child,mem-suffix-link,mem-full,\n"
+        "            mem-suffix-link-binary,mem-suffix-link-sapling,mummer4\n"
         "  --min-lengths 20,50,100 [--mummer4 PATH]\n"
+        "  --learned-k 20 --learned-memory-bp 100 [--learned-bucket-bits N]\n"
         "  or --workload mem --reference REF.fa[.gz] [--queries Q.fa[.gz]]\n";
 }
 
@@ -331,6 +383,12 @@ int run_benchmark(const std::vector<std::string>& arguments) {
         context.locate_limits = join_values(options.locate_limits, [](const auto& value) {
             return value.all ? std::string("all") : std::to_string(value.value);
         });
+        context.fm_query_modes = join_values(options.fm_query_modes, [](const auto& value) {
+            return value;
+        });
+        context.fm_batch_widths = join_values(options.fm_batch_widths, [](const auto value) {
+            return std::to_string(value);
+        });
         const auto spec = profile_spec(options.profile);
         context.build_repetitions = std::to_string(
             options.build_repetitions.value_or(spec.build_repetitions));
@@ -346,6 +404,11 @@ int run_benchmark(const std::vector<std::string>& arguments) {
                 std::find(options.methods.begin(), options.methods.end(), "naive") != options.methods.end()
                 ? std::to_string(spec.warmups) + ";naive=0"
                 : std::to_string(spec.warmups));
+        context.learned_k = std::to_string(options.learned_k);
+        context.learned_memory_overhead_basis_points =
+            std::to_string(options.learned_memory_overhead_basis_points);
+        context.learned_bucket_bits = options.learned_bucket_bits
+            ? std::to_string(*options.learned_bucket_bits) : "auto";
         write_result_directory(*options.output_directory, context, datasets, all_results);
     } else {
         write_legacy_output(*options.output_path, datasets.front(), all_results.front());

@@ -2,6 +2,20 @@
 
 All notable changes to sufkit are documented in this file.
 
+## Unreleased
+
+- Changed the default SA acceleration to SA+ISA+LCP and changed MEM auto
+  selection to suffix-link; CHILD and full remain explicit capabilities.
+- Added an optional, clean-room Sapling-style piecewise-linear learned SA index
+  with deterministic integer interpolation and correctness-preserving local
+  search.
+- Added explicit binary, LCP-aware binary, PWL, and CHILD exact-search control,
+  plus PWL initialization/fallback control for suffix-link MEM search.
+- Extended `.sufidx` to format 1.2 for the optional learned-model section while
+  retaining 1.0/1.1 compatibility and the unchanged SDSL FM payload.
+- Added learned-index construction/query metrics and exact/MEM benchmark
+  ablations. No Python, PyTorch, CUDA, or Sapling runtime dependency was added.
+
 ## 0.1.1
 
 - Added full-SA ESA auxiliary construction: ISA, Kasai LCP, and a persisted

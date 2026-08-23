@@ -23,8 +23,9 @@ std::vector<BackendDescriptor> available_sa_backends() {
 std::vector<BackendDescriptor> available_fm_backends() {
     return {
         {"sdsl-csa-wt-huff", true, false, "sdsl::csa_wt<sdsl::wt_huff<>,32,64>"},
-        {"sdsl-csa-wt-balanced", false, false, "reserved for sufkit V1.1"},
-        {"sdsl-csa-sada", false, false, "reserved for sufkit V1.1"}
+        {"sdsl-csa-wt-balanced", true, false, "sdsl::csa_wt<sdsl::wt_blcd<>,32,64>"},
+        {"sdsl-csa-sada", false, false, "reserved; not implemented"},
+        {"sdsl-csa-wt-epr", true, false, "sdsl::csa_wt<sdsl::wt_epr<8>,32,64>"}
     };
 }
 

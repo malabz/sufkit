@@ -4,11 +4,12 @@
 pattern and maximal-exact-match search. Version 0.1.1 contains:
 
 - libdivsufsort32/64 standalone suffix arrays;
-- `sdsl::csa_wt<sdsl::wt_huff<>,32,64>` as the only FM-index core;
+- fixed SDSL Huffman, balanced, and DNA EPR compressed suffix-array backends;
 - plain/gzip FASTA input through kseq and zlib;
 - multi-contig, forward, reverse-complement, and both-strand queries;
 - versioned, self-contained `.sufidx` files;
 - optional ISA, Kasai LCP, and ESA CHILD structures for suffix arrays;
+- an optional Sapling-style piecewise-linear learned index for exact SA lookup;
 - baseline, LCP, CHILD, suffix-link, and combined MEM search paths;
 - a CLI, tests, and layered deterministic performance benchmarks.
 
@@ -59,13 +60,19 @@ index.save("reference.sufidx");
 
 auto loaded = sufkit::FmIndex::load("reference.sufidx");
 auto hits = loaded.locate("ACGTACGT");
+
+std::vector<std::string_view> patterns{"ACGT", "GATTACA", "TTTT"};
+sufkit::FmBatchOptions batch;
+batch.strands = sufkit::StrandMode::both;
+batch.batch_width = 16;
+auto counts = loaded.count_batch(patterns, batch);
 ```
 
 MEM search uses a suffix-array index:
 
 ```cpp
 auto reference = sufkit::GenomeReference::from_fasta("reference.fa.gz");
-auto index = sufkit::SuffixArray::build(reference); // full ESA by default
+auto index = sufkit::SuffixArray::build(reference); // SA+ISA+LCP by default
 
 sufkit::MemOptions options;
 options.min_length = 20;
@@ -81,17 +88,30 @@ the reported contig.
 
 ```bash
 sufkit build --type sa --input reference.fa.gz --output reference.sa.sufidx
+sufkit build --type sa --input reference.fa.gz --output reference.learned.sufidx \
+  --learned-index --learned-k 20 --learned-memory-bp 100
 sufkit build --type fm --input reference.fa.gz --output reference.fm.sufidx
+sufkit build --type fm --fm-backend sdsl-csa-wt-epr \
+  --input reference.fa.gz --output reference.epr.sufidx
 
 sufkit query --index reference.fm.sufidx --pattern ACGTACGT
 sufkit query --index reference.fm.sufidx --query queries.fa --strand both
 sufkit query --index reference.fm.sufidx --pattern ACGT --count-only
-sufkit mem --index reference.sa.sufidx --query queries.fa --min-length 20 --algorithm full
+sufkit query --index reference.learned.sufidx --pattern ACGTACGTACGTACGTACGT \
+  --algorithm sapling-pwl --count-only
+sufkit mem --index reference.sa.sufidx --query queries.fa --min-length 20 \
+  --algorithm suffix-link
 
 sufkit inspect --index reference.fm.sufidx
 sufkit bench --profile quick --output-dir build/bench/quick
 sufkit bench --reference reference.fa.gz --queries queries.fa.gz --output-dir build/bench/real
 sufkit bench --workload mem --profile quick --output-dir build/bench/mem-quick
+sufkit bench --profile quick \
+  --methods sa32-binary,sa32-lcp-binary,sa32-sapling,sa32-child,fm \
+  --output-dir build/bench/sapling-exact-quick
+sufkit bench --workload mem --profile standard \
+  --scenarios mixed,balanced,gc-skewed,repeat-rich,n-islands,many-contig \
+  --output-dir build/bench/mem-standard
 ```
 
 Existing index files are not overwritten unless `--force` is supplied.
@@ -108,4 +128,6 @@ Existing index files are not overwritten unless `--force` is supplied.
 
 See [API semantics](docs/api.md), [index format](docs/index-format-v1.md),
 [SDSL backend](docs/sdsl-backend.md), [benchmark methodology](docs/benchmark.md),
+[Sapling-style learned lookup](docs/sapling-learned-index.md),
+[Sapling benchmark results](docs/benchmark-sapling-v0.1.1.md),
 and the [0.1.1 MEM benchmark results](docs/benchmark-mem-v0.1.1.md).

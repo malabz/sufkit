@@ -20,7 +20,13 @@ cross a separator or an N.  Sequence IDs and positions are zero-based.
 ## Query results
 
 `equal_range` returns a half-open index-row range.  Empty results are `[0,0)`;
-no insertion-point meaning is promised for an empty SDSL range.
+no insertion-point meaning is promised for an empty SA or SDSL range.
+
+`FmIndex::equal_range_batch` and `count_batch` preserve input order and reject
+the whole call if any pattern is invalid. `FmBatchOptions::batch_width=0`
+selects width 16; explicit widths are limited to 1-256. Batch count supports
+the same forward, reverse-complement, both, and palindrome semantics as scalar
+count. Locate remains a scalar API.
 
 `count` and `locate` support:
 
@@ -50,11 +56,38 @@ matches report query positions in the original forward query coordinate
 system. Forward and reverse-complement MEMs remain orientation-distinct,
 including for reverse-complement palindromes.
 
-The default suffix-array build acceleration is `full` (SA+ISA+LCP+CHILD).
-Space-sensitive callers can select `none`, `lcp`, `lcp_child`, or
-`lcp_suffix_link`. An explicitly requested MEM algorithm must be supported by
+The default suffix-array build acceleration is `lcp_suffix_link`
+(SA+ISA+LCP). CHILD remains available through `lcp_child` and `full`, but it is
+never selected automatically. An explicitly requested MEM algorithm must be supported by
 the loaded auxiliary sections; otherwise the query fails with
-`unsupported_backend`. `auto_select` chooses the strongest available path.
+`unsupported_backend`. MEM `auto_select` chooses suffix-link, then LCP, then
+baseline. It does not select CHILD or full.
+
+## Learned suffix-array lookup
+
+`LearnedSaOptions` optionally builds a Sapling-style piecewise-linear model.
+It is independent of `SaAcceleration`: a caller may combine it with SA only,
+SA+ISA+LCP, or an explicitly requested CHILD index. The default is disabled,
+with `k=20` and a model budget of 100 basis points (1% of the SA payload).
+
+Exact SA queries accept `auto_select`, `binary`, `lcp_binary`, `sapling_pwl`,
+or explicit `child`. Auto selects PWL only when the index contains a learned
+section and the pattern is at least the model k; otherwise it selects ordinary
+binary search. Auto never selects CHILD. Explicitly requesting missing PWL or
+CHILD data throws `unsupported_backend`.
+
+PWL prediction is only a search hint. Exponential bracketing and local
+LCP-aware binary search recover the exact lower and upper bounds. A poor
+prediction can therefore increase work but cannot change the result. Patterns
+shorter than k use full binary search.
+
+`MemOptions::lookup_algorithm` controls initialization and fallback lookup in
+the suffix-link MEM path. `MemSearchStatistics` reports suffix-link success,
+empty-previous states, binary/PWL lookup counts, character comparisons,
+prediction error, local windows, and full-search fallbacks.
+Build and query statistics pointers are optional caller-owned outputs. Do not
+share the same statistics object between concurrent calls; the immutable index
+itself remains safe for concurrent const queries.
 
 ## Errors
 

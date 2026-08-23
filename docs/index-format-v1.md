@@ -29,9 +29,33 @@ SA-only indexes continue to be written as format 1.0. Any auxiliary structure
 causes format 1.1 output. The 0.1.1 reader accepts both versions and treats a
 1.0 SA as `SaAcceleration::none`, enabling correct baseline MEM search.
 
+Format 1.2 optionally adds section 8 (`learned_sa`). The section stores model
+ID `sapling_pwl_v1`, k, bucket bits, memory budget in basis points, coordinate
+width, anchor count, reference fingerprint, 64-bit anchor keys, and 32- or
+64-bit SA-row anchors. The expected anchor count is `2^bucket_bits + 1`. Keys
+and rows must be monotonic, the terminal key is `2^(2k)`, and the terminal row
+is the logical text length. CRC, width, fingerprint, allocation bounds, and all
+anchor ranges are checked before the model becomes queryable.
+
+The learned section is independent from ISA/LCP/CHILD sections. A learned
+index may therefore contain any otherwise legal ESA auxiliary combination.
+Readers continue to accept 1.0 and 1.1; an absent learned section means binary
+lookup. A corrupt learned section is never silently ignored.
+
 An FM-index file has metadata and an SDSL-native CSA section.  Its header also
 records SDSL 3.0.3 and the exact backend ID.  CRC and section bounds are checked
 before a bounded stream is passed to SDSL `load`.
+
+The fixed FM backend IDs are 10 for `csa_wt<wt_huff<>,32,64>`, 11 for
+`csa_wt<wt_blcd<>,32,64>`, 12 reserved for unavailable `csa_sada<>`, and 13
+for `csa_wt<wt_epr<8>,32,64>`. Adding these payload alternatives does not add
+sections or change the outer format minor. A reader that does not implement a
+known payload returns `unsupported_backend`.
+
+FM payloads continue to be written with outer format 1.0 because this change
+adds no sections or header fields. Format 1.1 remains the SA auxiliary-section
+extension; backend identity is carried independently by the existing backend
+byte.
 
 Save writes `target.sufidx.partial.<pid>.<nonce>` in the target directory,
 calculates CRCs, rereads the completed temporary container for validation, and

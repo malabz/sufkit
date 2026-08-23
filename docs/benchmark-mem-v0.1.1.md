@@ -1,5 +1,10 @@
 # sufkit 0.1.1 MEM benchmark
 
+This document records the original 0.1.1 release run. The current development
+runner now isolates each internal method in a worker process and records
+separate SA/ISA/LCP/CHILD/PWL phase times; see
+`benchmark-sapling-v0.1.1.md` for the updated measurement path.
+
 ## Environment and commands
 
 The release benchmark was run locally on 2026-08-23 under WSL2 Linux
@@ -109,12 +114,11 @@ release.
 
 - Internal MEM wall times are stable medians of five repetitions after a
   warm-up; raw repetitions are retained in TSV.
-- The current MEM runner executes internal methods sequentially in one process.
-  Its `peak_rss_mb` field is therefore a process high-water mark and can be
-  contaminated by an earlier method. Index bytes and bits/base are reliable;
-  per-method RSS isolation remains follow-up benchmark work.
-- The benchmark records total build/save/load time. Separate ISA/LCP/CHILD
-  phase timers are not yet exposed by the library.
+- The original release runner executed internal methods sequentially in one
+  process. Its historical `peak_rss_mb` field can therefore be contaminated by
+  an earlier method. Current development runs use isolated workers.
+- The original release output recorded total build/save/load time only.
+  Current development output exposes separate ISA/LCP/CHILD/PWL phase timers.
 - Quick currently uses 256,000 total query bases rather than a full 1 MiB. This
   keeps the complete repeat-rich result below a practical output/time bound;
   the actual query-base count is recorded in metadata and throughput uses that

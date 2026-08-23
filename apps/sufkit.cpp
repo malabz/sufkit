@@ -73,6 +73,7 @@ sufkit::FmBackend parse_fm_backend(const std::string& value) {
     if (value == "sdsl-csa-wt-huff") return sufkit::FmBackend::sdsl_csa_wt_huff;
     if (value == "sdsl-csa-wt-balanced") return sufkit::FmBackend::sdsl_csa_wt_balanced;
     if (value == "sdsl-csa-sada") return sufkit::FmBackend::sdsl_csa_sada;
+    if (value == "sdsl-csa-wt-epr") return sufkit::FmBackend::sdsl_csa_wt_epr;
     throw sufkit::Error(sufkit::ErrorCode::invalid_input, "invalid FM backend: " + value);
 }
 
@@ -95,6 +96,16 @@ sufkit::MemSearchAlgorithm parse_mem_algorithm(const std::string& value) {
     throw sufkit::Error(sufkit::ErrorCode::invalid_input, "invalid MEM algorithm: " + value);
 }
 
+sufkit::SaSearchAlgorithm parse_sa_search_algorithm(const std::string& value) {
+    if (value == "auto") return sufkit::SaSearchAlgorithm::auto_select;
+    if (value == "binary") return sufkit::SaSearchAlgorithm::binary;
+    if (value == "lcp-binary") return sufkit::SaSearchAlgorithm::lcp_binary;
+    if (value == "sapling-pwl") return sufkit::SaSearchAlgorithm::sapling_pwl;
+    if (value == "child") return sufkit::SaSearchAlgorithm::child;
+    throw sufkit::Error(sufkit::ErrorCode::invalid_input,
+                        "invalid SA search algorithm: " + value);
+}
+
 void print_usage(std::ostream& output) {
     output <<
         "sufkit 0.1.1 - genome suffix arrays, ESA MEM search, and SDSL FM-indexes\n\n"
@@ -113,14 +124,16 @@ int run_build(const std::vector<std::string>& arguments) {
             "sufkit build --type sa|fm --input PATH --output PATH [--force]\n"
             "  SA: --sa-backend auto|divsufsort|caps --sa-width auto|32|64 --threads N\n"
             "      --sa-acceleration none|lcp|child|suffix-link|full\n"
-            "  FM: --fm-backend sdsl-csa-wt-huff\n";
+            "      [--learned-index] [--learned-k N] [--learned-memory-bp N]\n"
+            "      [--learned-bucket-bits N]\n"
+            "  FM: --fm-backend sdsl-csa-wt-huff|sdsl-csa-wt-balanced|sdsl-csa-wt-epr\n";
         return 0;
     }
     const auto options = parse_options(
         arguments,
         {"--type", "--input", "--output", "--sa-backend", "--sa-width", "--threads", "--fm-backend",
-         "--sa-acceleration"},
-        {"--force"});
+         "--sa-acceleration", "--learned-k", "--learned-memory-bp", "--learned-bucket-bits"},
+        {"--force", "--learned-index"});
     const auto type = options.require("--type");
     const auto input = std::filesystem::path(options.require("--input"));
     const auto output = std::filesystem::path(options.require("--output"));
@@ -149,7 +162,38 @@ int run_build(const std::vector<std::string>& arguments) {
             throw sufkit::Error(sufkit::ErrorCode::invalid_input, "--threads is out of range");
         }
         build_options.threads = static_cast<std::uint32_t>(threads);
-        build_options.acceleration = parse_sa_acceleration(options.value_or("--sa-acceleration", "full"));
+        build_options.acceleration = parse_sa_acceleration(
+            options.value_or("--sa-acceleration", "suffix-link"));
+        const bool learned_option = options.has("--learned-index") || options.has("--learned-k") ||
+            options.has("--learned-memory-bp") || options.has("--learned-bucket-bits");
+        build_options.learned_index.enabled = learned_option;
+        if (options.has("--learned-k")) {
+            const auto value = sufkit::app::parse_unsigned(options.require("--learned-k"), "--learned-k");
+            if (value == 0 || value > 31)
+                throw sufkit::Error(sufkit::ErrorCode::invalid_input, "--learned-k is out of range");
+            build_options.learned_index.k = static_cast<std::uint32_t>(value);
+        }
+        if (options.has("--learned-memory-bp")) {
+            const auto value = sufkit::app::parse_unsigned(
+                options.require("--learned-memory-bp"), "--learned-memory-bp");
+            if (value == 0 || value > std::numeric_limits<std::uint32_t>::max())
+                throw sufkit::Error(sufkit::ErrorCode::invalid_input,
+                                    "--learned-memory-bp is out of range");
+            build_options.learned_index.memory_overhead_basis_points =
+                static_cast<std::uint32_t>(value);
+        }
+        if (options.has("--learned-bucket-bits")) {
+            const auto value = sufkit::app::parse_unsigned(
+                options.require("--learned-bucket-bits"), "--learned-bucket-bits");
+            if (value > 31)
+                throw sufkit::Error(sufkit::ErrorCode::invalid_input,
+                                    "--learned-bucket-bits is out of range");
+            build_options.learned_index.bucket_bits = static_cast<std::uint32_t>(value);
+        }
+        if (build_options.learned_index.bucket_bits &&
+            *build_options.learned_index.bucket_bits > 2U * build_options.learned_index.k)
+            throw sufkit::Error(sufkit::ErrorCode::invalid_input,
+                                "--learned-bucket-bits must not exceed 2*k");
         auto index = sufkit::SuffixArray::build(reference, build_options);
         index.save(output, save_options);
         std::cerr << "built " << index.info().backend << " index with "
@@ -158,7 +202,9 @@ int run_build(const std::vector<std::string>& arguments) {
     }
     if (type == "fm") {
         if (options.has("--sa-backend") || options.has("--sa-width") || options.has("--threads") ||
-            options.has("--sa-acceleration")) {
+            options.has("--sa-acceleration") || options.has("--learned-index") ||
+            options.has("--learned-k") || options.has("--learned-memory-bp") ||
+            options.has("--learned-bucket-bits")) {
             throw sufkit::Error(
                 sufkit::ErrorCode::invalid_input,
                 "SA backend, width, and thread options are invalid for --type fm");
@@ -180,11 +226,13 @@ int run_mem(const std::vector<std::string>& arguments) {
             "sufkit mem --index PATH --query Q.fa[.gz] [--min-length N]\n"
             "  [--strand forward|reverse|both]\n"
             "  [--algorithm auto|baseline|lcp|child|suffix-link|full]\n"
+            "  [--lookup-algorithm auto|binary|lcp-binary|sapling-pwl|child]\n"
             "  [--max-matches N]\n";
         return 0;
     }
     const auto options = parse_options(arguments,
-        {"--index", "--query", "--min-length", "--strand", "--algorithm", "--max-matches"}, {});
+        {"--index", "--query", "--min-length", "--strand", "--algorithm",
+         "--lookup-algorithm", "--max-matches"}, {});
     const auto index_path = std::filesystem::path(options.require("--index"));
     const auto info = sufkit::inspect_index(index_path);
     if (info.kind != sufkit::IndexKind::suffix_array) {
@@ -197,6 +245,8 @@ int run_mem(const std::vector<std::string>& arguments) {
     mem_options.min_length = sufkit::app::parse_unsigned(options.value_or("--min-length", "20"), "--min-length");
     mem_options.strands = parse_strand(options.value_or("--strand", "forward"));
     mem_options.algorithm = parse_mem_algorithm(options.value_or("--algorithm", "auto"));
+    mem_options.lookup_algorithm = parse_sa_search_algorithm(
+        options.value_or("--lookup-algorithm", "auto"));
     std::optional<std::uint64_t> max_matches;
     if (options.has("--max-matches"))
         max_matches = sufkit::app::parse_unsigned(options.require("--max-matches"), "--max-matches");
@@ -262,16 +312,51 @@ void emit_queries(
     }
 }
 
+void emit_sa_queries(
+    const sufkit::SuffixArray& index,
+    const std::vector<sufkit::SequenceRecord>& queries,
+    sufkit::StrandMode strands,
+    bool count_only,
+    std::optional<std::uint64_t> max_hits,
+    sufkit::SaSearchAlgorithm algorithm) {
+    std::unordered_set<std::string> names;
+    if (count_only) std::cout << "query_id\ttotal_hits\n";
+    else std::cout << "query_id\tsequence_id\tsequence_name\tstart\tend\tstrand\n";
+    for (const auto& query : queries) {
+        if (query.name.empty() || !names.insert(query.name).second)
+            throw sufkit::Error(sufkit::ErrorCode::invalid_input,
+                                "query names must be non-empty and unique");
+        if (count_only) {
+            std::cout << query.name << '\t' << index.count(query.sequence, strands, algorithm) << '\n';
+            continue;
+        }
+        sufkit::LocateOptions locate_options;
+        locate_options.strands = strands;
+        locate_options.max_hits = max_hits;
+        const auto result = index.locate(query.sequence, locate_options, algorithm);
+        for (const auto& match : result.hits) {
+            const auto sequence = index.sequence_info(match.sequence_id);
+            std::cout << query.name << '\t' << match.sequence_id << '\t' << sequence.name << '\t'
+                      << match.position << '\t' << match.position + match.length << '\t'
+                      << sufkit::to_string(match.strand) << '\n';
+        }
+        if (result.truncated)
+            std::cerr << "query " << query.name << " truncated: reported " << result.hits.size()
+                      << " of " << result.total_hits << " hits\n";
+    }
+}
+
 int run_query(const std::vector<std::string>& arguments) {
     if (arguments.size() == 1 && arguments.front() == "--help") {
         std::cout <<
             "sufkit query --index PATH (--pattern ACGT | --query Q.fa[.gz])\n"
-            "  [--strand forward|reverse|both] [--count-only] [--max-hits N]\n";
+            "  [--strand forward|reverse|both] [--count-only] [--max-hits N]\n"
+            "  [--algorithm auto|binary|lcp-binary|sapling-pwl|child]\n";
         return 0;
     }
     const auto options = parse_options(
         arguments,
-        {"--index", "--pattern", "--query", "--strand", "--max-hits"},
+        {"--index", "--pattern", "--query", "--strand", "--max-hits", "--algorithm"},
         {"--count-only"});
     if (options.has("--pattern") == options.has("--query")) {
         throw sufkit::Error(
@@ -296,8 +381,12 @@ int run_query(const std::vector<std::string>& arguments) {
     const auto info = sufkit::inspect_index(path);
     if (info.kind == sufkit::IndexKind::suffix_array) {
         const auto index = sufkit::SuffixArray::load(path);
-        emit_queries(index, queries, strands, options.has("--count-only"), max_hits);
+        emit_sa_queries(index, queries, strands, options.has("--count-only"), max_hits,
+                        parse_sa_search_algorithm(options.value_or("--algorithm", "auto")));
     } else {
+        if (options.has("--algorithm") && options.require("--algorithm") != "auto")
+            throw sufkit::Error(sufkit::ErrorCode::invalid_input,
+                                "--algorithm is only supported by suffix-array indexes");
         const auto index = sufkit::FmIndex::load(path);
         emit_queries(index, queries, strands, options.has("--count-only"), max_hits);
     }
@@ -328,7 +417,13 @@ int run_inspect(const std::vector<std::string>& arguments) {
               << "serialized_bytes\t" << info.serialized_bytes << '\n';
     if (info.kind == sufkit::IndexKind::suffix_array) {
         std::cout << "sa_acceleration\t" << sufkit::to_string(info.sa_acceleration) << '\n'
-                  << "auxiliary_bytes\t" << info.auxiliary_bytes << '\n';
+                  << "auxiliary_bytes\t" << info.auxiliary_bytes << '\n'
+                  << "lookup_acceleration\t" << sufkit::to_string(info.sa_lookup_acceleration) << '\n'
+                  << "learned_index_bytes\t" << info.learned_index_bytes << '\n'
+                  << "learned_k\t" << info.learned_k << '\n'
+                  << "learned_bucket_bits\t" << info.learned_bucket_bits << '\n'
+                  << "learned_memory_overhead_basis_points\t"
+                  << info.learned_memory_overhead_basis_points << '\n';
     }
     return 0;
 }
