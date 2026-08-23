@@ -127,3 +127,28 @@ for every run.
 
 The `standard` and `full` profiles are intended for explicit local runs and are
 not part of the normal release acceptance commands.
+
+## MEM workload (0.1.1)
+
+```bash
+sufkit bench \
+  --workload mem \
+  --profile quick \
+  --scenarios mixed,repeat-rich \
+  --methods mem-baseline,mem-lcp,mem-child,mem-suffix-link,mem-full,mummer4 \
+  --min-lengths 20,50,100 \
+  --mummer4 /path/to/mummer \
+  --output-dir results/mem-quick
+```
+
+The five internal methods build exactly the auxiliary structures their names
+require. Query timing includes no TSV formatting. One warm-up precedes three
+smoke or five quick repetitions. The optional MUMmer4 row uses full SA
+(`K=1`), `skip=1`, no k-mer table, one query thread, `-save` for construction,
+and `-load` for measured queries. Its reported query time therefore includes
+external process startup and index loading and must not be interpreted as an
+in-process query-only comparison.
+
+All internal and MUMmer4 rows are normalized to the same zero-based,
+query-first tuple checksum. A mismatch preserves diagnostic TSV files and
+returns nonzero. See `benchmark-mem-v0.1.1.md` for the measured release run.

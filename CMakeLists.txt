@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 
-project(sufkit VERSION 0.1.0 LANGUAGES C CXX)
+project(sufkit VERSION 0.1.1 LANGUAGES C CXX)
 
 include(CMakePackageConfigHelpers)
 include(GNUInstallDirs)
@@ -83,7 +83,8 @@ if(SUFKIT_BUILD_CLI)
             apps/benchmark.cpp
             apps/benchmark_data.cpp
             apps/benchmark_output.cpp
-            apps/benchmark_runner.cpp)
+            apps/benchmark_runner.cpp
+            apps/mem_benchmark.cpp)
     else()
         list(APPEND _sufkit_cli_sources apps/benchmark_disabled.cpp)
     endif()
@@ -115,6 +116,12 @@ if(SUFKIT_BUILD_TESTS)
                 -DOUTPUT_ROOT=${CMAKE_CURRENT_BINARY_DIR}/test-benchmark
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_benchmark.cmake)
         set_tests_properties(sufkit_benchmark_smoke PROPERTIES TIMEOUT 180)
+        add_test(NAME sufkit_mem_benchmark_smoke
+            COMMAND ${CMAKE_COMMAND}
+                -DSUFKIT_EXECUTABLE=$<TARGET_FILE:sufkit_cli>
+                -DOUTPUT_ROOT=${CMAKE_CURRENT_BINARY_DIR}/test-mem-benchmark
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_mem_benchmark.cmake)
+        set_tests_properties(sufkit_mem_benchmark_smoke PROPERTIES TIMEOUT 180)
     endif()
 endif()
 

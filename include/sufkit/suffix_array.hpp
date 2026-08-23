@@ -36,6 +36,16 @@ public:
         std::string_view pattern,
         const LocateOptions& options = {}) const;
 
+    void for_each_mem(
+        std::string_view query,
+        const MemOptions& options,
+        const MemCallback& callback) const;
+    MemResult find_mems(
+        std::string_view query,
+        const MemOptions& options = {},
+        std::optional<std::uint64_t> max_matches = {}) const;
+    SaAcceleration acceleration() const noexcept;
+
     Position suffix_at(std::uint64_t row) const;
     SequenceInfo sequence_info(SequenceId id) const;
     IndexInfo info() const;

@@ -24,7 +24,7 @@ namespace {
 
 static_assert(
     SDSL_VERSION == 30003,
-    "sufkit 0.1.0 requires SDSL 3.0.3 for native serialization compatibility");
+    "sufkit 0.1.x requires SDSL 3.0.3 for native serialization compatibility");
 
 using SdslFmIndex = sdsl::csa_wt<sdsl::wt_huff<>, 32, 64>;
 
@@ -115,7 +115,7 @@ FmIndex FmIndex::build(
     if (options.backend != FmBackend::sdsl_csa_wt_huff) {
         throw Error(
             ErrorCode::unsupported_backend,
-            "only sdsl-csa-wt-huff is implemented in sufkit 0.1.0");
+            "only sdsl-csa-wt-huff is implemented in sufkit 0.1.x");
     }
     if (reference.impl_->data.encoded.empty()) {
         throw Error(ErrorCode::invalid_input, "reference text is empty");

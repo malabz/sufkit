@@ -27,7 +27,10 @@ enum class SectionType : std::uint32_t {
     metadata = 1,
     text = 2,
     suffix_array = 3,
-    sdsl_csa = 4
+    sdsl_csa = 4,
+    inverse_suffix_array = 5,
+    lcp = 6,
+    child = 7
 };
 
 struct SectionDescriptor {
@@ -39,6 +42,7 @@ struct SectionDescriptor {
 };
 
 struct ContainerSpec {
+    std::uint16_t format_minor = 0;
     IndexKind kind = IndexKind::suffix_array;
     StoredBackend backend = StoredBackend::divsufsort32;
     std::uint8_t coordinate_width = 0;

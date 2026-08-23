@@ -19,7 +19,7 @@ namespace {
 
 constexpr std::array<std::uint8_t, 8> kMagic{{'S', 'U', 'F', 'K', 'I', 'D', 'X', 0}};
 constexpr std::uint16_t kFormatMajor = 1;
-constexpr std::uint16_t kFormatMinor = 0;
+constexpr std::uint16_t kFormatMinor = 1;
 constexpr std::size_t kBaseHeaderSize = 80;
 constexpr std::size_t kSectionEntrySize = 32;
 constexpr std::size_t kHeaderCrcOffset = 72;
@@ -141,7 +141,10 @@ std::vector<std::uint8_t> build_header(
     header.reserve(kBaseHeaderSize + sections.size() * kSectionEntrySize);
     header.insert(header.end(), kMagic.begin(), kMagic.end());
     append_u16(header, kFormatMajor);
-    append_u16(header, kFormatMinor);
+    if (spec.format_minor > kFormatMinor) {
+        throw Error(ErrorCode::build_failure, "unsupported output sufidx format version");
+    }
+    append_u16(header, spec.format_minor);
     header.push_back(1); // little endian
     header.push_back(static_cast<std::uint8_t>(spec.kind));
     header.push_back(static_cast<std::uint8_t>(spec.backend));
@@ -429,6 +432,7 @@ ParsedContainer read_container(const std::filesystem::path& path) {
     ParsedContainer result;
     result.path = path;
     result.file_size = file_size;
+    result.spec.format_minor = minor;
     const auto kind = header[13];
     if (kind != static_cast<std::uint8_t>(IndexKind::suffix_array) &&
         kind != static_cast<std::uint8_t>(IndexKind::fm_index)) {
@@ -467,7 +471,7 @@ ParsedContainer read_container(const std::filesystem::path& path) {
         section.crc32 = get_u32(header, offset + 24);
         const auto raw_type = static_cast<std::uint32_t>(section.type);
         const bool known_type = raw_type >= static_cast<std::uint32_t>(SectionType::metadata) &&
-                                raw_type <= static_cast<std::uint32_t>(SectionType::sdsl_csa);
+                                raw_type <= static_cast<std::uint32_t>(SectionType::child);
         if (!known_type && (section.flags & kRequiredSection) != 0) {
             throw Error(ErrorCode::corrupt_index, "unknown required index section");
         }
@@ -595,6 +599,7 @@ const char* stored_backend_signature(StoredBackend backend) noexcept {
 IndexInfo index_info_from_container(const ParsedContainer& container) {
     IndexInfo info;
     info.kind = container.spec.kind;
+    info.format_version = "1." + std::to_string(container.spec.format_minor);
     info.library_version = std::to_string(container.spec.library_major) + "." +
                            std::to_string(container.spec.library_minor) + "." +
                            std::to_string(container.spec.library_patch);
@@ -613,6 +618,28 @@ IndexInfo index_info_from_container(const ParsedContainer& container) {
     info.ambiguous_bases = container.spec.ambiguous_bases;
     info.fingerprint = container.spec.fingerprint;
     info.serialized_bytes = container.file_size;
+    if (container.spec.kind == IndexKind::suffix_array) {
+        const auto has = [&](SectionType type) {
+            return std::any_of(container.sections.begin(), container.sections.end(),
+                [type](const SectionDescriptor& section) { return section.type == type; });
+        };
+        const bool isa = has(SectionType::inverse_suffix_array);
+        const bool lcp = has(SectionType::lcp);
+        const bool child = has(SectionType::child);
+        if (!isa && !lcp && !child) info.sa_acceleration = SaAcceleration::none;
+        else if (!isa && lcp && !child) info.sa_acceleration = SaAcceleration::lcp;
+        else if (!isa && lcp && child) info.sa_acceleration = SaAcceleration::lcp_child;
+        else if (isa && lcp && !child) info.sa_acceleration = SaAcceleration::lcp_suffix_link;
+        else if (isa && lcp && child) info.sa_acceleration = SaAcceleration::full;
+        else throw Error(ErrorCode::corrupt_index,
+                         "invalid suffix-array auxiliary section combination");
+        for (const auto& section : container.sections) {
+            if (section.type == SectionType::inverse_suffix_array ||
+                section.type == SectionType::lcp || section.type == SectionType::child) {
+                info.auxiliary_bytes += section.size;
+            }
+        }
+    }
     return info;
 }
 

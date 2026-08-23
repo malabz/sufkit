@@ -76,12 +76,32 @@ sufkit::FmBackend parse_fm_backend(const std::string& value) {
     throw sufkit::Error(sufkit::ErrorCode::invalid_input, "invalid FM backend: " + value);
 }
 
+sufkit::SaAcceleration parse_sa_acceleration(const std::string& value) {
+    if (value == "none") return sufkit::SaAcceleration::none;
+    if (value == "lcp") return sufkit::SaAcceleration::lcp;
+    if (value == "child") return sufkit::SaAcceleration::lcp_child;
+    if (value == "suffix-link") return sufkit::SaAcceleration::lcp_suffix_link;
+    if (value == "full") return sufkit::SaAcceleration::full;
+    throw sufkit::Error(sufkit::ErrorCode::invalid_input, "invalid SA acceleration: " + value);
+}
+
+sufkit::MemSearchAlgorithm parse_mem_algorithm(const std::string& value) {
+    if (value == "auto") return sufkit::MemSearchAlgorithm::auto_select;
+    if (value == "baseline") return sufkit::MemSearchAlgorithm::baseline;
+    if (value == "lcp") return sufkit::MemSearchAlgorithm::lcp;
+    if (value == "child") return sufkit::MemSearchAlgorithm::child;
+    if (value == "suffix-link") return sufkit::MemSearchAlgorithm::suffix_link;
+    if (value == "full") return sufkit::MemSearchAlgorithm::full;
+    throw sufkit::Error(sufkit::ErrorCode::invalid_input, "invalid MEM algorithm: " + value);
+}
+
 void print_usage(std::ostream& output) {
     output <<
-        "sufkit 0.1.0 - genome suffix arrays and SDSL FM-indexes\n\n"
+        "sufkit 0.1.1 - genome suffix arrays, ESA MEM search, and SDSL FM-indexes\n\n"
         "Commands:\n"
         "  sufkit build --type sa|fm --input REF.fa[.gz] --output REF.sufidx [options]\n"
         "  sufkit query --index REF.sufidx (--pattern ACGT | --query Q.fa[.gz]) [options]\n"
+        "  sufkit mem --index REF.sufidx --query Q.fa[.gz] [options]\n"
         "  sufkit inspect --index REF.sufidx\n"
         "  sufkit bench --profile smoke|quick|standard|full --output-dir DIR\n\n"
         "Run a command with --help for its option summary.\n";
@@ -92,12 +112,14 @@ int run_build(const std::vector<std::string>& arguments) {
         std::cout <<
             "sufkit build --type sa|fm --input PATH --output PATH [--force]\n"
             "  SA: --sa-backend auto|divsufsort|caps --sa-width auto|32|64 --threads N\n"
+            "      --sa-acceleration none|lcp|child|suffix-link|full\n"
             "  FM: --fm-backend sdsl-csa-wt-huff\n";
         return 0;
     }
     const auto options = parse_options(
         arguments,
-        {"--type", "--input", "--output", "--sa-backend", "--sa-width", "--threads", "--fm-backend"},
+        {"--type", "--input", "--output", "--sa-backend", "--sa-width", "--threads", "--fm-backend",
+         "--sa-acceleration"},
         {"--force"});
     const auto type = options.require("--type");
     const auto input = std::filesystem::path(options.require("--input"));
@@ -127,6 +149,7 @@ int run_build(const std::vector<std::string>& arguments) {
             throw sufkit::Error(sufkit::ErrorCode::invalid_input, "--threads is out of range");
         }
         build_options.threads = static_cast<std::uint32_t>(threads);
+        build_options.acceleration = parse_sa_acceleration(options.value_or("--sa-acceleration", "full"));
         auto index = sufkit::SuffixArray::build(reference, build_options);
         index.save(output, save_options);
         std::cerr << "built " << index.info().backend << " index with "
@@ -134,7 +157,8 @@ int run_build(const std::vector<std::string>& arguments) {
         return 0;
     }
     if (type == "fm") {
-        if (options.has("--sa-backend") || options.has("--sa-width") || options.has("--threads")) {
+        if (options.has("--sa-backend") || options.has("--sa-width") || options.has("--threads") ||
+            options.has("--sa-acceleration")) {
             throw sufkit::Error(
                 sufkit::ErrorCode::invalid_input,
                 "SA backend, width, and thread options are invalid for --type fm");
@@ -148,6 +172,53 @@ int run_build(const std::vector<std::string>& arguments) {
         return 0;
     }
     throw sufkit::Error(sufkit::ErrorCode::invalid_input, "--type must be sa or fm");
+}
+
+int run_mem(const std::vector<std::string>& arguments) {
+    if (arguments.size() == 1 && arguments.front() == "--help") {
+        std::cout <<
+            "sufkit mem --index PATH --query Q.fa[.gz] [--min-length N]\n"
+            "  [--strand forward|reverse|both]\n"
+            "  [--algorithm auto|baseline|lcp|child|suffix-link|full]\n"
+            "  [--max-matches N]\n";
+        return 0;
+    }
+    const auto options = parse_options(arguments,
+        {"--index", "--query", "--min-length", "--strand", "--algorithm", "--max-matches"}, {});
+    const auto index_path = std::filesystem::path(options.require("--index"));
+    const auto info = sufkit::inspect_index(index_path);
+    if (info.kind != sufkit::IndexKind::suffix_array) {
+        throw sufkit::Error(sufkit::ErrorCode::unsupported_backend,
+            "MEM search requires a suffix-array index in sufkit 0.1.1");
+    }
+    auto queries = sufkit::app::read_fasta_records(options.require("--query"));
+    if (queries.empty()) throw sufkit::Error(sufkit::ErrorCode::invalid_input, "query FASTA contains no records");
+    sufkit::MemOptions mem_options;
+    mem_options.min_length = sufkit::app::parse_unsigned(options.value_or("--min-length", "20"), "--min-length");
+    mem_options.strands = parse_strand(options.value_or("--strand", "forward"));
+    mem_options.algorithm = parse_mem_algorithm(options.value_or("--algorithm", "auto"));
+    std::optional<std::uint64_t> max_matches;
+    if (options.has("--max-matches"))
+        max_matches = sufkit::app::parse_unsigned(options.require("--max-matches"), "--max-matches");
+    const auto index = sufkit::SuffixArray::load(index_path);
+    std::unordered_set<std::string> names;
+    std::cout << "query_id\tsequence_id\tsequence_name\treference_start\tquery_start\tlength\tstrand\n";
+    for (const auto& query : queries) {
+        if (query.name.empty() || !names.insert(query.name).second)
+            throw sufkit::Error(sufkit::ErrorCode::invalid_input, "query names must be non-empty and unique");
+        const auto result = index.find_mems(query.sequence, mem_options, max_matches);
+        for (const auto& match : result.matches) {
+            const auto sequence = index.sequence_info(match.sequence_id);
+            std::cout << query.name << '\t' << match.sequence_id << '\t' << sequence.name << '\t'
+                      << match.reference_position << '\t' << match.query_position << '\t'
+                      << match.length << '\t' << sufkit::to_string(match.strand) << '\n';
+        }
+        if (result.truncated) {
+            std::cerr << "query " << query.name << " truncated: reported " << result.matches.size()
+                      << " of " << result.total_matches << " MEMs\n";
+        }
+    }
+    return 0;
 }
 
 template <class Index>
@@ -255,6 +326,10 @@ int run_inspect(const std::vector<std::string>& arguments) {
               << "fingerprint\t" << std::hex << std::setfill('0') << std::setw(16)
               << info.fingerprint << std::dec << '\n'
               << "serialized_bytes\t" << info.serialized_bytes << '\n';
+    if (info.kind == sufkit::IndexKind::suffix_array) {
+        std::cout << "sa_acceleration\t" << sufkit::to_string(info.sa_acceleration) << '\n'
+                  << "auxiliary_bytes\t" << info.auxiliary_bytes << '\n';
+    }
     return 0;
 }
 
@@ -293,6 +368,7 @@ int main(int argc, char** argv) {
         }
         if (command == "build") return run_build(arguments);
         if (command == "query") return run_query(arguments);
+        if (command == "mem") return run_mem(arguments);
         if (command == "inspect") return run_inspect(arguments);
         if (command == "bench") return sufkit::app::run_benchmark(arguments);
         throw sufkit::Error(sufkit::ErrorCode::invalid_input, "unknown command: " + command);

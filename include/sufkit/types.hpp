@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -45,6 +46,23 @@ enum class CoordinateWidth : std::uint8_t {
     bits64 = 64
 };
 
+enum class SaAcceleration : std::uint8_t {
+    none = 0,
+    lcp = 1,
+    lcp_child = 2,
+    lcp_suffix_link = 3,
+    full = 4
+};
+
+enum class MemSearchAlgorithm : std::uint8_t {
+    auto_select = 0,
+    baseline = 1,
+    lcp = 2,
+    child = 3,
+    suffix_link = 4,
+    full = 5
+};
+
 enum class FmBackend : std::uint8_t {
     sdsl_csa_wt_huff = 1,
     sdsl_csa_wt_balanced = 2,
@@ -67,7 +85,30 @@ struct SuffixArrayBuildOptions {
     SaBackend backend = SaBackend::auto_select;
     CoordinateWidth coordinate_width = CoordinateWidth::auto_select;
     std::uint32_t threads = 1;
+    SaAcceleration acceleration = SaAcceleration::full;
 };
+
+struct MemOptions {
+    std::uint64_t min_length = 20;
+    StrandMode strands = StrandMode::forward;
+    MemSearchAlgorithm algorithm = MemSearchAlgorithm::auto_select;
+};
+
+struct MemMatch {
+    SequenceId sequence_id = 0;
+    Position reference_position = 0;
+    Position query_position = 0;
+    std::uint64_t length = 0;
+    Strand strand = Strand::forward;
+};
+
+struct MemResult {
+    std::uint64_t total_matches = 0;
+    std::vector<MemMatch> matches;
+    bool truncated = false;
+};
+
+using MemCallback = std::function<void(const MemMatch&)>;
 
 struct FmIndexBuildOptions {
     FmBackend backend = FmBackend::sdsl_csa_wt_huff;
@@ -124,6 +165,8 @@ struct IndexInfo {
     std::uint64_t ambiguous_bases = 0;
     std::uint64_t fingerprint = 0;
     std::uint64_t serialized_bytes = 0;
+    SaAcceleration sa_acceleration = SaAcceleration::none;
+    std::uint64_t auxiliary_bytes = 0;
 };
 
 enum class ErrorCode : std::uint8_t {
@@ -146,10 +189,11 @@ private:
 
 SUFKIT_API const char* to_string(IndexKind value) noexcept;
 SUFKIT_API const char* to_string(SaBackend value) noexcept;
+SUFKIT_API const char* to_string(SaAcceleration value) noexcept;
+SUFKIT_API const char* to_string(MemSearchAlgorithm value) noexcept;
 SUFKIT_API const char* to_string(FmBackend value) noexcept;
 SUFKIT_API const char* to_string(Strand value) noexcept;
 SUFKIT_API const char* to_string(StrandMode value) noexcept;
 SUFKIT_API const char* to_string(ErrorCode value) noexcept;
 
 } // namespace sufkit
-

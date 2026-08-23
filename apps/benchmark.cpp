@@ -2,6 +2,7 @@
 
 #include "app_support.hpp"
 #include "benchmark_common.hpp"
+#include "mem_benchmark.hpp"
 
 #include <sufkit/sufkit.hpp>
 
@@ -58,7 +59,7 @@ std::uint32_t parse_u32(
 }
 
 std::vector<std::string> parse_methods(const std::string& text) {
-    const std::set<std::string> supported{"naive", "sa32", "sa64", "fm"};
+    const std::set<std::string> supported{"naive", "sa32", "sa64", "sa32-none", "sa64-none", "fm"};
     auto methods = split_csv(text, "--methods");
     for (const auto& method : methods) {
         if (supported.count(method) == 0) {
@@ -257,16 +258,26 @@ void print_help() {
         "Compatibility: sufkit bench --smoke|--quick --output RESULTS.tsv\n\n"
         "Options:\n"
         "  --scenarios mixed,balanced,gc-skewed,repeat-rich,n-islands,many-contig\n"
-        "  --methods naive,sa32,sa64,fm\n"
+        "  --methods naive,sa32,sa64,sa32-none,sa64-none,fm\n"
         "  --pattern-lengths 20,50,100,200,500\n"
         "  --locate-limits 1,10,1000,all\n"
         "  --seed 20260822\n"
-        "  --build-repetitions N --query-repetitions N --warmups N\n";
+        "  --build-repetitions N --query-repetitions N --warmups N\n\n"
+        "MEM workload:\n"
+        "  --workload mem --profile smoke|quick --output-dir DIR\n"
+        "  --methods mem-baseline,mem-lcp,mem-child,mem-suffix-link,mem-full,mummer4\n"
+        "  --min-lengths 20,50,100 [--mummer4 PATH]\n"
+        "  or --workload mem --reference REF.fa[.gz] [--queries Q.fa[.gz]]\n";
 }
 
 } // namespace
 
 int run_benchmark(const std::vector<std::string>& arguments) {
+    for (std::size_t index = 0; index + 1 < arguments.size(); ++index) {
+        if (arguments[index] == "--workload" && arguments[index + 1] == "mem") {
+            return mem_bench::run(arguments);
+        }
+    }
     if (arguments.size() == 1 && arguments.front() == "--help") {
         print_help();
         return 0;

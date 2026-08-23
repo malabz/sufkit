@@ -24,6 +24,29 @@ const char* to_string(SaBackend value) noexcept {
     return "unknown";
 }
 
+const char* to_string(SaAcceleration value) noexcept {
+    switch (value) {
+    case SaAcceleration::none: return "none";
+    case SaAcceleration::lcp: return "lcp";
+    case SaAcceleration::lcp_child: return "child";
+    case SaAcceleration::lcp_suffix_link: return "suffix-link";
+    case SaAcceleration::full: return "full";
+    }
+    return "unknown";
+}
+
+const char* to_string(MemSearchAlgorithm value) noexcept {
+    switch (value) {
+    case MemSearchAlgorithm::auto_select: return "auto";
+    case MemSearchAlgorithm::baseline: return "baseline";
+    case MemSearchAlgorithm::lcp: return "lcp";
+    case MemSearchAlgorithm::child: return "child";
+    case MemSearchAlgorithm::suffix_link: return "suffix-link";
+    case MemSearchAlgorithm::full: return "full";
+    }
+    return "unknown";
+}
+
 const char* to_string(FmBackend value) noexcept {
     switch (value) {
     case FmBackend::sdsl_csa_wt_huff: return "sdsl-csa-wt-huff";
@@ -64,4 +87,3 @@ const char* to_string(ErrorCode value) noexcept {
 }
 
 } // namespace sufkit
-

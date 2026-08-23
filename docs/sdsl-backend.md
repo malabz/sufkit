@@ -1,6 +1,6 @@
 # SDSL FM-index backend
 
-The only sufkit 0.1.0 FM backend is permanently identified as
+The only sufkit 0.1.x FM backend is permanently identified as
 `sdsl-csa-wt-huff` and maps to:
 
 ```cpp
@@ -26,4 +26,3 @@ must use a new backend/format compatibility decision and migration tests.
 
 Reserved V1.1 backend names are `sdsl-csa-wt-balanced` and `sdsl-csa-sada`.
 They report unavailable in V1.
-

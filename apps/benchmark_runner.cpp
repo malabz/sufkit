@@ -203,7 +203,8 @@ LoadedIndex load_method(
     loaded.method = method;
     if (method == "naive") {
         loaded.records = normalized_records(dataset.records);
-    } else if (method == "sa32" || method == "sa64") {
+    } else if (method == "sa32" || method == "sa64" ||
+               method == "sa32-none" || method == "sa64-none") {
         loaded.suffix_array.emplace(SuffixArray::load(path));
     } else if (method == "fm") {
         loaded.fm_index.emplace(FmIndex::load(path));
@@ -411,7 +412,8 @@ MethodResult run_worker(
         result.signature = "std::string::find per normalized contig";
         result.builds.push_back({});
         result.loads.push_back({});
-    } else if (method == "sa32" && dataset.total_bases + dataset.contigs + 1 >
+    } else if ((method == "sa32" || method == "sa32-none") &&
+               dataset.total_bases + dataset.contigs + 1 >
                static_cast<std::uint64_t>(std::numeric_limits<std::int32_t>::max())) {
         result.backend = "divsufsort32";
         result.signature = "libdivsufsort-2.0.2/saidx_t";
@@ -433,11 +435,14 @@ MethodResult run_worker(
                 (method + "-" + std::to_string(repetition) + ".sufidx");
             BuildRaw raw;
             raw.repetition = repetition;
-            if (method == "sa32" || method == "sa64") {
+            if (method == "sa32" || method == "sa64" ||
+                method == "sa32-none" || method == "sa64-none") {
                 SuffixArrayBuildOptions build_options;
                 build_options.backend = SaBackend::divsufsort;
-                build_options.coordinate_width = method == "sa32"
+                build_options.coordinate_width = method == "sa32" || method == "sa32-none"
                     ? CoordinateWidth::bits32 : CoordinateWidth::bits64;
+                build_options.acceleration = method == "sa32-none" || method == "sa64-none"
+                    ? SaAcceleration::none : SaAcceleration::full;
                 const auto cpu_begin = usage_now();
                 const auto wall_begin = Clock::now();
                 auto index = SuffixArray::build(reference, build_options);
@@ -488,7 +493,8 @@ MethodResult run_worker(
             raw.repetition = repetition;
             const auto cpu_begin = usage_now();
             const auto wall_begin = Clock::now();
-            if (method == "sa32" || method == "sa64") {
+            if (method == "sa32" || method == "sa64" ||
+                method == "sa32-none" || method == "sa64-none") {
                 auto index = SuffixArray::load(result.canonical_index);
                 (void)index.info();
                 auto checksum = checksum_seed();
