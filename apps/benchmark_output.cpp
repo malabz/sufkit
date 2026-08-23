@@ -87,8 +87,11 @@ struct QueryAggregate {
     std::string strand;
     std::string operation;
     std::string max_hits;
+    std::string fm_query_mode;
+    std::string fm_batch_width;
     std::string status;
     std::uint64_t query_count = 0;
+    std::uint64_t query_bases = 0;
     std::uint64_t total_hits = 0;
     std::uint64_t reported_hits = 0;
     std::uint64_t checksum = 0;
@@ -111,18 +114,23 @@ struct QueryAggregate {
 };
 
 std::vector<QueryAggregate> aggregate_queries(const MethodResult& result) {
-    using Key = std::tuple<std::string, std::string, std::string, std::string, std::string, std::string>;
+    using Key = std::tuple<std::string, std::string, std::string, std::string,
+                           std::string, std::string, std::string, std::string>;
     std::map<Key, QueryAggregate> values;
     for (const auto& raw : result.queries) {
-        const Key key{raw.group, raw.pattern_length, raw.strand, raw.operation, raw.max_hits, raw.status};
+        const Key key{raw.group, raw.pattern_length, raw.strand, raw.operation, raw.max_hits,
+                      raw.fm_query_mode, raw.fm_batch_width, raw.status};
         auto& aggregate = values[key];
         aggregate.group = raw.group;
         aggregate.pattern_length = raw.pattern_length;
         aggregate.strand = raw.strand;
         aggregate.operation = raw.operation;
         aggregate.max_hits = raw.max_hits;
+        aggregate.fm_query_mode = raw.fm_query_mode;
+        aggregate.fm_batch_width = raw.fm_batch_width;
         aggregate.status = raw.status;
         aggregate.query_count = raw.query_count;
+        aggregate.query_bases = raw.query_bases;
         aggregate.total_hits = raw.total_hits;
         aggregate.reported_hits = raw.reported_hits;
         aggregate.checksum = raw.checksum;
@@ -201,6 +209,7 @@ void write_result_directory(
                 "methods\tpattern_lengths\tlocate_limits\tbuild_repetitions\t"
                 "query_repetitions\twarmups\t"
                 "learned_k\tlearned_memory_overhead_basis_points\tlearned_bucket_bits\t"
+                "fm_query_modes\tfm_batch_widths\t"
                 "reference_seconds\tnormalization_seconds\tcompiler\tcompiler_version\t"
                 "cmake_version\tbuild_type\tos\tarchitecture\tcpu_model\tlogical_cpus\n";
     for (const auto& dataset : datasets) {
@@ -215,6 +224,7 @@ void write_result_directory(
                  << context.learned_k << '\t'
                  << context.learned_memory_overhead_basis_points << '\t'
                  << context.learned_bucket_bits << '\t'
+                 << context.fm_query_modes << '\t' << context.fm_batch_widths << '\t'
                  << std::fixed << std::setprecision(6) << dataset.reference_seconds << '\t'
                  << dataset.normalization_seconds << '\t' << compiler_name() << '\t'
                  << compiler_version() << '\t' << SUFKIT_BENCH_CMAKE_VERSION << '\t'
@@ -236,13 +246,17 @@ void write_result_directory(
                "local_window_rows_max\tpredictions\tprediction_error_mean\t"
                "prediction_error_p50\tprediction_error_p95\tprediction_error_p99\t"
                "prediction_error_max\tlocal_window_rows_p50\tlocal_window_rows_p95\t"
-               "local_window_rows_p99\tfull_binary_fallbacks\tstatus\n";
+               "local_window_rows_p99\tfull_binary_fallbacks\tstatus\t"
+               "fm_query_mode\tfm_batch_width\tquery_bases\tquery_bases_per_second\t"
+               "speedup_vs_fm_huff_scalar\n";
     raw << "run_id\tdataset\tscenario\tmethod\tphase\tquery_group\tpattern_length\tstrand\t"
            "operation\tmax_hits\trepetition\tquery_count\tseconds\tuser_cpu_seconds\t"
            "system_cpu_seconds\tpeak_rss_mb\ttotal_hits\treported_hits\tresult_checksum\tstatus\t"
            "query_id\tquery_source\tsuffix_comparisons\tcharacter_comparisons\t"
            "gallop_probes\tlocal_window_rows\tlocal_window_rows_max\tpredictions\t"
-           "prediction_error_sum\tprediction_error_max\tfull_binary_fallbacks\n";
+           "prediction_error_sum\tprediction_error_max\tfull_binary_fallbacks\t"
+           "fm_query_mode\tfm_batch_width\tquery_bases\t"
+           "query_bases_per_second\tspeedup_vs_fm_huff_scalar\n";
     builds << std::fixed << std::setprecision(6);
     queries << std::fixed << std::setprecision(6);
     raw << std::fixed << std::setprecision(6);
@@ -253,7 +267,22 @@ void write_result_directory(
             raw << context.run_id << '\t' << dataset.name << '\t' << to_string(dataset.scenario)
                 << "\tdataset\tquery_definition\t" << query.group << '\t' << query.pattern_length
                 << "\tNA\tdefinition\tNA\t0\t1\t0\t0\t0\t0\t0\t0\t0000000000000000\tok\t"
-                << query.id << '\t' << query.source << "\t0\t0\t0\t0\t0\t0\t0\t0\t0\n";
+                << query.id << '\t' << query.source
+                << "\t0\t0\t0\t0\t0\t0\t0\t0\t0\tNA\tNA\t0\t0\tNA\n";
+        }
+
+        const auto query_identity = [](const QueryAggregate& value) {
+            return value.group + "\t" + value.pattern_length + "\t" + value.strand + "\t" +
+                   value.operation + "\t" + value.max_hits;
+        };
+        std::map<std::string, double> huffman_scalar_seconds;
+        for (const auto& candidate : results[dataset_index]) {
+            if (candidate.method != "fm" && candidate.method != "fm-huff") continue;
+            for (const auto& value : aggregate_queries(candidate)) {
+                if (value.status == "ok" && value.fm_query_mode == "scalar") {
+                    huffman_scalar_seconds[query_identity(value)] = median(value.seconds);
+                }
+        }
         }
         for (const auto& result : results[dataset_index]) {
             const auto build_seconds = values_for(result.builds, [](const auto& value) { return value.build_seconds; });
@@ -289,6 +318,11 @@ void write_result_directory(
                     ? 0.0 : static_cast<double>(value.query_count) / seconds_median;
                 const auto ns_per_query = value.query_count == 0
                     ? 0.0 : seconds_median * 1.0e9 / static_cast<double>(value.query_count);
+                const auto query_bases_per_second = seconds_median == 0.0
+                    ? 0.0 : static_cast<double>(value.query_bases) / seconds_median;
+                const auto baseline = huffman_scalar_seconds.find(query_identity(value));
+                const auto speedup = baseline == huffman_scalar_seconds.end() || seconds_median == 0.0
+                    ? 0.0 : baseline->second / seconds_median;
                 queries << context.run_id << '\t' << dataset.name << '\t' << to_string(dataset.scenario) << '\t'
                         << result.method << '\t' << value.group << '\t' << value.pattern_length << '\t'
                         << value.strand << '\t' << value.operation << '\t' << value.max_hits << '\t'
@@ -306,7 +340,11 @@ void write_result_directory(
                         << value.prediction_error_p99 << '\t' << value.prediction_absolute_error_max << '\t'
                         << value.local_window_rows_p50 << '\t' << value.local_window_rows_p95 << '\t'
                         << value.local_window_rows_p99 << '\t'
-                        << value.full_binary_fallbacks << '\t' << value.status << '\n';
+                        << value.full_binary_fallbacks << '\t' << value.status << '\t'
+                        << value.fm_query_mode << '\t' << value.fm_batch_width << '\t'
+                        << value.query_bases << '\t' << query_bases_per_second << '\t';
+                if (baseline == huffman_scalar_seconds.end()) queries << "NA\n";
+                else queries << speedup << '\n';
             }
 
             for (const auto& value : result.builds) {
@@ -315,12 +353,12 @@ void write_result_directory(
                     << "\t0\t" << value.build_seconds << '\t' << value.build_user_seconds << '\t'
                     << value.build_system_seconds << '\t' << result.peak_rss_mb
                     << "\t0\t0\t0000000000000000\t" << value.status
-                    << "\tNA\tNA\t0\t0\t0\t0\t0\t0\t0\t0\t0\n";
+                    << "\tNA\tNA\t0\t0\t0\t0\t0\t0\t0\t0\t0\tNA\tNA\t0\t0\tNA\n";
                 raw << context.run_id << '\t' << dataset.name << '\t' << to_string(dataset.scenario) << '\t'
                     << result.method << "\tsave\tNA\tNA\tNA\tsave\tNA\t" << value.repetition
                     << "\t0\t" << value.save_seconds << "\t0\t0\t" << result.peak_rss_mb
                     << "\t0\t0\t0000000000000000\t" << value.status
-                    << "\tNA\tNA\t0\t0\t0\t0\t0\t0\t0\t0\t0\n";
+                    << "\tNA\tNA\t0\t0\t0\t0\t0\t0\t0\t0\t0\tNA\tNA\t0\t0\tNA\n";
             }
             for (const auto& value : result.loads) {
                 raw << context.run_id << '\t' << dataset.name << '\t' << to_string(dataset.scenario) << '\t'
@@ -328,7 +366,7 @@ void write_result_directory(
                     << "\t0\t" << value.seconds << '\t' << value.user_seconds << '\t'
                     << value.system_seconds << '\t' << result.peak_rss_mb
                     << "\t0\t0\t0000000000000000\t" << value.status
-                    << "\tNA\tNA\t0\t0\t0\t0\t0\t0\t0\t0\t0\n";
+                    << "\tNA\tNA\t0\t0\t0\t0\t0\t0\t0\t0\t0\tNA\tNA\t0\t0\tNA\n";
             }
             for (const auto& value : result.queries) {
                 raw << context.run_id << '\t' << dataset.name << '\t' << to_string(dataset.scenario) << '\t'
@@ -343,7 +381,11 @@ void write_result_directory(
                     << value.local_window_rows_max << '\t' << value.predictions << '\t'
                     << value.prediction_absolute_error_sum << '\t'
                     << value.prediction_absolute_error_max << '\t'
-                    << value.full_binary_fallbacks << '\n';
+                    << value.full_binary_fallbacks << '\t'
+                    << value.fm_query_mode << '\t' << value.fm_batch_width << '\t'
+                    << value.query_bases << '\t'
+                    << (value.seconds == 0.0 ? 0.0 : static_cast<double>(value.query_bases) / value.seconds)
+                    << "\tNA\n";
             }
         }
     }
@@ -378,7 +420,8 @@ void write_legacy_output(
         std::uint64_t checksum = checksum_seed();
         std::uint64_t query_count = 0;
         for (const auto& raw : result.queries) {
-            if (raw.status != "ok" || raw.strand != "forward") continue;
+            if (raw.status != "ok" || raw.strand != "forward" ||
+                raw.fm_query_mode != "scalar") continue;
             if (raw.operation == "count") {
                 count_seconds[raw.repetition] += raw.seconds;
                 if (raw.repetition == 0) {

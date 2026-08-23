@@ -76,6 +76,57 @@ if(NOT raw_results MATCHES "query_definition" OR NOT raw_results MATCHES "query_
     message(FATAL_ERROR "raw_repetitions.tsv is missing ordered query definitions")
 endif()
 
+set(fm_dir "${OUTPUT_ROOT}/fm-backends")
+execute_process(
+    COMMAND "${SUFKIT_EXECUTABLE}" bench
+        --profile smoke
+        --scenarios balanced
+        --methods fm-huff,fm-balanced,fm-epr
+        --fm-query-modes scalar,batch
+        --fm-batch-widths 1,4
+        --pattern-lengths 20
+        --locate-limits 1
+        --build-repetitions 1
+        --query-repetitions 1
+        --warmups 0
+        --output-dir "${fm_dir}"
+    RESULT_VARIABLE fm_status
+    OUTPUT_VARIABLE fm_stdout
+    ERROR_VARIABLE fm_stderr)
+if(NOT fm_status EQUAL 0)
+    message(FATAL_ERROR "FM backend benchmark failed (${fm_status}):\n${fm_stdout}\n${fm_stderr}")
+endif()
+file(READ "${fm_dir}/run_metadata.tsv" fm_metadata)
+file(READ "${fm_dir}/build_results.tsv" fm_builds)
+file(READ "${fm_dir}/query_results.tsv" fm_queries)
+file(READ "${fm_dir}/raw_repetitions.tsv" fm_raw)
+if(NOT fm_metadata MATCHES "fm_query_modes\tfm_batch_widths")
+    message(FATAL_ERROR "FM benchmark metadata fields are missing")
+endif()
+foreach(method IN ITEMS fm-huff fm-balanced fm-epr)
+    if(NOT fm_builds MATCHES "\t${method}\t")
+        message(FATAL_ERROR "FM build results are missing ${method}")
+    endif()
+endforeach()
+if(NOT fm_queries MATCHES "fm_query_mode\tfm_batch_width\tquery_bases\tquery_bases_per_second\tspeedup_vs_fm_huff_scalar")
+    message(FATAL_ERROR "FM query summary fields are missing")
+endif()
+if(NOT fm_queries MATCHES "\tbatch\t1\t" OR NOT fm_queries MATCHES "\tbatch\t4\t")
+    message(FATAL_ERROR "FM batch width rows are missing")
+endif()
+if(NOT fm_raw MATCHES "fm_query_mode\tfm_batch_width\tquery_bases")
+    message(FATAL_ERROR "FM raw repetition fields are missing")
+endif()
+
+execute_process(
+    COMMAND "${SUFKIT_EXECUTABLE}" bench
+        --profile smoke --methods fm,fm-huff --output-dir "${OUTPUT_ROOT}/alias-conflict"
+    RESULT_VARIABLE alias_status
+    OUTPUT_QUIET ERROR_QUIET)
+if(alias_status EQUAL 0)
+    message(FATAL_ERROR "fm and fm-huff aliases were accepted together")
+endif()
+
 set(user_dir "${OUTPUT_ROOT}/user-high-frequency")
 string(REPEAT "A" 100100 homopolymer)
 file(WRITE "${OUTPUT_ROOT}/reference.fa" ">homopolymer\n${homopolymer}\n")

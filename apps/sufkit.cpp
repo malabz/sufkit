@@ -73,6 +73,7 @@ sufkit::FmBackend parse_fm_backend(const std::string& value) {
     if (value == "sdsl-csa-wt-huff") return sufkit::FmBackend::sdsl_csa_wt_huff;
     if (value == "sdsl-csa-wt-balanced") return sufkit::FmBackend::sdsl_csa_wt_balanced;
     if (value == "sdsl-csa-sada") return sufkit::FmBackend::sdsl_csa_sada;
+    if (value == "sdsl-csa-wt-epr") return sufkit::FmBackend::sdsl_csa_wt_epr;
     throw sufkit::Error(sufkit::ErrorCode::invalid_input, "invalid FM backend: " + value);
 }
 
@@ -125,7 +126,7 @@ int run_build(const std::vector<std::string>& arguments) {
             "      --sa-acceleration none|lcp|child|suffix-link|full\n"
             "      [--learned-index] [--learned-k N] [--learned-memory-bp N]\n"
             "      [--learned-bucket-bits N]\n"
-            "  FM: --fm-backend sdsl-csa-wt-huff\n";
+            "  FM: --fm-backend sdsl-csa-wt-huff|sdsl-csa-wt-balanced|sdsl-csa-wt-epr\n";
         return 0;
     }
     const auto options = parse_options(

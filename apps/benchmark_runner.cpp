@@ -183,6 +183,19 @@ struct LoadedIndex {
         return fm_index->count(pattern, strands);
     }
 
+    std::vector<std::uint64_t> count_batch(
+        const std::vector<std::string_view>& patterns,
+        StrandMode strands,
+        std::uint32_t batch_width) const {
+        if (!fm_index) {
+            throw Error(ErrorCode::build_failure, "batch count requires an FM-index benchmark method");
+        }
+        FmBatchOptions options;
+        options.strands = strands;
+        options.batch_width = batch_width;
+        return fm_index->count_batch(patterns, options);
+    }
+
     QueryResult locate(
         const std::string& pattern,
         StrandMode strands,
@@ -195,6 +208,18 @@ struct LoadedIndex {
         return fm_index->locate(pattern, options);
     }
 };
+
+bool is_fm_method(const std::string& method) {
+    return method == "fm" || method == "fm-huff" ||
+           method == "fm-balanced" || method == "fm-epr";
+}
+
+FmBackend fm_backend_for_method(const std::string& method) {
+    if (method == "fm" || method == "fm-huff") return FmBackend::sdsl_csa_wt_huff;
+    if (method == "fm-balanced") return FmBackend::sdsl_csa_wt_balanced;
+    if (method == "fm-epr") return FmBackend::sdsl_csa_wt_epr;
+    throw Error(ErrorCode::invalid_input, "method is not an FM-index backend: " + method);
+}
 
 LoadedIndex load_method(
     const std::string& method,
@@ -214,7 +239,7 @@ LoadedIndex load_method(
             loaded.sa_algorithm = SaSearchAlgorithm::child;
         else if (method.find("binary") != std::string::npos)
             loaded.sa_algorithm = SaSearchAlgorithm::binary;
-    } else if (method == "fm") {
+    } else if (is_fm_method(method)) {
         loaded.fm_index.emplace(FmIndex::load(path));
     } else {
         throw Error(ErrorCode::invalid_input, "unknown benchmark method: " + method);
@@ -267,20 +292,33 @@ QueryRaw measure_group(
     const std::string& strand_name,
     const std::string& operation,
     const LocateLimit& limit,
-    std::uint32_t repetition) {
+    std::uint32_t repetition,
+    const std::string& fm_query_mode = "scalar",
+    std::uint32_t fm_batch_width = 0) {
     QueryRaw result;
     result.group = group.group;
     result.pattern_length = group.pattern_length;
     result.strand = strand_name;
     result.operation = operation;
     result.max_hits = operation == "count" ? "NA" : (limit.all ? "all" : std::to_string(limit.value));
+    result.fm_query_mode = fm_query_mode;
+    result.fm_batch_width = fm_query_mode == "batch" ? std::to_string(fm_batch_width) : "NA";
     result.repetition = repetition;
     result.query_count = queries.size();
+    for (const auto* query : queries) result.query_bases += query->sequence.size();
     if (queries.empty()) {
         result.status = "not_applicable";
         return result;
     }
     const auto strands = strand_mode(strand_name);
+    std::vector<std::string_view> batch_patterns;
+    if (fm_query_mode == "batch") {
+        if (operation != "count") {
+            throw Error(ErrorCode::build_failure, "batch benchmark mode only supports count");
+        }
+        batch_patterns.reserve(queries.size());
+        for (const auto* query : queries) batch_patterns.push_back(query->sequence);
+    }
     if (operation == "locate" && limit.all) {
         for (const auto* query : queries) {
             if (index.count(query->sequence, strands) > kCompleteLocateSafetyLimit) {
@@ -294,7 +332,16 @@ QueryRaw measure_group(
     std::uint64_t checksum = checksum_seed();
     std::vector<std::uint64_t> prediction_errors;
     std::vector<std::uint64_t> local_windows;
-    for (const auto* query : queries) {
+    if (fm_query_mode == "batch") {
+        const auto counts = index.count_batch(batch_patterns, strands, fm_batch_width);
+        if (counts.size() != queries.size()) {
+            throw Error(ErrorCode::build_failure, "FM batch result cardinality mismatch");
+        }
+        for (const auto hits : counts) {
+            result.total_hits += hits;
+            mix_checksum(checksum, hits);
+        }
+    } else for (const auto* query : queries) {
         SaSearchStatistics search_statistics;
         if (operation == "count") {
             std::uint64_t hits = 0;
@@ -395,9 +442,12 @@ struct QueryWire {
     char strand[32]{};
     char operation[16]{};
     char max_hits[32]{};
+    char fm_query_mode[16]{};
+    char fm_batch_width[16]{};
     char status[40]{};
     std::uint32_t repetition = 0;
     std::uint64_t query_count = 0;
+    std::uint64_t query_bases = 0;
     double seconds = 0.0;
     double user_seconds = 0.0;
     double system_seconds = 0.0;
@@ -534,10 +584,12 @@ MethodResult run_worker(
                 const auto save_begin = Clock::now();
                 index.save(index_path);
                 raw.save_seconds = elapsed(save_begin);
-            } else if (method == "fm") {
+            } else if (is_fm_method(method)) {
+                FmIndexBuildOptions build_options;
+                build_options.backend = fm_backend_for_method(method);
                 const auto cpu_begin = usage_now();
                 const auto wall_begin = Clock::now();
-                auto index = FmIndex::build(reference);
+                auto index = FmIndex::build(reference, build_options);
                 raw.build_seconds = elapsed(wall_begin);
                 const auto cpu = usage_delta(cpu_begin, usage_now());
                 raw.build_user_seconds = cpu.user;
@@ -601,26 +653,50 @@ MethodResult run_worker(
     }
 
     auto index = load_method(method, dataset, result.canonical_index);
+    const bool fm_method = is_fm_method(method);
+    const bool scalar_enabled = !fm_method ||
+        std::find(options.fm_query_modes.begin(), options.fm_query_modes.end(), "scalar") !=
+            options.fm_query_modes.end();
+    const bool batch_enabled = fm_method &&
+        std::find(options.fm_query_modes.begin(), options.fm_query_modes.end(), "batch") !=
+            options.fm_query_modes.end();
     static const std::array<std::string, 3> strands{{
         "forward", "reverse-complement", "both"}};
     for (const auto& group : dataset.groups) {
         const auto queries = select_queries(dataset, group);
         for (const auto& strand : strands) {
             LocateLimit count_limit;
-            for (std::uint32_t warmup = 0; warmup < warmups && !queries.empty(); ++warmup) {
-                (void)measure_group(index, queries, group, strand, "count", count_limit, warmup);
-            }
-            for (std::uint32_t repetition = 0; repetition < query_repetitions; ++repetition) {
-                result.queries.push_back(measure_group(
-                    index, queries, group, strand, "count", count_limit, repetition));
-            }
-            for (const auto& limit : options.locate_limits) {
+            if (scalar_enabled) {
                 for (std::uint32_t warmup = 0; warmup < warmups && !queries.empty(); ++warmup) {
-                    (void)measure_group(index, queries, group, strand, "locate", limit, warmup);
+                    (void)measure_group(index, queries, group, strand, "count", count_limit, warmup);
                 }
                 for (std::uint32_t repetition = 0; repetition < query_repetitions; ++repetition) {
                     result.queries.push_back(measure_group(
-                        index, queries, group, strand, "locate", limit, repetition));
+                        index, queries, group, strand, "count", count_limit, repetition));
+                }
+            }
+            if (batch_enabled) {
+                for (const auto width : options.fm_batch_widths) {
+                    for (std::uint32_t warmup = 0; warmup < warmups && !queries.empty(); ++warmup) {
+                        (void)measure_group(index, queries, group, strand, "count", count_limit,
+                                            warmup, "batch", width);
+                    }
+                    for (std::uint32_t repetition = 0; repetition < query_repetitions; ++repetition) {
+                        result.queries.push_back(measure_group(
+                            index, queries, group, strand, "count", count_limit,
+                            repetition, "batch", width));
+                    }
+                }
+            }
+            if (scalar_enabled) {
+                for (const auto& limit : options.locate_limits) {
+                    for (std::uint32_t warmup = 0; warmup < warmups && !queries.empty(); ++warmup) {
+                        (void)measure_group(index, queries, group, strand, "locate", limit, warmup);
+                    }
+                    for (std::uint32_t repetition = 0; repetition < query_repetitions; ++repetition) {
+                        result.queries.push_back(measure_group(
+                            index, queries, group, strand, "locate", limit, repetition));
+                    }
                 }
             }
         }
@@ -675,9 +751,12 @@ void write_worker_result(int descriptor, const MethodResult& result, const std::
         copy_text(wire.strand, raw.strand);
         copy_text(wire.operation, raw.operation);
         copy_text(wire.max_hits, raw.max_hits);
+        copy_text(wire.fm_query_mode, raw.fm_query_mode);
+        copy_text(wire.fm_batch_width, raw.fm_batch_width);
         copy_text(wire.status, raw.status);
         wire.repetition = raw.repetition;
         wire.query_count = raw.query_count;
+        wire.query_bases = raw.query_bases;
         wire.seconds = raw.seconds;
         wire.user_seconds = raw.user_seconds;
         wire.system_seconds = raw.system_seconds;
@@ -751,9 +830,12 @@ MethodResult read_worker_result(int descriptor) {
         raw.strand = wire.strand;
         raw.operation = wire.operation;
         raw.max_hits = wire.max_hits;
+        raw.fm_query_mode = wire.fm_query_mode;
+        raw.fm_batch_width = wire.fm_batch_width;
         raw.status = wire.status;
         raw.repetition = wire.repetition;
         raw.query_count = wire.query_count;
+        raw.query_bases = wire.query_bases;
         raw.seconds = wire.seconds;
         raw.user_seconds = wire.user_seconds;
         raw.system_seconds = wire.system_seconds;

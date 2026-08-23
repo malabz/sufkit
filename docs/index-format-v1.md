@@ -46,6 +46,17 @@ An FM-index file has metadata and an SDSL-native CSA section.  Its header also
 records SDSL 3.0.3 and the exact backend ID.  CRC and section bounds are checked
 before a bounded stream is passed to SDSL `load`.
 
+The fixed FM backend IDs are 10 for `csa_wt<wt_huff<>,32,64>`, 11 for
+`csa_wt<wt_blcd<>,32,64>`, 12 reserved for unavailable `csa_sada<>`, and 13
+for `csa_wt<wt_epr<8>,32,64>`. Adding these payload alternatives does not add
+sections or change the outer format minor. A reader that does not implement a
+known payload returns `unsupported_backend`.
+
+FM payloads continue to be written with outer format 1.0 because this change
+adds no sections or header fields. Format 1.1 remains the SA auxiliary-section
+extension; backend identity is carried independently by the existing backend
+byte.
+
 Save writes `target.sufidx.partial.<pid>.<nonce>` in the target directory,
 calculates CRCs, rereads the completed temporary container for validation, and
 then renames it atomically.  Existing targets are refused unless overwrite was

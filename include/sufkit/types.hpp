@@ -79,7 +79,8 @@ enum class MemSearchAlgorithm : std::uint8_t {
 enum class FmBackend : std::uint8_t {
     sdsl_csa_wt_huff = 1,
     sdsl_csa_wt_balanced = 2,
-    sdsl_csa_sada = 3
+    sdsl_csa_sada = 3,
+    sdsl_csa_wt_epr = 4
 };
 
 enum class StrandMode : std::uint8_t {
