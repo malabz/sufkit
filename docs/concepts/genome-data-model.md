@@ -30,7 +30,7 @@ Ambiguous counts are retained per contig and globally. The normalized encoded
 buffer, not the original ASCII, is the indexing authority.
 
 Exact patterns are stricter: after case normalization they must contain only
-A/C/G/T. MEM queries accept lowercase bases and convert every other character
+A/C/G/T. right-maximal exact match queries accept lowercase bases and convert every other character
 to a hard break.
 
 ## Internal alphabet
@@ -57,7 +57,7 @@ zero appended. Therefore divsufsort, CaPS, and all SDSL CSA types sort the same
 logical text.
 
 N, separator, and sentinel cannot occur in a legal exact pattern. They are
-hard boundaries for MEM. This prevents cross-contig and cross-ambiguous-region
+hard boundaries for right-maximal exact match. This prevents cross-contig and cross-ambiguous-region
 matches by construction.
 
 ## Coordinates
@@ -82,8 +82,8 @@ Exact `both` searches the original pattern and reverse complement. If they are
 identical, each coordinate appears once with strand `both`; other coincident
 orientations are merged deterministically.
 
-MEM forward and reverse-complement results stay orientation-distinct, even for
-palindromic queries. A reverse MEM's query position is converted back to the
+right-maximal exact match forward and reverse-complement results stay orientation-distinct, even for
+palindromic queries. A reverse right-maximal exact match's query position is converted back to the
 original forward query coordinate system.
 
 ## Fingerprint

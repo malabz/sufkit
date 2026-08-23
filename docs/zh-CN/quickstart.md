@@ -25,13 +25,13 @@ ctest --preset release --output-on-failure
   --pattern ACGTACGT --strand both --max-hits 100
 ```
 
-构建默认 `SA+ISA+LCP` 并搜索 MEM：
+构建默认 `SA+ISA+LCP` 并搜索 right-maximal exact match：
 
 ```bash
 ./build/release/sufkit build --type sa \
   --input reference.fa.gz --output reference.sa.sufidx
 
-./build/release/sufkit mem --index reference.sa.sufidx \
+./build/release/sufkit right-maximal --index reference.sa.sufidx \
   --query queries.fa.gz --min-length 20 --strand both
 ```
 
@@ -47,7 +47,7 @@ ctest --preset release --output-on-failure
 
 - FASTA reference 会规范化成 A/C/G/T/N。
 - exact pattern 只允许 A/C/G/T。
-- MEM query 的非 A/C/G/T 字符是 hard break。
+- right-maximal exact match query 的非 A/C/G/T 字符是 hard break。
 - N、contig separator 和 sentinel 都不能被匹配跨越。
 - 坐标是 0-based、contig-local；CLI exact end 是 exclusive。
 - `--max-hits` 或 `--max-matches` 截断输出，但结果对象仍报告完整总数。

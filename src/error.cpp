@@ -54,14 +54,14 @@ const char* to_string(SaSearchAlgorithm value) noexcept {
     return "unknown";
 }
 
-const char* to_string(MemSearchAlgorithm value) noexcept {
+const char* to_string(RightMaximalSearchAlgorithm value) noexcept {
     switch (value) {
-    case MemSearchAlgorithm::auto_select: return "auto";
-    case MemSearchAlgorithm::baseline: return "baseline";
-    case MemSearchAlgorithm::lcp: return "lcp";
-    case MemSearchAlgorithm::child: return "child";
-    case MemSearchAlgorithm::suffix_link: return "suffix-link";
-    case MemSearchAlgorithm::full: return "full";
+    case RightMaximalSearchAlgorithm::auto_select: return "auto";
+    case RightMaximalSearchAlgorithm::baseline: return "baseline";
+    case RightMaximalSearchAlgorithm::lcp: return "lcp";
+    case RightMaximalSearchAlgorithm::child: return "child";
+    case RightMaximalSearchAlgorithm::suffix_link: return "suffix-link";
+    case RightMaximalSearchAlgorithm::full: return "full";
     }
     return "unknown";
 }

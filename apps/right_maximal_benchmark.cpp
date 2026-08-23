@@ -1,4 +1,4 @@
-#include "mem_benchmark.hpp"
+#include "right_maximal_benchmark.hpp"
 #include "app_support.hpp"
 
 #include <sufkit/sufkit.hpp>
@@ -25,7 +25,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-namespace sufkit::app::mem_bench {
+namespace sufkit::app::right_maximal_bench {
 namespace {
 
 using Clock = std::chrono::steady_clock;
@@ -33,7 +33,7 @@ using Clock = std::chrono::steady_clock;
 struct Options {
     std::string profile = "smoke";
     std::vector<std::string> scenarios{"mixed"};
-    std::vector<std::string> methods{"mem-baseline", "mem-lcp", "mem-child", "mem-suffix-link", "mem-full"};
+    std::vector<std::string> methods{"right-maximal-baseline", "right-maximal-lcp", "right-maximal-child", "right-maximal-suffix-link", "right-maximal-full"};
     std::vector<std::uint64_t> min_lengths{20, 50};
     std::filesystem::path output_directory;
     std::optional<std::filesystem::path> mummer4;
@@ -87,7 +87,7 @@ struct QueryResultRow {
     std::vector<double> seconds;
     std::uint64_t total_matches = 0;
     std::uint64_t checksum = 0;
-    MemSearchStatistics statistics;
+    RightMaximalSearchStatistics statistics;
     std::string status = "ok";
 };
 
@@ -100,7 +100,7 @@ struct RawRow {
     double seconds = 0;
     std::uint64_t total_matches = 0;
     std::uint64_t checksum = 0;
-    MemSearchStatistics statistics;
+    RightMaximalSearchStatistics statistics;
     std::string status = "ok";
 };
 
@@ -132,8 +132,8 @@ Options parse(const std::vector<std::string>& arguments) {
     for (std::size_t index = 0; index < arguments.size(); ++index) {
         const auto& name = arguments[index];
         if (name == "--workload") {
-            if (++index >= arguments.size() || arguments[index] != "mem")
-                throw Error(ErrorCode::invalid_input, "MEM benchmark requires --workload mem");
+            if (++index >= arguments.size() || arguments[index] != "right-maximal")
+                throw Error(ErrorCode::invalid_input, "right-maximal exact match benchmark requires --workload right-maximal");
         } else {
             if (++index >= arguments.size()) throw Error(ErrorCode::invalid_input, "missing value for " + name);
             const auto& value = arguments[index];
@@ -164,27 +164,27 @@ Options parse(const std::vector<std::string>& arguments) {
                     throw Error(ErrorCode::invalid_input, "--learned-bucket-bits must be at most 31");
                 result.learned_bucket_bits = static_cast<std::uint32_t>(parsed);
             }
-            else throw Error(ErrorCode::invalid_input, "unknown MEM benchmark option: " + name);
+            else throw Error(ErrorCode::invalid_input, "unknown right-maximal exact match benchmark option: " + name);
         }
     }
     if (!result.reference && result.profile != "smoke" && result.profile != "quick" &&
         result.profile != "standard")
-        throw Error(ErrorCode::invalid_input, "MEM benchmark currently runs smoke, quick, or standard profiles");
+        throw Error(ErrorCode::invalid_input, "right-maximal exact match benchmark currently runs smoke, quick, or standard profiles");
     if (result.query_file && !result.reference)
         throw Error(ErrorCode::invalid_input, "--queries requires --reference");
     if (result.output_directory.empty()) throw Error(ErrorCode::invalid_input, "--output-dir is required");
     if (result.min_lengths.empty() || std::any_of(result.min_lengths.begin(), result.min_lengths.end(), [](auto value) { return value == 0; }))
-        throw Error(ErrorCode::invalid_input, "MEM minimum lengths must be positive");
+        throw Error(ErrorCode::invalid_input, "right-maximal exact match minimum lengths must be positive");
     const std::set<std::string> valid_scenarios{
         "mixed", "balanced", "gc-skewed", "repeat-rich", "n-islands", "many-contig"};
     for (const auto& scenario : result.scenarios)
         if (valid_scenarios.count(scenario) == 0)
-            throw Error(ErrorCode::invalid_input, "unknown MEM benchmark scenario: " + scenario);
+            throw Error(ErrorCode::invalid_input, "unknown right-maximal exact match benchmark scenario: " + scenario);
     const std::set<std::string> valid_methods{
-        "mem-baseline", "mem-lcp", "mem-child", "mem-suffix-link", "mem-full",
-        "mem-suffix-link-binary", "mem-suffix-link-sapling", "mummer4"};
+        "right-maximal-baseline", "right-maximal-lcp", "right-maximal-child", "right-maximal-suffix-link", "right-maximal-full",
+        "right-maximal-suffix-link-binary", "right-maximal-suffix-link-sapling", "mummer4"};
     for (const auto& method : result.methods) {
-        if (valid_methods.count(method) == 0) throw Error(ErrorCode::invalid_input, "unknown MEM benchmark method: " + method);
+        if (valid_methods.count(method) == 0) throw Error(ErrorCode::invalid_input, "unknown right-maximal exact match benchmark method: " + method);
         if (method == "mummer4" && !result.mummer4) throw Error(ErrorCode::invalid_input, "mummer4 method requires --mummer4 PATH");
     }
     return result;
@@ -207,7 +207,7 @@ std::uint64_t hash_bytes(std::uint64_t hash, std::string_view text) {
 
 Dataset generate_dataset(const Options& options, const std::string& scenario) {
     Dataset dataset;
-    dataset.name = "synthetic-mem-" + options.profile + "-" + scenario;
+    dataset.name = "synthetic-right-maximal-" + options.profile + "-" + scenario;
     const std::uint64_t total_bases = options.profile == "smoke" ? 64ULL * 1024ULL :
         (options.profile == "quick" ? 4ULL * 1024ULL * 1024ULL : 32ULL * 1024ULL * 1024ULL);
     const std::size_t query_count = options.profile == "smoke" ? 100 :
@@ -291,7 +291,7 @@ Dataset generate_dataset(const Options& options, const std::string& scenario) {
 
 Dataset load_dataset(const Options& options) {
     Dataset dataset;
-    dataset.name = "user-mem-reference";
+    dataset.name = "user-right-maximal-reference";
     dataset.reference = read_fasta_records(*options.reference);
     if (dataset.reference.empty()) throw Error(ErrorCode::invalid_input, "reference FASTA contains no records");
     std::uint64_t state = options.seed;
@@ -324,7 +324,7 @@ Dataset load_dataset(const Options& options) {
             if (!found && dataset.queries.empty()) continue;
         }
     }
-    if (dataset.queries.empty()) throw Error(ErrorCode::invalid_input, "no usable MEM benchmark queries");
+    if (dataset.queries.empty()) throw Error(ErrorCode::invalid_input, "no usable right-maximal exact match benchmark queries");
     for (const auto& query : dataset.queries) dataset.query_bases += query.sequence.size();
     std::uint64_t fingerprint = 1469598103934665603ULL;
     for (const auto& record : dataset.reference) fingerprint = hash_bytes(fingerprint, record.sequence);
@@ -356,7 +356,7 @@ void mix(std::uint64_t& checksum, std::uint64_t value) {
     }
 }
 
-void mix_match(std::uint64_t& checksum, const MemMatch& match) {
+void mix_match(std::uint64_t& checksum, const RightMaximalMatch& match) {
     mix(checksum, match.query_position);
     mix(checksum, match.sequence_id);
     mix(checksum, match.reference_position);
@@ -365,21 +365,21 @@ void mix_match(std::uint64_t& checksum, const MemMatch& match) {
 }
 
 SaAcceleration acceleration_for(const std::string& method) {
-    if (method == "mem-baseline") return SaAcceleration::none;
-    if (method == "mem-lcp") return SaAcceleration::lcp;
-    if (method == "mem-child") return SaAcceleration::lcp_child;
-    if (method == "mem-suffix-link" || method == "mem-suffix-link-binary" ||
-        method == "mem-suffix-link-sapling") return SaAcceleration::lcp_suffix_link;
+    if (method == "right-maximal-baseline") return SaAcceleration::none;
+    if (method == "right-maximal-lcp") return SaAcceleration::lcp;
+    if (method == "right-maximal-child") return SaAcceleration::lcp_child;
+    if (method == "right-maximal-suffix-link" || method == "right-maximal-suffix-link-binary" ||
+        method == "right-maximal-suffix-link-sapling") return SaAcceleration::lcp_suffix_link;
     return SaAcceleration::full;
 }
 
-MemSearchAlgorithm algorithm_for(const std::string& method) {
-    if (method == "mem-baseline") return MemSearchAlgorithm::baseline;
-    if (method == "mem-lcp") return MemSearchAlgorithm::lcp;
-    if (method == "mem-child") return MemSearchAlgorithm::child;
-    if (method == "mem-suffix-link" || method == "mem-suffix-link-binary" ||
-        method == "mem-suffix-link-sapling") return MemSearchAlgorithm::suffix_link;
-    return MemSearchAlgorithm::full;
+RightMaximalSearchAlgorithm algorithm_for(const std::string& method) {
+    if (method == "right-maximal-baseline") return RightMaximalSearchAlgorithm::baseline;
+    if (method == "right-maximal-lcp") return RightMaximalSearchAlgorithm::lcp;
+    if (method == "right-maximal-child") return RightMaximalSearchAlgorithm::child;
+    if (method == "right-maximal-suffix-link" || method == "right-maximal-suffix-link-binary" ||
+        method == "right-maximal-suffix-link-sapling") return RightMaximalSearchAlgorithm::suffix_link;
+    return RightMaximalSearchAlgorithm::full;
 }
 
 std::uint64_t serialized_size(const std::filesystem::path& path) {
@@ -399,7 +399,7 @@ void benchmark_internal(const Dataset& dataset, const Options& options, const st
     const auto reference = GenomeReference::from_records(dataset.reference);
     SuffixArrayBuildOptions build_options;
     build_options.acceleration = acceleration_for(method);
-    if (method == "mem-suffix-link-sapling") {
+    if (method == "right-maximal-suffix-link-sapling") {
         build_options.learned_index.enabled = true;
         build_options.learned_index.k = options.learned_k;
         build_options.learned_index.memory_overhead_basis_points =
@@ -431,14 +431,14 @@ void benchmark_internal(const Dataset& dataset, const Options& options, const st
 
     const std::uint32_t repetitions = options.profile == "smoke" ? 3 : 5;
     for (const auto min_length : options.min_lengths) {
-        MemOptions mem_options;
-        mem_options.min_length = min_length;
-        mem_options.algorithm = algorithm_for(method);
-        if (method == "mem-suffix-link-binary")
-            mem_options.lookup_algorithm = SaSearchAlgorithm::binary;
-        else if (method == "mem-suffix-link-sapling")
-            mem_options.lookup_algorithm = SaSearchAlgorithm::sapling_pwl;
-        for (const auto& query : dataset.queries) (void)loaded.find_mems(query.sequence, mem_options);
+        RightMaximalOptions right_maximal_options;
+        right_maximal_options.min_length = min_length;
+        right_maximal_options.algorithm = algorithm_for(method);
+        if (method == "right-maximal-suffix-link-binary")
+            right_maximal_options.lookup_algorithm = SaSearchAlgorithm::binary;
+        else if (method == "right-maximal-suffix-link-sapling")
+            right_maximal_options.lookup_algorithm = SaSearchAlgorithm::sapling_pwl;
+        for (const auto& query : dataset.queries) (void)loaded.find_right_maximal_matches(query.sequence, right_maximal_options);
         QueryResultRow summary;
         summary.dataset = dataset.name;
         summary.method = method;
@@ -451,11 +451,11 @@ void benchmark_internal(const Dataset& dataset, const Options& options, const st
             const auto begin = Clock::now();
             std::uint64_t checksum = checksum_seed();
             std::uint64_t total = 0;
-            MemSearchStatistics aggregate_statistics;
+            RightMaximalSearchStatistics aggregate_statistics;
             for (std::size_t query_id = 0; query_id < dataset.queries.size(); ++query_id) {
-                MemSearchStatistics search_statistics;
-                mem_options.statistics = &search_statistics;
-                const auto result = loaded.find_mems(dataset.queries[query_id].sequence, mem_options);
+                RightMaximalSearchStatistics search_statistics;
+                right_maximal_options.statistics = &search_statistics;
+                const auto result = loaded.find_right_maximal_matches(dataset.queries[query_id].sequence, right_maximal_options);
                 mix(checksum, query_id);
                 mix(checksum, result.total_matches);
                 total += result.total_matches;
@@ -491,7 +491,7 @@ void benchmark_internal(const Dataset& dataset, const Options& options, const st
             RawRow raw_row;
             raw_row.dataset = dataset.name;
             raw_row.method = method;
-            raw_row.operation = "mem";
+            raw_row.operation = "right-maximal";
             raw_row.min_length = min_length;
             raw_row.repetition = repetition;
             raw_row.seconds = elapsed;
@@ -516,7 +516,7 @@ Value read_worker_value(std::istream& input, const char* label) {
     Value value{};
     input.read(reinterpret_cast<char*>(&value), sizeof(value));
     if (!input) throw Error(ErrorCode::build_failure,
-                            std::string("truncated MEM worker field: ") + label);
+                            std::string("truncated right-maximal exact match worker field: ") + label);
     return value;
 }
 
@@ -528,11 +528,11 @@ void write_worker_string(std::ostream& output, const std::string& value) {
 std::string read_worker_string(std::istream& input, const char* label) {
     const auto size = read_worker_value<std::uint64_t>(input, label);
     if (size > 1U << 20) throw Error(ErrorCode::build_failure,
-                                     std::string("invalid MEM worker string: ") + label);
+                                     std::string("invalid right-maximal exact match worker string: ") + label);
     std::string value(static_cast<std::size_t>(size), '\0');
     input.read(value.data(), static_cast<std::streamsize>(value.size()));
     if (!input) throw Error(ErrorCode::build_failure,
-                            std::string("truncated MEM worker string: ") + label);
+                            std::string("truncated right-maximal exact match worker string: ") + label);
     return value;
 }
 
@@ -542,7 +542,7 @@ void write_internal_worker_file(
     const std::vector<QueryResultRow>& queries,
     const std::vector<RawRow>& raw) {
     std::ofstream output(path, std::ios::binary);
-    if (!output) throw Error(ErrorCode::io_error, "cannot create MEM worker result");
+    if (!output) throw Error(ErrorCode::io_error, "cannot create right-maximal exact match worker result");
     write_worker_value(output, static_cast<std::uint64_t>(builds.size()));
     for (const auto& row : builds) {
         write_worker_string(output, row.dataset);
@@ -592,7 +592,7 @@ void write_internal_worker_file(
         write_worker_value(output, row.checksum);
         write_worker_value(output, row.statistics);
     }
-    if (!output) throw Error(ErrorCode::io_error, "cannot finish MEM worker result");
+    if (!output) throw Error(ErrorCode::io_error, "cannot finish right-maximal exact match worker result");
 }
 
 void read_internal_worker_file(
@@ -601,7 +601,7 @@ void read_internal_worker_file(
     std::vector<QueryResultRow>& queries,
     std::vector<RawRow>& raw) {
     std::ifstream input(path, std::ios::binary);
-    if (!input) throw Error(ErrorCode::build_failure, "MEM worker result is missing");
+    if (!input) throw Error(ErrorCode::build_failure, "right-maximal exact match worker result is missing");
     const auto build_count = read_worker_value<std::uint64_t>(input, "build count");
     for (std::uint64_t index = 0; index < build_count; ++index) {
         BuildResult row;
@@ -637,10 +637,10 @@ void read_internal_worker_file(
         row.query_bases = read_worker_value<std::uint64_t>(input, "query bases");
         row.total_matches = read_worker_value<std::uint64_t>(input, "total matches");
         row.checksum = read_worker_value<std::uint64_t>(input, "query checksum");
-        row.statistics = read_worker_value<MemSearchStatistics>(input, "query statistics");
+        row.statistics = read_worker_value<RightMaximalSearchStatistics>(input, "query statistics");
         const auto repetitions = read_worker_value<std::uint64_t>(input, "query repetitions");
         if (repetitions > 1000) throw Error(ErrorCode::build_failure,
-                                            "invalid MEM worker repetition count");
+                                            "invalid right-maximal exact match worker repetition count");
         row.seconds.reserve(static_cast<std::size_t>(repetitions));
         for (std::uint64_t repetition = 0; repetition < repetitions; ++repetition)
             row.seconds.push_back(read_worker_value<double>(input, "query seconds"));
@@ -658,11 +658,11 @@ void read_internal_worker_file(
         row.seconds = read_worker_value<double>(input, "raw seconds");
         row.total_matches = read_worker_value<std::uint64_t>(input, "raw matches");
         row.checksum = read_worker_value<std::uint64_t>(input, "raw checksum");
-        row.statistics = read_worker_value<MemSearchStatistics>(input, "raw statistics");
+        row.statistics = read_worker_value<RightMaximalSearchStatistics>(input, "raw statistics");
         raw.push_back(std::move(row));
     }
     if (input.peek() != std::char_traits<char>::eof())
-        throw Error(ErrorCode::build_failure, "MEM worker result has trailing bytes");
+        throw Error(ErrorCode::build_failure, "right-maximal exact match worker result has trailing bytes");
 }
 
 void benchmark_internal_isolated(
@@ -676,7 +676,7 @@ void benchmark_internal_isolated(
     const auto result_path = scratch / (method + ".worker.bin");
     const auto error_path = scratch / (method + ".worker.error");
     const pid_t pid = fork();
-    if (pid < 0) throw Error(ErrorCode::io_error, "cannot fork MEM benchmark worker");
+    if (pid < 0) throw Error(ErrorCode::io_error, "cannot fork right-maximal exact match benchmark worker");
     if (pid == 0) {
         try {
             std::vector<BuildResult> worker_builds;
@@ -696,13 +696,13 @@ void benchmark_internal_isolated(
     }
     int status = 0;
     if (waitpid(pid, &status, 0) < 0)
-        throw Error(ErrorCode::io_error, "cannot wait for MEM benchmark worker");
+        throw Error(ErrorCode::io_error, "cannot wait for right-maximal exact match benchmark worker");
     if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
         std::ifstream error_input(error_path);
         std::string message;
         std::getline(error_input, message);
         throw Error(ErrorCode::build_failure,
-                    message.empty() ? "MEM benchmark worker failed" : message);
+                    message.empty() ? "right-maximal exact match benchmark worker failed" : message);
     }
     read_internal_worker_file(result_path, builds, queries, raw);
 }
@@ -739,17 +739,17 @@ ProcessResult run_process(const std::vector<std::string>& arguments,
     return result;
 }
 
-std::vector<MemMatch> parse_mummer_output(const std::filesystem::path& path,
+std::vector<RightMaximalMatch> parse_mummer_output(const std::filesystem::path& path,
     const std::map<std::string, SequenceId>& reference_ids,
     const std::vector<SequenceRecord>& queries,
     Strand strand,
-    std::vector<std::vector<MemMatch>>& per_query) {
+    std::vector<std::vector<RightMaximalMatch>>& per_query) {
     std::ifstream input(path);
     if (!input) throw Error(ErrorCode::io_error, "cannot read MUMmer4 output");
     std::string line;
     std::size_t query_id = 0;
     bool have_query = false;
-    std::vector<MemMatch> all;
+    std::vector<RightMaximalMatch> all;
     while (std::getline(input, line)) {
         if (!line.empty() && line.front() == '>') {
             std::istringstream header(line.substr(1));
@@ -774,7 +774,7 @@ std::vector<MemMatch> parse_mummer_output(const std::filesystem::path& path,
             throw Error(ErrorCode::build_failure, "MUMmer4 reverse query coordinate is out of range");
         const auto normalized_query = strand == Strand::reverse_complement
             ? queries[query_id].sequence.size() - (zero_query + length) : zero_query;
-        MemMatch match{id->second, reference_position - 1, normalized_query, length, strand};
+        RightMaximalMatch match{id->second, reference_position - 1, normalized_query, length, strand};
         per_query[query_id].push_back(match);
         all.push_back(match);
     }
@@ -842,7 +842,7 @@ void benchmark_mummer(const Dataset& dataset, const Options& options,
                                      reference_path.string(), query_path.string()});
             const auto measured = run_process(args, output, error);
             if (measured.status != 0) throw Error(ErrorCode::build_failure, "MUMmer4 query failed");
-            std::vector<std::vector<MemMatch>> per_query(dataset.queries.size());
+            std::vector<std::vector<RightMaximalMatch>> per_query(dataset.queries.size());
             (void)parse_mummer_output(output, reference_ids, dataset.queries,
                                       Strand::forward, per_query);
             std::uint64_t checksum = checksum_seed();
@@ -864,7 +864,7 @@ void benchmark_mummer(const Dataset& dataset, const Options& options,
             RawRow raw_row;
             raw_row.dataset = dataset.name;
             raw_row.method = "mummer4";
-            raw_row.operation = "load+mem";
+            raw_row.operation = "load+right-maximal";
             raw_row.min_length = length;
             raw_row.repetition = repetition;
             raw_row.seconds = measured.seconds;
@@ -879,24 +879,24 @@ void benchmark_mummer(const Dataset& dataset, const Options& options,
                                                  reference_path.string(), query_path.string()});
         const auto reverse_process = run_process(reverse_args, reverse_output, reverse_error);
         if (reverse_process.status != 0) throw Error(ErrorCode::build_failure, "MUMmer4 reverse query failed");
-        std::vector<std::vector<MemMatch>> reverse_matches(dataset.queries.size());
+        std::vector<std::vector<RightMaximalMatch>> reverse_matches(dataset.queries.size());
         (void)parse_mummer_output(reverse_output, reference_ids, dataset.queries,
                                   Strand::reverse_complement, reverse_matches);
         std::uint64_t mummer_checksum = checksum_seed();
         std::uint64_t internal_checksum = checksum_seed();
         std::uint64_t mummer_total = 0;
         std::uint64_t internal_total = 0;
-        MemOptions reverse_options;
+        RightMaximalOptions reverse_options;
         reverse_options.min_length = length;
         reverse_options.strands = StrandMode::reverse_complement;
-        reverse_options.algorithm = MemSearchAlgorithm::baseline;
+        reverse_options.algorithm = RightMaximalSearchAlgorithm::baseline;
         for (std::size_t query_id = 0; query_id < dataset.queries.size(); ++query_id) {
             auto& matches = reverse_matches[query_id];
             std::sort(matches.begin(), matches.end(), [](const auto& left, const auto& right) {
                 return std::tie(left.query_position, left.sequence_id, left.reference_position, left.length, left.strand) <
                        std::tie(right.query_position, right.sequence_id, right.reference_position, right.length, right.strand);
             });
-            const auto internal = verification_index.find_mems(dataset.queries[query_id].sequence, reverse_options);
+            const auto internal = verification_index.find_right_maximal_matches(dataset.queries[query_id].sequence, reverse_options);
             mix(mummer_checksum, query_id);
             mix(mummer_checksum, matches.size());
             mummer_total += matches.size();
@@ -907,7 +907,7 @@ void benchmark_mummer(const Dataset& dataset, const Options& options,
             for (const auto& match : internal.matches) mix_match(internal_checksum, match);
         }
         if (mummer_total != internal_total || mummer_checksum != internal_checksum)
-            throw Error(ErrorCode::build_failure, "MUMmer4 reverse-complement MEM correctness mismatch");
+            throw Error(ErrorCode::build_failure, "MUMmer4 reverse-complement right-maximal exact match correctness mismatch");
         queries.push_back(std::move(summary));
     }
 }
@@ -926,7 +926,7 @@ void validate(const std::vector<QueryResultRow>& rows) {
         const auto it = expected.find(key);
         if (it == expected.end()) expected.emplace(key, std::make_pair(row.total_matches, row.checksum));
         else if (it->second != std::make_pair(row.total_matches, row.checksum))
-            throw Error(ErrorCode::build_failure, "MEM benchmark correctness mismatch for " + row.dataset +
+            throw Error(ErrorCode::build_failure, "right-maximal exact match benchmark correctness mismatch for " + row.dataset +
                 " min_length=" + std::to_string(row.min_length) + " method=" + row.method);
     }
 }
@@ -1040,7 +1040,7 @@ int run(const std::vector<std::string>& arguments) {
         std::ifstream version_input(version_out);
         std::getline(version_input, options.mummer_version);
         if (version_result.status != 0 || options.mummer_version != "4.0.1")
-            throw Error(ErrorCode::unsupported_backend, "MEM benchmark requires MUMmer4 version 4.0.1");
+            throw Error(ErrorCode::unsupported_backend, "right-maximal exact match benchmark requires MUMmer4 version 4.0.1");
         const auto hash_out = scratch / "mummer-sha256.txt";
         const auto hash_err = scratch / "mummer-sha256.err";
         const auto hash_result = run_process(
@@ -1071,9 +1071,9 @@ int run(const std::vector<std::string>& arguments) {
     validate(queries);
     std::error_code cleanup_error;
     std::filesystem::remove_all(scratch, cleanup_error);
-    if (cleanup_error) throw Error(ErrorCode::io_error, "cannot remove MEM benchmark scratch directory");
-    std::cerr << "MEM benchmark results written to " << options.output_directory << '\n';
+    if (cleanup_error) throw Error(ErrorCode::io_error, "cannot remove right-maximal exact match benchmark scratch directory");
+    std::cerr << "right-maximal exact match benchmark results written to " << options.output_directory << '\n';
     return 0;
 }
 
-} // namespace sufkit::app::mem_bench
+} // namespace sufkit::app::right_maximal_bench

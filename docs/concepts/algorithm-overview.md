@@ -26,7 +26,7 @@ sufkit provides two constructors that first establish a complete suffix order:
 Both receive identical encoded text and produce the same suffix order. When
 LCP is requested, CaPS exposes the vector already computed by its merge stages;
 divsufsort uses a private adapter that constructs ISA/LCP after sorting without
-a second common-pipeline pass. Constructor choice does not change exact or MEM
+a second common-pipeline pass. Constructor choice does not change exact or right-maximal exact match
 semantics.
 
 Construction is generally O(n) or near-linear in practical suffix sorters;
@@ -53,9 +53,9 @@ divisible by K. The stored order is a subsequence of the complete SA and has
 approximately n/K rows. ISA, LCP, CHILD, and PWL are defined over this sampled
 row domain.
 
-Exact matches are recovered over all K residue classes. MEMs are anchored on
+Exact matches are recovered over all K residue classes. right-maximal exact matches are anchored on
 sampled reference positions and extended to their true maximal boundaries.
-The trade-off is additional query work and `min_length>=K` for MEM. Because
+The trade-off is additional query work and `min_length>=K` for right-maximal exact match. Because
 one exact result becomes a union of intervals, sampled SA cannot expose a
 single `equal_range`.
 
@@ -87,16 +87,18 @@ The CHILD table encodes selected parent/child and sibling relationships among
 LCP intervals. Together, SA+LCP+CHILD can simulate suffix-tree-style top-down
 navigation without storing pointer-heavy tree nodes.
 
-CHILD is a capability rather than the default. Current exact and MEM paths
+CHILD is a capability rather than the default. Current exact and right-maximal exact match paths
 include verification/narrowing work that can make CHILD slower. It is retained
 for explicit interval navigation, future MUM/MAM and maximal-repeat work, and
 algorithm research.
 
-## MEM and suffix-link reuse
+## Right-maximal exact matches and suffix-link reuse
 
-A MEM is exact and cannot be extended with the same canonical base on either
-side. A baseline can search from every query position, but repeatedly starting
-from the root wastes work on related suffixes of the query.
+A right-maximal exact match is exact and cannot be extended with the same
+canonical base on the right. The current implementation does not guarantee
+left maximality and is therefore not a MEM implementation. A baseline can
+search from every query position, but repeatedly starting from the root wastes
+work on related suffixes of the query.
 
 Suffix-link reuse deletes the first character of the previous matched query
 substring and derives the corresponding SA interval using ISA and LCP. The
@@ -106,11 +108,12 @@ search then extends downward for the new character sequence.
 query[i ...] interval
        │ delete query[i]
        ▼
-query[i+1 ...] reused interval → extend → verify maximality
+query[i+1 ...] reused interval → extend → verify right maximality
 ```
 
 Invalid, empty, or hard-boundary states return to a correct root lookup. The
-optimization changes how an interval is found, not which MEMs are emitted.
+optimization changes how an interval is found, not which right-maximal exact
+matches are emitted.
 
 ## Sapling-style PWL lookup
 

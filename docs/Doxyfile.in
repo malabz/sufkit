@@ -1,6 +1,6 @@
 PROJECT_NAME           = "sufkit"
 PROJECT_NUMBER         = "@PROJECT_VERSION@ (main documentation)"
-PROJECT_BRIEF          = "Genome-oriented suffix arrays, SDSL FM-indexes, exact search, and MEM search"
+PROJECT_BRIEF          = "Genome-oriented suffix arrays, SDSL FM-indexes, exact search, and right-maximal exact match search"
 OUTPUT_DIRECTORY       = "@CMAKE_CURRENT_BINARY_DIR@"
 
 INPUT                  = "@CMAKE_CURRENT_SOURCE_DIR@/include/sufkit" \

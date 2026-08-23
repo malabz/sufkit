@@ -2,7 +2,7 @@
 
 Exact search accepts case-insensitive A/C/G/T patterns. Empty patterns, N,
 IUPAC symbols, whitespace, and every other character are invalid. This strict
-contract differs from MEM queries, where non-ACGT characters are hard breaks.
+contract differs from right-maximal exact match queries, where non-ACGT characters are hard breaks.
 
 ## Range, count, and locate
 

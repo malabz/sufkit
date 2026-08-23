@@ -31,7 +31,7 @@ isolated worker per row, and `acceleration=full`.
 | CaPS32 | 4 | 262,146 | 0.2463 | 24.80 | 5,243,460 |
 | CaPS32 | 8 | 131,073 | 0.2649 | 24.80 | 3,146,292 |
 
-All rows produced exact checksum `15589384678678967352` and MEM checksum
+All rows produced exact checksum `15589384678678967352` and right-maximal exact match checksum
 `17567547818709499406`. SA checksums necessarily changed with K but agreed
 between divsufsort and CaPS at the same K.
 

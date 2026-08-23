@@ -9,7 +9,7 @@
 #include <sufkit/types.hpp>
 
 /** @file
- *  @brief Standalone suffix-array exact and MEM search API.
+ *  @brief Standalone suffix-array exact and right-maximal-match search API.
  */
 
 namespace sufkit {
@@ -149,31 +149,31 @@ public:
         SaSearchStatistics* statistics = nullptr) const;
 
     /**
-     * @ingroup mem_search
-     * Synchronously stream every MEM to a callback in caller thread.
+     * @ingroup right_maximal_search
+     * Stream every right-maximal exact match candidate in caller thread.
      * @param query Query whose non-ACGT symbols are hard breaks.
      * @param options Positive minimum length, strands, algorithms, statistics.
-     * @param callback Invoked for each directional MEM; enumeration order is
+     * @param callback Invoked for each directional match; enumeration order is
      *        not stable across algorithms.
      * @throws Error for invalid options/capability. Callback exceptions pass
      *         through unchanged.
      */
-    void for_each_mem(
+    void for_each_right_maximal_match(
         std::string_view query,
-        const MemOptions& options,
-        const MemCallback& callback) const;
+        const RightMaximalOptions& options,
+        const RightMaximalCallback& callback) const;
 
     /**
-     * @ingroup mem_search
-     * Return deterministic query-first MEMs with optional bounded retention.
+     * @ingroup right_maximal_search
+     * Return deterministic query-first right-maximal exact matches.
      * @param query Query whose non-ACGT symbols are hard breaks.
-     * @param options MEM behavior and optional statistics.
+     * @param options Search behavior and optional statistics.
      * @param max_matches Number of sorted matches retained; absent means all.
      * @return Complete total_matches plus retained sorted vector.
      */
-    MemResult find_mems(
+    RightMaximalResult find_right_maximal_matches(
         std::string_view query,
-        const MemOptions& options = {},
+        const RightMaximalOptions& options = {},
         std::optional<std::uint64_t> max_matches = {}) const;
 
     /** @return Persisted ESA auxiliary layout. */

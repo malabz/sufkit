@@ -545,7 +545,7 @@ ChildTable build_child(const std::vector<std::uint64_t>& lcp) {
     return child;
 }
 
-std::vector<std::uint8_t> encode_mem_query(std::string_view query) {
+std::vector<std::uint8_t> encode_right_maximal_query(std::string_view query) {
     std::vector<std::uint8_t> encoded;
     encoded.reserve(query.size());
     for (const char raw : query) {
@@ -560,7 +560,7 @@ std::vector<std::uint8_t> encode_mem_query(std::string_view query) {
     return encoded;
 }
 
-std::vector<std::uint8_t> reverse_complement_mem(const std::vector<std::uint8_t>& query) {
+std::vector<std::uint8_t> reverse_complement_right_maximal(const std::vector<std::uint8_t>& query) {
     std::vector<std::uint8_t> result;
     result.reserve(query.size());
     for (auto it = query.rbegin(); it != query.rend(); ++it) {
@@ -575,7 +575,7 @@ std::vector<std::uint8_t> reverse_complement_mem(const std::vector<std::uint8_t>
     return result;
 }
 
-bool mem_less(const MemMatch& left, const MemMatch& right) {
+bool right_maximal_match_less(const RightMaximalMatch& left, const RightMaximalMatch& right) {
     return std::tie(left.query_position, left.sequence_id, left.reference_position, left.length, left.strand) <
            std::tie(right.query_position, right.sequence_id, right.reference_position, right.length, right.strand);
 }
@@ -951,19 +951,19 @@ struct SuffixArray::Impl {
         return total;
     }
 
-    MemSearchAlgorithm resolve_algorithm(MemSearchAlgorithm requested) const {
-        if (requested == MemSearchAlgorithm::auto_select) {
-            if (has_isa() && has_lcp()) return MemSearchAlgorithm::suffix_link;
-            if (has_lcp()) return MemSearchAlgorithm::lcp;
-            return MemSearchAlgorithm::baseline;
+    RightMaximalSearchAlgorithm resolve_algorithm(RightMaximalSearchAlgorithm requested) const {
+        if (requested == RightMaximalSearchAlgorithm::auto_select) {
+            if (has_isa() && has_lcp()) return RightMaximalSearchAlgorithm::suffix_link;
+            if (has_lcp()) return RightMaximalSearchAlgorithm::lcp;
+            return RightMaximalSearchAlgorithm::baseline;
         }
-        const bool supported = requested == MemSearchAlgorithm::baseline ||
-            (requested == MemSearchAlgorithm::lcp && has_lcp()) ||
-            (requested == MemSearchAlgorithm::child && has_lcp() && has_child()) ||
-            (requested == MemSearchAlgorithm::suffix_link && has_isa() && has_lcp()) ||
-            (requested == MemSearchAlgorithm::full && has_isa() && has_lcp() && has_child());
+        const bool supported = requested == RightMaximalSearchAlgorithm::baseline ||
+            (requested == RightMaximalSearchAlgorithm::lcp && has_lcp()) ||
+            (requested == RightMaximalSearchAlgorithm::child && has_lcp() && has_child()) ||
+            (requested == RightMaximalSearchAlgorithm::suffix_link && has_isa() && has_lcp()) ||
+            (requested == RightMaximalSearchAlgorithm::full && has_isa() && has_lcp() && has_child());
         if (!supported) throw Error(ErrorCode::unsupported_backend,
-            std::string("MEM algorithm is unavailable in this index: ") + to_string(requested));
+            std::string("right-maximal exact match algorithm is unavailable in this index: ") + to_string(requested));
         return requested;
     }
 
@@ -990,8 +990,8 @@ struct SuffixArray::Impl {
 
     void enumerate_one_strand(const std::vector<std::uint8_t>& query,
         std::uint64_t original_query_length, Strand strand, std::uint64_t min_length,
-        MemSearchAlgorithm algorithm, SaSearchAlgorithm lookup_algorithm,
-        MemSearchStatistics* statistics, const MemCallback& callback) const {
+        RightMaximalSearchAlgorithm algorithm, SaSearchAlgorithm lookup_algorithm,
+        RightMaximalSearchStatistics* statistics, const RightMaximalCallback& callback) const {
         std::size_t run_begin = 0;
         while (run_begin < query.size()) {
             while (run_begin < query.size() && query[run_begin] == detail::kSentinel) ++run_begin;
@@ -1002,7 +1002,7 @@ struct SuffixArray::Impl {
                 std::vector<std::uint8_t> prefix(query.begin() + static_cast<std::ptrdiff_t>(query_position),
                     query.begin() + static_cast<std::ptrdiff_t>(query_position + min_length));
                 SuffixRange interval;
-                const bool links = algorithm == MemSearchAlgorithm::suffix_link || algorithm == MemSearchAlgorithm::full;
+                const bool links = algorithm == RightMaximalSearchAlgorithm::suffix_link || algorithm == RightMaximalSearchAlgorithm::full;
                 if (links && query_position != run_begin && !previous.empty()) {
                     if (statistics) ++statistics->suffix_link_attempts;
                     interval = suffix_link_interval(previous, min_length);
@@ -1010,7 +1010,7 @@ struct SuffixArray::Impl {
                     if (statistics && !interval.empty()) ++statistics->suffix_link_successes;
                     if (interval.empty()) {
                         if (statistics) ++statistics->suffix_link_fallbacks;
-                        if (algorithm == MemSearchAlgorithm::full) interval = child_range(prefix);
+                        if (algorithm == RightMaximalSearchAlgorithm::full) interval = child_range(prefix);
                         else {
                             const auto selected = resolve_search_algorithm(lookup_algorithm, prefix.size());
                             if (statistics) {
@@ -1021,7 +1021,7 @@ struct SuffixArray::Impl {
                             interval = range(prefix, selected, statistics ? &statistics->lookup : nullptr);
                         }
                     }
-                } else if (algorithm == MemSearchAlgorithm::child || algorithm == MemSearchAlgorithm::full) {
+                } else if (algorithm == RightMaximalSearchAlgorithm::child || algorithm == RightMaximalSearchAlgorithm::full) {
                     interval = child_range(prefix);
                 } else {
                     const auto selected = resolve_search_algorithm(lookup_algorithm, prefix.size());
@@ -1045,7 +1045,7 @@ struct SuffixArray::Impl {
                     const auto& sequence = reference.sequences[static_cast<std::size_t>(mapped->first)];
                     const auto reference_limit = sequence.global_offset + sequence.length;
                     std::uint64_t length = min_length;
-                    if (has_lcp() && algorithm != MemSearchAlgorithm::baseline && row != interval.begin) {
+                    if (has_lcp() && algorithm != RightMaximalSearchAlgorithm::baseline && row != interval.begin) {
                         length = std::min(previous_lce, lcp[static_cast<std::size_t>(row)]);
                         if (length < min_length) length = min_length;
                     }
@@ -1067,11 +1067,11 @@ struct SuffixArray::Impl {
 
     void enumerate_sparse_one_strand(const std::vector<std::uint8_t>& query,
         std::uint64_t original_query_length, Strand strand, std::uint64_t min_length,
-        MemSearchAlgorithm algorithm, SaSearchAlgorithm lookup_algorithm,
-        MemSearchStatistics* statistics, const MemCallback& callback) const {
+        RightMaximalSearchAlgorithm algorithm, SaSearchAlgorithm lookup_algorithm,
+        RightMaximalSearchStatistics* statistics, const RightMaximalCallback& callback) const {
         if (min_length < sampling_rate)
             throw Error(ErrorCode::invalid_input,
-                "sampled SA MEM search requires min_length >= sampling_rate");
+                "sampled SA right-maximal exact match search requires min_length >= sampling_rate");
         const auto anchor_length = min_length - sampling_rate + 1;
         std::size_t run_begin = 0;
         while (run_begin < query.size()) {
@@ -1089,8 +1089,8 @@ struct SuffixArray::Impl {
                         query.begin() + static_cast<std::ptrdiff_t>(anchor_position),
                         query.begin() + static_cast<std::ptrdiff_t>(anchor_position + anchor_length));
                     SuffixRange interval;
-                    const bool links = algorithm == MemSearchAlgorithm::suffix_link ||
-                                       algorithm == MemSearchAlgorithm::full;
+                    const bool links = algorithm == RightMaximalSearchAlgorithm::suffix_link ||
+                                       algorithm == RightMaximalSearchAlgorithm::full;
                     if (links && anchor_position != first && !previous.empty() &&
                         anchor_length > sampling_rate) {
                         if (statistics) ++statistics->suffix_link_attempts;
@@ -1103,8 +1103,8 @@ struct SuffixArray::Impl {
                     if (interval.empty()) {
                         if (links && anchor_position != first && statistics)
                             ++statistics->suffix_link_fallbacks;
-                        if (algorithm == MemSearchAlgorithm::child ||
-                            algorithm == MemSearchAlgorithm::full) {
+                        if (algorithm == RightMaximalSearchAlgorithm::child ||
+                            algorithm == RightMaximalSearchAlgorithm::full) {
                             interval = child_range(prefix);
                         } else {
                             const auto selected = resolve_search_algorithm(
@@ -1343,11 +1343,11 @@ QueryResult SuffixArray::locate(
     return detail::finalize_matches(std::move(matches), total_hits);
 }
 
-void SuffixArray::for_each_mem(std::string_view query, const MemOptions& options, const MemCallback& callback) const {
-    if (options.min_length == 0) throw Error(ErrorCode::invalid_input, "MEM minimum length must be greater than zero");
-    if (!callback) throw Error(ErrorCode::invalid_input, "MEM callback must not be empty");
+void SuffixArray::for_each_right_maximal_match(std::string_view query, const RightMaximalOptions& options, const RightMaximalCallback& callback) const {
+    if (options.min_length == 0) throw Error(ErrorCode::invalid_input, "right-maximal exact match minimum length must be greater than zero");
+    if (!callback) throw Error(ErrorCode::invalid_input, "right-maximal exact match callback must not be empty");
     if (options.statistics) *options.statistics = {};
-    const auto encoded = encode_mem_query(query);
+    const auto encoded = encode_right_maximal_query(query);
     const auto algorithm = impl_->resolve_algorithm(options.algorithm);
     const auto enumerate = [&](const std::vector<std::uint8_t>& value, Strand strand) {
         if (impl_->sampling_rate == 1)
@@ -1360,24 +1360,24 @@ void SuffixArray::for_each_mem(std::string_view query, const MemOptions& options
     if (options.strands == StrandMode::forward || options.strands == StrandMode::both)
         enumerate(encoded, Strand::forward);
     if (options.strands == StrandMode::reverse_complement || options.strands == StrandMode::both) {
-        const auto reverse = reverse_complement_mem(encoded);
+        const auto reverse = reverse_complement_right_maximal(encoded);
         enumerate(reverse, Strand::reverse_complement);
     }
 }
 
-MemResult SuffixArray::find_mems(std::string_view query, const MemOptions& options,
+RightMaximalResult SuffixArray::find_right_maximal_matches(std::string_view query, const RightMaximalOptions& options,
     std::optional<std::uint64_t> max_matches) const {
-    MemResult result;
+    RightMaximalResult result;
     const auto retain = max_matches.value_or(std::numeric_limits<std::uint64_t>::max());
-    std::priority_queue<MemMatch, std::vector<MemMatch>, decltype(&mem_less)> kept(&mem_less);
-    for_each_mem(query, options, [&](const MemMatch& match) {
+    std::priority_queue<RightMaximalMatch, std::vector<RightMaximalMatch>, decltype(&right_maximal_match_less)> kept(&right_maximal_match_less);
+    for_each_right_maximal_match(query, options, [&](const RightMaximalMatch& match) {
         ++result.total_matches;
         if (kept.size() < retain) kept.push(match);
-        else if (retain != 0 && mem_less(match, kept.top())) { kept.pop(); kept.push(match); }
+        else if (retain != 0 && right_maximal_match_less(match, kept.top())) { kept.pop(); kept.push(match); }
     });
     result.matches.reserve(kept.size());
     while (!kept.empty()) { result.matches.push_back(kept.top()); kept.pop(); }
-    std::sort(result.matches.begin(), result.matches.end(), mem_less);
+    std::sort(result.matches.begin(), result.matches.end(), right_maximal_match_less);
     result.truncated = result.matches.size() < result.total_matches;
     return result;
 }

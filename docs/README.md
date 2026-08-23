@@ -31,7 +31,7 @@ under [`zh-CN/`](zh-CN/README.md).
 - [C++ workflows](user-guide/cpp-workflows.md)
 - [CLI reference](user-guide/cli-reference.md)
 - [Exact search](user-guide/exact-search.md)
-- [MEM search](user-guide/mem-search.md)
+- [right-maximal exact match search](user-guide/right-maximal-search.md)
 - [Persistence and inspection](user-guide/persistence-and-inspection.md)
 - [Performance tuning](user-guide/performance-tuning.md)
 - [Troubleshooting](user-guide/troubleshooting.md)
@@ -61,13 +61,13 @@ under [`zh-CN/`](zh-CN/README.md).
 - [Benchmark methodology](benchmarks/methodology.md)
 - [CaPS construction results](benchmarks/results/unreleased-caps.md)
 - [Sampled-SA development results](benchmarks/results/unreleased-sampled-sa.md)
-- [MEM 0.1.1 results](benchmarks/results/v0.1.1-mem.md)
+- [right-maximal exact match 0.1.1 results](benchmarks/results/v0.1.1-right-maximal.md)
 - [Sapling development results](benchmarks/results/unreleased-sapling.md)
 - [FM backend development results](benchmarks/results/unreleased-fm.md)
 
 ## Version labels
 
-`0.1.1` refers only to the released ESA/MEM baseline. Features merged into
+`0.1.1` refers only to the released ESA/right-maximal exact match baseline. Features merged into
 `main` afterward are labeled **Unreleased**, even though the development
 binary still reports `0.1.1`. Historical benchmark reports retain their
 original measurement scope and are not rewritten as release claims.

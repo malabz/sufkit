@@ -6,14 +6,18 @@
 - CaPS-SA 32/64 位共享内存并行构建；
 - SDSL Huffman、balanced 和 DNA EPR compressed suffix array；
 - exact count、equal range 和 locate；
-- ISA、Kasai LCP、CHILD 与 suffix-link MEM 搜索；
-- 可选的文本位置采样 SA，保持完整 exact count/locate 和 MEM 结果；
+- ISA、LCP、CHILD 与 suffix-link 右极大精确匹配搜索；
+- 可选的文本位置采样 SA，保持完整 exact count/locate 和右极大匹配结果；
 - 可选的 Sapling 风格分段线性 learned index；
 - FASTA/FASTA.gz、多 contig、正向、反向互补和双链查询；
 - 自包含、带版本和 CRC 校验的 `.sufidx` 文件；
 - 确定性 benchmark 和 MUMmer4 黑盒结果对照。
 
 英文文档是详细接口与实现契约的权威版本。中文文档提供快速上手、索引选择和性能结论概览。
+
+术语纠正：当前匹配只保证精确性和右极大性，尚不保证左极大性，因此
+不再称为 MEM。公共 API 使用 `RightMaximalMatch`；MEM 名称保留给后续真正
+同时验证左右极大的实现。文档中可将当前结果称为“右极大 MEM 候选”。
 
 [中文文档导航](docs/zh-CN/README.md) · [英文完整文档](docs/README.md) ·
 [贡献指南](CONTRIBUTING.md)
@@ -27,8 +31,8 @@ SA、balanced/EPR FM-index、FM batch count 和 Sapling PWL 等能力，因此�
 默认选择保持保守：
 
 - 普通 SA 构建使用 divsufsort；只有逻辑文本至少 1 GiB、线程数大于 1 且 CaPS 可用时，`auto` 才选择 CaPS。
-- SA 默认构建 `SA+ISA+LCP`，MEM 自动使用 suffix-link；CHILD 只在显式请求时使用。
-- 采样 SA 默认关闭。`K>1` 主要减少最终索引内存和文件大小，不降低底层完整 SA 构建的峰值内存；采样 MEM 要求 `min_length >= K`。
+- SA 默认构建 `SA+ISA+LCP`，右极大匹配自动使用 suffix-link；CHILD 只在显式请求时使用。
+- 采样 SA 默认关闭。`K>1` 主要减少最终索引内存和文件大小，不降低底层完整 SA 构建的峰值内存；采样右极大匹配要求 `min_length >= K`。
 - FM-index 默认使用 Huffman；EPR 适合查询速度优先且能接受更大索引的场景。
 - Sapling PWL 默认关闭，因为其收益与数据重复结构和查询负载有关。
 
@@ -50,17 +54,18 @@ ctest --preset release --output-on-failure
   --pattern ACGTACGT --strand both
 ```
 
-构建 SA 并搜索 MEM：
+构建 SA 并搜索右极大精确匹配：
 
 ```bash
 ./build/release/sufkit build --type sa \
   --input reference.fa.gz --output reference.sa.sufidx
 
-./build/release/sufkit mem --index reference.sa.sufidx \
+./build/release/sufkit right-maximal --index reference.sa.sufidx \
   --query queries.fa.gz --min-length 20 --strand both
 ```
 
-所有公开坐标都是 0-based、contig-local。exact pattern 只接受 A/C/G/T；MEM query 中的其他字符会成为 hard break。
+所有公开坐标都是 0-based、contig-local。exact pattern 只接受 A/C/G/T；
+右极大匹配 query 中的其他字符会成为 hard break。
 
 下一步建议阅读：
 

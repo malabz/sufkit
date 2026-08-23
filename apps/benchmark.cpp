@@ -2,7 +2,7 @@
 
 #include "app_support.hpp"
 #include "benchmark_common.hpp"
-#include "mem_benchmark.hpp"
+#include "right_maximal_benchmark.hpp"
 
 #include <sufkit/sufkit.hpp>
 
@@ -313,21 +313,21 @@ void print_help() {
         "  --locate-limits 1,10,1000,all\n"
         "  --seed 20260822\n"
         "  --build-repetitions N --query-repetitions N --warmups N\n\n"
-        "MEM workload:\n"
-        "  --workload mem --profile smoke|quick --output-dir DIR\n"
-        "  --methods mem-baseline,mem-lcp,mem-child,mem-suffix-link,mem-full,\n"
-        "            mem-suffix-link-binary,mem-suffix-link-sapling,mummer4\n"
+        "right-maximal exact match workload:\n"
+        "  --workload right-maximal --profile smoke|quick --output-dir DIR\n"
+        "  --methods right-maximal-baseline,right-maximal-lcp,right-maximal-child,right-maximal-suffix-link,right-maximal-full,\n"
+        "            right-maximal-suffix-link-binary,right-maximal-suffix-link-sapling,mummer4\n"
         "  --min-lengths 20,50,100 [--mummer4 PATH]\n"
         "  --learned-k 20 --learned-memory-bp 100 [--learned-bucket-bits N]\n"
-        "  or --workload mem --reference REF.fa[.gz] [--queries Q.fa[.gz]]\n";
+        "  or --workload right-maximal --reference REF.fa[.gz] [--queries Q.fa[.gz]]\n";
 }
 
 } // namespace
 
 int run_benchmark(const std::vector<std::string>& arguments) {
     for (std::size_t index = 0; index + 1 < arguments.size(); ++index) {
-        if (arguments[index] == "--workload" && arguments[index + 1] == "mem") {
-            return mem_bench::run(arguments);
+        if (arguments[index] == "--workload" && arguments[index + 1] == "right-maximal") {
+            return right_maximal_bench::run(arguments);
         }
     }
     if (arguments.size() == 1 && arguments.front() == "--help") {

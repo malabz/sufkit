@@ -47,7 +47,7 @@ an index or query path.
 ## Adding functionality
 
 The [extension guide](docs/development/extending-sufkit.md) contains complete
-checklists for SA backends, FM backends, exact algorithms, MEM algorithms, and
+checklists for SA backends, FM backends, exact algorithms, right-maximal exact match algorithms, and
 new `.sufidx` sections. At minimum, a functional change needs:
 
 1. a public or private capability decision;
@@ -67,10 +67,11 @@ with an incompatible license into the MIT core.
 Performance work is accepted only after result equivalence. Use naive or
 brute-force oracles on small inputs, cross-backend checks on larger inputs,
 stable checksums, boundary cases, and save/load comparisons. A faster result
-with different coordinates or maximality is a bug.
+with different coordinates, exactness, or right maximality is a bug. Left
+maximality is reserved for the future MEM contract.
 
-Report build, load, count, locate, and MEM timings separately. Preserve raw
-repetitions locally and write evidence-bounded Markdown reports containing the
+Report build, load, count, locate, and right-maximal timings separately.
+Preserve raw repetitions locally and write evidence-bounded Markdown reports containing the
 command, commit, environment, seed, fingerprints, checksums, aggregation rule,
 and known limits. External-process measurements such as MUMmer4 `load+query`
 must not be presented as in-process query-kernel timings.

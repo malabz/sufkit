@@ -42,7 +42,7 @@ rows to `ceil(n/K)`.
 
 Both backends still form the complete suffix order before compaction. Sampling
 therefore reduces loaded/serialized size, not the fundamental full-SA
-constructor peak. Exact count/locate and MEM recover complete results; direct
+constructor peak. Exact count/locate and right-maximal exact match recover complete results; direct
 `equal_range` is unavailable for sampled SA because the result is not one row
 interval. See [sampled suffix arrays](../concepts/sampled-suffix-arrays.md).
 
@@ -66,13 +66,13 @@ not exposed. A template or sampling-density change requires a new backend ID.
 | LCP-aware binary | SA | Explicit; reuses comparison-boundary LCP values computed during the lookup |
 | Sapling PWL | Learned section | Auto only when present and pattern length ≥ k |
 | CHILD exact traversal | LCP+CHILD | Explicit only |
-| Baseline MEM | SA | Fallback for old/minimal index |
-| LCP MEM | SA+LCP | Auto after suffix-link is unavailable |
-| Suffix-link MEM | SA+ISA+LCP | Default SA build and MEM auto choice |
-| CHILD/full MEM | CHILD combinations | Explicit only |
+| Baseline right-maximal exact match | SA | Fallback for old/minimal index |
+| LCP right-maximal exact match | SA+LCP | Auto after suffix-link is unavailable |
+| Suffix-link right-maximal exact match | SA+ISA+LCP | Default SA build and right-maximal exact match auto choice |
+| CHILD/full right-maximal exact match | CHILD combinations | Explicit only |
 
 For a sampled SA, all row-based accelerations operate over sampled order.
-Sampled MEM additionally requires `min_length >= K`.
+Sampled right-maximal exact match additionally requires `min_length >= K`.
 
 See [index selection](../getting-started/choosing-an-index.md) and the
 [benchmark summary](../benchmarks/README.md) for policy evidence.

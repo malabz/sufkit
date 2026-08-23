@@ -13,7 +13,7 @@ implementation suggestions.
 6. Contig offsets, lengths, ambiguous counts, total bases, and text symbols
    agree exactly.
 7. N, separator, and sentinel never become public exact matches or crossable
-   MEM symbols.
+   right-maximal exact match symbols.
 
 ## SA and auxiliary structures
 
@@ -28,13 +28,13 @@ implementation suggestions.
 6. Legal section combinations are exactly those represented by
    `SaAcceleration`.
 7. Constructor choice cannot alter SA order, auxiliary semantics, exact
-   results, or MEM results.
+   results, or right-maximal exact match results.
 8. When LCP is requested, CaPS merge-built LCP is the authoritative complete
    vector; sampling compacts it with interval minima. divsufsort uses the
    generalized Kasai path in its private adapter.
 9. `suffix_count=ceil(text_symbols/K)` and every stored suffix is divisible by
    positive sampling rate K.
-10. Sampling cannot alter recovered exact count/locate or MEM result sets.
+10. Sampling cannot alter recovered exact count/locate or right-maximal exact match result sets.
 
 ## Learned model
 
@@ -61,18 +61,20 @@ implementation suggestions.
 8. Sampled count/locate search all residue classes, while sampled
    `equal_range` fails explicitly because no single interval represents them.
 
-## MEM
+## Right-maximal exact match
 
 1. Every emitted match has length at least positive `min_length`.
-2. Every emitted match is exact and cannot extend jointly left or right.
-3. Matches do not cross reference/query hard boundaries.
-4. Reverse query coordinates map to the original forward query.
-5. Forward/reverse results remain orientation-distinct.
-6. Baseline, LCP, CHILD, suffix-link, and full produce the same normalized
+2. Every emitted match is exact and cannot extend jointly to the right.
+3. No left-maximality guarantee is implied by current public names or tests.
+4. Matches do not cross reference/query hard boundaries.
+5. Reverse query coordinates map to the original forward query.
+6. Forward/reverse results remain orientation-distinct.
+7. Baseline, LCP, CHILD, suffix-link, and full produce the same normalized
    multiset.
-7. Invalid reuse always returns to a correct root state.
-8. `total_matches` is complete under output retention limits.
-9. Sampled MEM requires `min_length>=K`, recovers the complete MEM multiset,
+8. Invalid reuse always returns to a correct root state.
+9. `total_matches` is complete under output retention limits.
+10. Sampled right-maximal search requires `min_length>=K`, recovers the
+   complete-layout right-maximal multiset,
    and does not emit duplicate anchors.
 
 ## FM-index
@@ -107,13 +109,13 @@ implementation suggestions.
 3. Built/loaded indexes are immutable for const concurrent queries.
 4. Statistics objects remain caller-owned mutable output.
 5. Third-party exceptions are converted into an appropriate `sufkit::Error`
-   unless the documented MEM callback itself throws.
+   unless the documented right-maximal exact match callback itself throws.
 6. Reserved or disabled features never silently route to another backend.
 
 ## Benchmark and documentation
 
 1. Performance reporting starts only after complete-count and coordinate or
-   MEM checksum agreement.
+   right-maximal exact match checksum agreement.
 2. Worker process boundaries and timing scope are recorded.
 3. External-process and in-process timings are labeled separately.
 4. Every persistent performance claim names commit, environment, dataset,

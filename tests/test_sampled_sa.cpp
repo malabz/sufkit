@@ -68,7 +68,7 @@ bool same_query_result(const sufkit::QueryResult& left, const sufkit::QueryResul
     return true;
 }
 
-bool same_mem_result(const sufkit::MemResult& left, const sufkit::MemResult& right) {
+bool same_right_maximal_result(const sufkit::RightMaximalResult& left, const sufkit::RightMaximalResult& right) {
     if (left.total_matches != right.total_matches || left.matches.size() != right.matches.size())
         return false;
     for (std::size_t index = 0; index < left.matches.size(); ++index) {
@@ -97,23 +97,23 @@ void check_exact(const sufkit::SuffixArray& full, const sufkit::SuffixArray& sam
     }
 }
 
-void check_mems(const sufkit::SuffixArray& full, const sufkit::SuffixArray& sampled,
+void check_right_maximal_matches(const sufkit::SuffixArray& full, const sufkit::SuffixArray& sampled,
                 std::uint64_t min_length) {
     const std::vector<std::string> queries{
         "GGACGTACGTGATTACATTTT", "NNACGTGATTACANNTGCATGCA", "GATTACAGATTACAGG",
         "ACGTACGTACGTACGT"};
     for (const auto algorithm : {
-            sufkit::MemSearchAlgorithm::baseline,
-            sufkit::MemSearchAlgorithm::lcp,
-            sufkit::MemSearchAlgorithm::child,
-            sufkit::MemSearchAlgorithm::suffix_link,
-            sufkit::MemSearchAlgorithm::full}) {
-        sufkit::MemOptions options;
+            sufkit::RightMaximalSearchAlgorithm::baseline,
+            sufkit::RightMaximalSearchAlgorithm::lcp,
+            sufkit::RightMaximalSearchAlgorithm::child,
+            sufkit::RightMaximalSearchAlgorithm::suffix_link,
+            sufkit::RightMaximalSearchAlgorithm::full}) {
+        sufkit::RightMaximalOptions options;
         options.min_length = min_length;
         options.strands = sufkit::StrandMode::both;
         options.algorithm = algorithm;
         for (const auto& query : queries)
-            CHECK(same_mem_result(full.find_mems(query, options), sampled.find_mems(query, options)));
+            CHECK(same_right_maximal_result(full.find_right_maximal_matches(query, options), sampled.find_right_maximal_matches(query, options)));
     }
 }
 
@@ -133,7 +133,7 @@ void run_backend(sufkit::SaBackend backend, const std::filesystem::path& directo
             (void)sampled.equal_range("ACGT");
         });
         check_exact(full, sampled);
-        check_mems(full, sampled, std::max<std::uint64_t>(8, rate));
+        check_right_maximal_matches(full, sampled, std::max<std::uint64_t>(8, rate));
 
         const auto path = directory /
             (std::string(backend == sufkit::SaBackend::caps ? "caps" : "div") +
@@ -145,7 +145,7 @@ void run_backend(sufkit::SaBackend backend, const std::filesystem::path& directo
         auto loaded = sufkit::SuffixArray::load(path);
         CHECK(loaded.sampling_rate() == rate);
         check_exact(full, loaded);
-        check_mems(full, loaded, std::max<std::uint64_t>(8, rate));
+        check_right_maximal_matches(full, loaded, std::max<std::uint64_t>(8, rate));
     }
 
     sufkit::SuffixArrayBuildOptions invalid = build_options(backend, 1);
@@ -154,10 +154,10 @@ void run_backend(sufkit::SaBackend backend, const std::filesystem::path& directo
         (void)sufkit::SuffixArray::build(ref, invalid);
     });
     auto sampled4 = sufkit::SuffixArray::build(ref, build_options(backend, 4));
-    sufkit::MemOptions too_short;
+    sufkit::RightMaximalOptions too_short;
     too_short.min_length = 3;
     expect_error(sufkit::ErrorCode::invalid_input, [&] {
-        (void)sampled4.find_mems("ACGTACGT", too_short);
+        (void)sampled4.find_right_maximal_matches("ACGTACGT", too_short);
     });
 }
 
@@ -191,12 +191,12 @@ void randomized_differential() {
             std::string query;
             for (int position = 0; position < 96; ++position)
                 query.push_back(position % 37 == 0 ? 'N' : base());
-            sufkit::MemOptions options;
+            sufkit::RightMaximalOptions options;
             options.min_length = std::max<std::uint64_t>(rate, 8);
             options.strands = sufkit::StrandMode::both;
-            options.algorithm = sufkit::MemSearchAlgorithm::full;
-            CHECK(same_mem_result(full.find_mems(query, options),
-                                  sampled.find_mems(query, options)));
+            options.algorithm = sufkit::RightMaximalSearchAlgorithm::full;
+            CHECK(same_right_maximal_result(full.find_right_maximal_matches(query, options),
+                                  sampled.find_right_maximal_matches(query, options)));
         }
     }
 }

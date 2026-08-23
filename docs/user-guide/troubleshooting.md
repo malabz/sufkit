@@ -12,7 +12,7 @@ failure rather than an empty reference.
 
 Exact patterns accept only A/C/G/T after case normalization. N, U, IUPAC,
 whitespace, and empty strings are invalid. Split ambiguous query regions or use
-MEM search, where non-ACGT symbols are hard breaks.
+right-maximal exact match search, where non-ACGT symbols are hard breaks.
 
 ### Query FASTA is rejected
 
@@ -63,7 +63,7 @@ do not bypass validation.
 
 ### Wrong index kind
 
-MEM requires a standalone SA. Exact query supports SA and FM. Load with the
+right-maximal exact match requires a standalone SA. Exact query supports SA and FM. Load with the
 class matching `inspect_index(...).kind`.
 
 ## Search behavior
@@ -78,11 +78,11 @@ boundaries. Exact patterns cannot contain their internal codes.
 The loaded index lacks the required learned or CHILD section. Rebuild with
 `--learned-index` or `--sa-acceleration child|full`, or use `auto`/binary.
 
-### Locate or MEM uses too much memory
+### Locate or right-maximal exact match uses too much memory
 
 Use `count` when coordinates are unnecessary. Set `max_hits` or
-`max_matches`, stream MEMs with `for_each_mem`, and avoid complete locate on
-high-frequency patterns. Note that accurate total MEM count still traverses
+`max_matches`, stream right-maximal exact matches with `for_each_right_maximal_match`, and avoid complete locate on
+high-frequency patterns. Note that accurate total right-maximal exact match count still traverses
 the complete match set.
 
 ## Build-system issues

@@ -64,19 +64,19 @@ be slower than a complete SA for short-pattern workloads.
 the complete result is a union of residue-specific intervals rather than one
 public half-open interval.
 
-## MEM recovery
+## Right-maximal exact match recovery
 
-Sampled MEM search requires:
+Sampled right-maximal exact match search requires:
 
 ```text
 min_length >= K
 ```
 
 Each canonical query run is searched by residue class. Candidates are anchored
-at a sampled reference position, extended left by at most K bases to find the
-true start, extended right to maximality, and emitted only from the first
-eligible anchor. This preserves the complete-SA MEM set without duplicate
-anchors.
+at a sampled reference position, mapped back to a candidate start, extended
+right to maximality, and emitted only from the first eligible anchor. This
+preserves the complete-layout right-maximal result set without duplicate
+anchors. It does not add a left-maximality guarantee.
 
 Suffix-link reuse advances by K query characters on the sampled path. Its
 ISA/LCP interval expansion and CHILD navigation operate entirely in the
@@ -98,10 +98,10 @@ SA payload.
 ## When to use it
 
 Sampling is primarily a final-index memory/size trade-off. It is most suitable
-when patterns and MEM thresholds are not shorter than K and construction has
+when patterns and right-maximal exact match thresholds are not shorter than K and construction has
 enough memory for the complete backend SA. It is not a substitute for SDSL FM
 compression, disk-backed construction, or a direct sparse-SA algorithm.
 
 See the [exact-search guide](../user-guide/exact-search.md),
-[MEM guide](../user-guide/mem-search.md), and
+[right-maximal exact match guide](../user-guide/right-maximal-search.md), and
 [sampled-SA benchmark](../benchmarks/results/unreleased-sampled-sa.md).

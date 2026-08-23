@@ -13,13 +13,14 @@
 | FM-index | Backward-search index based on BWT rank and cumulative counts |
 | rank/select | Succinct sequence primitives; supplied by SDSL in FM backends |
 | LF mapping | Last-to-first BWT navigation; not implemented independently by sufkit |
-| MEM | Maximal exact match: exact and not jointly extendable left or right |
+| Right-maximal exact match | Exact match that cannot extend to the right; current candidate API does not guarantee left maximality |
+| MEM | Maximal exact match: exact and not extendable on either left or right; reserved for future implementation |
 | MUM | Maximal unique match; not currently implemented |
 | MAM | Maximal almost-unique match; not currently implemented |
 | suffix link | Interval relation after deleting the first character of a matched string |
 | PWL | Piecewise-linear learned model used to predict an approximate SA row |
 | anchor | PWL key/row endpoint used for deterministic interpolation |
-| hard break | N, separator, sentinel, or non-ACGT MEM query symbol that a match cannot cross |
+| hard break | N, separator, sentinel, or non-ACGT query symbol that a match cannot cross |
 | logical text | Encoded contigs plus separators and one sentinel |
 | global position | Offset in logical text; mapped to public contig-local coordinates |
 | half-open range | `[begin,end)`, including begin and excluding end |

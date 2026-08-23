@@ -5,7 +5,7 @@
 
 int main(int argc, char** argv) {
     if (argc != 2) {
-        std::cerr << "usage: sufkit_example_mem_stream reference.fa[.gz]\n";
+        std::cerr << "usage: sufkit_example_right_maximal_stream reference.fa[.gz]\n";
         return 2;
     }
 
@@ -13,10 +13,10 @@ int main(int argc, char** argv) {
     auto index = sufkit::SuffixArray::build(reference);
 
     constexpr std::string_view query = "GGGACGTACGTNNNGATTACA";
-    sufkit::MemOptions options;
+    sufkit::RightMaximalOptions options;
     options.min_length = 4;
     options.strands = sufkit::StrandMode::both;
-    index.for_each_mem(query, options, [&](const sufkit::MemMatch& match) {
+    index.for_each_right_maximal_match(query, options, [&](const sufkit::RightMaximalMatch& match) {
         std::cout << match.sequence_id << '\t'
                   << match.reference_position << '\t'
                   << match.query_position << '\t'

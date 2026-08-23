@@ -69,7 +69,7 @@ inputs.
 | caps64 | 2 | 0.1672 | 40.73 | 0.24x |
 
 With `acceleration=full`, div32 and caps32 produced the same SA checksum,
-exact checksum, and MEM checksum `17567547818709499406`. CaPS still pays for
+exact checksum, and right-maximal exact match checksum `17567547818709499406`. CaPS still pays for
 its internal LCP. This original result predates commit `0162c34`, which changed
 the integration to retain CaPS merge-built LCP directly instead of running a
 second Kasai pass. The historical timings above must not be used to quantify

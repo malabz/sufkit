@@ -417,10 +417,10 @@ void test_fm_index(const std::filesystem::path& directory) {
     }
 }
 
-using MemTuple = std::tuple<std::uint64_t, sufkit::SequenceId, sufkit::Position,
+using RightMaximalTuple = std::tuple<std::uint64_t, sufkit::SequenceId, sufkit::Position,
                             std::uint64_t, sufkit::Strand>;
 
-std::vector<MemTuple> mem_tuples(const sufkit::MemResult& result);
+std::vector<RightMaximalTuple> right_maximal_tuples(const sufkit::RightMaximalResult& result);
 std::vector<std::pair<sufkit::SequenceId, sufkit::Position>> naive_positions(
     const std::vector<sufkit::SequenceRecord>& records,
     const std::string& pattern);
@@ -472,17 +472,17 @@ void test_learned_sa(const std::filesystem::path& directory) {
         if (pattern.size() < 4) CHECK(learned_stats.full_binary_fallbacks != 0);
     }
 
-    sufkit::MemOptions mem_options;
-    mem_options.min_length = 4;
-    mem_options.algorithm = sufkit::MemSearchAlgorithm::suffix_link;
-    mem_options.lookup_algorithm = sufkit::SaSearchAlgorithm::binary;
-    const auto binary_mems = index.find_mems("GGACGTACGTNNNTGCATG", mem_options);
-    sufkit::MemSearchStatistics mem_stats;
-    mem_options.lookup_algorithm = sufkit::SaSearchAlgorithm::sapling_pwl;
-    mem_options.statistics = &mem_stats;
-    const auto learned_mems = index.find_mems("GGACGTACGTNNNTGCATG", mem_options);
-    CHECK(mem_tuples(binary_mems) == mem_tuples(learned_mems));
-    CHECK(mem_stats.learned_lookup_calls != 0);
+    sufkit::RightMaximalOptions right_maximal_options;
+    right_maximal_options.min_length = 4;
+    right_maximal_options.algorithm = sufkit::RightMaximalSearchAlgorithm::suffix_link;
+    right_maximal_options.lookup_algorithm = sufkit::SaSearchAlgorithm::binary;
+    const auto binary_right_maximal = index.find_right_maximal_matches("GGACGTACGTNNNTGCATG", right_maximal_options);
+    sufkit::RightMaximalSearchStatistics right_maximal_stats;
+    right_maximal_options.lookup_algorithm = sufkit::SaSearchAlgorithm::sapling_pwl;
+    right_maximal_options.statistics = &right_maximal_stats;
+    const auto learned_right_maximal = index.find_right_maximal_matches("GGACGTACGTNNNTGCATG", right_maximal_options);
+    CHECK(right_maximal_tuples(binary_right_maximal) == right_maximal_tuples(learned_right_maximal));
+    CHECK(right_maximal_stats.learned_lookup_calls != 0);
 
     const auto path = directory / "learned.sa.sufidx";
     index.save(path);
@@ -668,8 +668,8 @@ void test_randomized_differential() {
     }
 }
 
-std::vector<MemTuple> mem_tuples(const sufkit::MemResult& result) {
-    std::vector<MemTuple> values;
+std::vector<RightMaximalTuple> right_maximal_tuples(const sufkit::RightMaximalResult& result) {
+    std::vector<RightMaximalTuple> values;
     for (const auto& match : result.matches) {
         values.emplace_back(match.query_position, match.sequence_id,
                             match.reference_position, match.length, match.strand);
@@ -677,7 +677,7 @@ std::vector<MemTuple> mem_tuples(const sufkit::MemResult& result) {
     return values;
 }
 
-std::vector<MemTuple> naive_mems(
+std::vector<RightMaximalTuple> naive_right_maximal_matches(
     const std::vector<sufkit::SequenceRecord>& records,
     const std::string& raw_query,
     std::uint64_t min_length) {
@@ -686,7 +686,7 @@ std::vector<MemTuple> naive_mems(
         base = static_cast<char>(std::toupper(static_cast<unsigned char>(base)));
         if (base != 'A' && base != 'C' && base != 'G' && base != 'T') base = 'N';
     }
-    std::vector<MemTuple> result;
+    std::vector<RightMaximalTuple> result;
     for (std::size_t sequence_id = 0; sequence_id < records.size(); ++sequence_id) {
         std::string reference = records[sequence_id].sequence;
         for (auto& base : reference) {
@@ -717,7 +717,7 @@ std::vector<MemTuple> naive_mems(
     return result;
 }
 
-void test_mem_search(const std::filesystem::path& directory) {
+void test_right_maximal_search(const std::filesystem::path& directory) {
     const auto reference = sufkit::GenomeReference::from_records({
         {"r1", "", "GATTACAGTC"},
         {"r2", "", "TTACAGGG"},
@@ -730,11 +730,11 @@ void test_mem_search(const std::filesystem::path& directory) {
     CHECK(index.info().format_version == "1.1");
     CHECK(index.info().auxiliary_bytes != 0);
 
-    sufkit::MemOptions options;
+    sufkit::RightMaximalOptions options;
     options.min_length = 4;
     options.strands = sufkit::StrandMode::forward;
-    options.algorithm = sufkit::MemSearchAlgorithm::baseline;
-    const auto baseline = index.find_mems("CCGATTACAT", options);
+    options.algorithm = sufkit::RightMaximalSearchAlgorithm::baseline;
+    const auto baseline = index.find_right_maximal_matches("CCGATTACAT", options);
     CHECK(baseline.total_matches == 2);
     CHECK(baseline.matches.size() == 2);
     CHECK(baseline.matches[0].query_position == 2);
@@ -743,24 +743,24 @@ void test_mem_search(const std::filesystem::path& directory) {
     CHECK(baseline.matches[0].length == 7);
 
     for (const auto algorithm : {
-             sufkit::MemSearchAlgorithm::lcp,
-             sufkit::MemSearchAlgorithm::child,
-             sufkit::MemSearchAlgorithm::suffix_link,
-             sufkit::MemSearchAlgorithm::full,
-             sufkit::MemSearchAlgorithm::auto_select}) {
+             sufkit::RightMaximalSearchAlgorithm::lcp,
+             sufkit::RightMaximalSearchAlgorithm::child,
+             sufkit::RightMaximalSearchAlgorithm::suffix_link,
+             sufkit::RightMaximalSearchAlgorithm::full,
+             sufkit::RightMaximalSearchAlgorithm::auto_select}) {
         options.algorithm = algorithm;
-        CHECK(mem_tuples(index.find_mems("CCGATTACAT", options)) == mem_tuples(baseline));
+        CHECK(right_maximal_tuples(index.find_right_maximal_matches("CCGATTACAT", options)) == right_maximal_tuples(baseline));
     }
-    sufkit::MemSearchStatistics automatic_statistics;
-    options.algorithm = sufkit::MemSearchAlgorithm::auto_select;
+    sufkit::RightMaximalSearchStatistics automatic_statistics;
+    options.algorithm = sufkit::RightMaximalSearchAlgorithm::auto_select;
     options.statistics = &automatic_statistics;
-    (void)index.find_mems("CCGATTACAT", options);
+    (void)index.find_right_maximal_matches("CCGATTACAT", options);
     CHECK(automatic_statistics.suffix_link_attempts != 0); // full index still auto-selects suffix-link
     options.statistics = nullptr;
 
-    options.algorithm = sufkit::MemSearchAlgorithm::full;
+    options.algorithm = sufkit::RightMaximalSearchAlgorithm::full;
     options.min_length = 3;
-    const auto hard_break = index.find_mems("AAAANCCCC", options);
+    const auto hard_break = index.find_right_maximal_matches("AAAANCCCC", options);
     CHECK(std::any_of(hard_break.matches.begin(), hard_break.matches.end(), [](const auto& match) {
         return match.sequence_id == 2 && match.reference_position == 0 &&
                match.query_position == 0 && match.length == 4;
@@ -775,24 +775,24 @@ void test_mem_search(const std::filesystem::path& directory) {
 
     options.min_length = 4;
     options.strands = sufkit::StrandMode::both;
-    const auto both = index.find_mems("TGTAATC", options);
+    const auto both = index.find_right_maximal_matches("TGTAATC", options);
     CHECK(std::any_of(both.matches.begin(), both.matches.end(), [](const auto& match) {
         return match.strand == sufkit::Strand::reverse_complement;
     }));
 
-    const auto limited = index.find_mems("CCGATTACAT", options, 1);
+    const auto limited = index.find_right_maximal_matches("CCGATTACAT", options, 1);
     CHECK(limited.total_matches >= limited.matches.size());
     CHECK(limited.matches.size() == 1);
     CHECK(limited.truncated);
-    const auto count_only = index.find_mems("CCGATTACAT", options, 0);
+    const auto count_only = index.find_right_maximal_matches("CCGATTACAT", options, 0);
     CHECK(count_only.matches.empty());
     CHECK(count_only.truncated == (count_only.total_matches != 0));
 
     std::uint64_t streamed = 0;
-    index.for_each_mem("CCGATTACAT", options, [&](const sufkit::MemMatch&) { ++streamed; });
-    CHECK(streamed == index.find_mems("CCGATTACAT", options).total_matches);
+    index.for_each_right_maximal_match("CCGATTACAT", options, [&](const sufkit::RightMaximalMatch&) { ++streamed; });
+    CHECK(streamed == index.find_right_maximal_matches("CCGATTACAT", options).total_matches);
     try {
-        index.for_each_mem("CCGATTACAT", options, [](const sufkit::MemMatch&) {
+        index.for_each_right_maximal_match("CCGATTACAT", options, [](const sufkit::RightMaximalMatch&) {
             throw std::runtime_error("callback sentinel");
         });
         CHECK(false);
@@ -801,11 +801,11 @@ void test_mem_search(const std::filesystem::path& directory) {
     }
     std::atomic<bool> concurrent_ok{true};
     std::vector<std::thread> workers;
-    const auto expected_both = mem_tuples(index.find_mems("CCGATTACAT", options));
+    const auto expected_both = right_maximal_tuples(index.find_right_maximal_matches("CCGATTACAT", options));
     for (int worker = 0; worker < 4; ++worker) {
         workers.emplace_back([&] {
             for (int repetition = 0; repetition < 50; ++repetition) {
-                if (mem_tuples(index.find_mems("CCGATTACAT", options)) != expected_both)
+                if (right_maximal_tuples(index.find_right_maximal_matches("CCGATTACAT", options)) != expected_both)
                     concurrent_ok.store(false);
             }
         });
@@ -815,7 +815,7 @@ void test_mem_search(const std::filesystem::path& directory) {
     check_error(sufkit::ErrorCode::invalid_input, [&] {
         auto invalid = options;
         invalid.min_length = 0;
-        (void)index.find_mems("ACGT", invalid);
+        (void)index.find_right_maximal_matches("ACGT", invalid);
     });
 
     const std::array<sufkit::SaAcceleration, 5> modes{{
@@ -828,7 +828,7 @@ void test_mem_search(const std::filesystem::path& directory) {
     for (std::size_t mode_index = 0; mode_index < modes.size(); ++mode_index) {
         build_options.acceleration = modes[mode_index];
         auto built = sufkit::SuffixArray::build(reference, build_options);
-        const auto path = directory / ("mem-" + std::to_string(mode_index) + ".sufidx");
+        const auto path = directory / ("right-maximal-" + std::to_string(mode_index) + ".sufidx");
         built.save(path);
         const auto inspected = sufkit::inspect_index(path);
         CHECK(inspected.sa_acceleration == modes[mode_index]);
@@ -836,19 +836,19 @@ void test_mem_search(const std::filesystem::path& directory) {
         auto loaded = sufkit::SuffixArray::load(path);
         auto baseline_options = options;
         baseline_options.strands = sufkit::StrandMode::forward;
-        baseline_options.algorithm = sufkit::MemSearchAlgorithm::baseline;
-        CHECK(mem_tuples(loaded.find_mems("CCGATTACAT", baseline_options)) == mem_tuples(baseline));
+        baseline_options.algorithm = sufkit::RightMaximalSearchAlgorithm::baseline;
+        CHECK(right_maximal_tuples(loaded.find_right_maximal_matches("CCGATTACAT", baseline_options)) == right_maximal_tuples(baseline));
         if (modes[mode_index] == sufkit::SaAcceleration::none) {
             auto unavailable = baseline_options;
-            unavailable.algorithm = sufkit::MemSearchAlgorithm::child;
+            unavailable.algorithm = sufkit::RightMaximalSearchAlgorithm::child;
             check_error(sufkit::ErrorCode::unsupported_backend, [&] {
-                (void)loaded.find_mems("CCGATTACAT", unavailable);
+                (void)loaded.find_right_maximal_matches("CCGATTACAT", unavailable);
             });
         }
     }
 }
 
-void test_randomized_mem_differential() {
+void test_randomized_right_maximal_differential() {
     std::uint64_t state = 0x51f17e5aULL;
     const auto next = [&] {
         state = state * 6364136223846793005ULL + 1442695040888963407ULL;
@@ -860,7 +860,7 @@ void test_randomized_mem_differential() {
         for (int sequence_id = 0; sequence_id < 2; ++sequence_id) {
             std::string sequence(28, 'A');
             for (auto& base : sequence) base = alphabet[next() % alphabet.size()];
-            records.push_back({"mem-r" + std::to_string(sequence_id), "", std::move(sequence)});
+            records.push_back({"right-maximal-r" + std::to_string(sequence_id), "", std::move(sequence)});
         }
         std::string query(24, 'A');
         for (auto& base : query) base = alphabet[next() % alphabet.size()];
@@ -869,17 +869,17 @@ void test_randomized_mem_differential() {
         build_options.acceleration = sufkit::SaAcceleration::full;
         auto index = sufkit::SuffixArray::build(reference, build_options);
         for (std::uint64_t min_length = 1; min_length <= 5; ++min_length) {
-            sufkit::MemOptions options;
+            sufkit::RightMaximalOptions options;
             options.min_length = min_length;
-            const auto expected = naive_mems(records, query, min_length);
+            const auto expected = naive_right_maximal_matches(records, query, min_length);
             for (const auto algorithm : {
-                     sufkit::MemSearchAlgorithm::baseline,
-                     sufkit::MemSearchAlgorithm::lcp,
-                     sufkit::MemSearchAlgorithm::child,
-                     sufkit::MemSearchAlgorithm::suffix_link,
-                     sufkit::MemSearchAlgorithm::full}) {
+                     sufkit::RightMaximalSearchAlgorithm::baseline,
+                     sufkit::RightMaximalSearchAlgorithm::lcp,
+                     sufkit::RightMaximalSearchAlgorithm::child,
+                     sufkit::RightMaximalSearchAlgorithm::suffix_link,
+                     sufkit::RightMaximalSearchAlgorithm::full}) {
                 options.algorithm = algorithm;
-                const auto observed = mem_tuples(index.find_mems(query, options));
+                const auto observed = right_maximal_tuples(index.find_right_maximal_matches(query, options));
                 CHECK(observed == expected);
             }
         }
@@ -898,8 +898,8 @@ int main() {
         test_learned_sa(directory);
         test_fm_index(directory);
         test_randomized_differential();
-        test_mem_search(directory);
-        test_randomized_mem_differential();
+        test_right_maximal_search(directory);
+        test_randomized_right_maximal_differential();
     } catch (const std::exception& error) {
         std::cerr << "unexpected exception: " << error.what() << '\n';
         ++failures;

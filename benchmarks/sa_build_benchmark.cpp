@@ -56,7 +56,7 @@ struct WorkerResult {
     std::uint64_t sa_hash_1 = 0;
     std::uint64_t sa_hash_2 = 0;
     std::uint64_t exact_checksum = 0;
-    std::uint64_t mem_checksum = 0;
+    std::uint64_t right_maximal_checksum = 0;
     std::uint32_t threads = 0;
     std::uint32_t sampling_rate = 1;
     std::uint32_t repetition = 0;
@@ -246,11 +246,11 @@ std::uint64_t exact_checksum(const sufkit::SuffixArray& index) {
     return hash;
 }
 
-std::uint64_t mem_checksum(const sufkit::SuffixArray& index) {
-    sufkit::MemOptions options;
+std::uint64_t right_maximal_checksum(const sufkit::SuffixArray& index) {
+    sufkit::RightMaximalOptions options;
     options.min_length = 12;
     options.strands = sufkit::StrandMode::both;
-    const auto result = index.find_mems("TTACACGTACGTGATTACATTTTCCCCAAAAGGGGACGT");
+    const auto result = index.find_right_maximal_matches("TTACACGTACGTGATTACATTTTCCCCAAAAGGGGACGT");
     std::uint64_t hash = 0x243f6a8885a308d3ULL;
     mix(hash, result.total_matches);
     for (const auto& match : result.matches) {
@@ -320,15 +320,15 @@ WorkerResult run_worker(
         result.sa_hash_1 = hashes.first;
         result.sa_hash_2 = hashes.second;
         result.exact_checksum = exact_checksum(index);
-        result.mem_checksum = options.acceleration == sufkit::SaAcceleration::full
-            ? mem_checksum(index)
+        result.right_maximal_checksum = options.acceleration == sufkit::SaAcceleration::full
+            ? right_maximal_checksum(index)
             : 0;
         index.save(index_path);
         result.serialized_bytes = std::filesystem::file_size(index_path);
         auto loaded = sufkit::SuffixArray::load(index_path);
         if (exact_checksum(loaded) != result.exact_checksum ||
             (options.acceleration == sufkit::SaAcceleration::full &&
-             mem_checksum(loaded) != result.mem_checksum)) {
+             right_maximal_checksum(loaded) != result.right_maximal_checksum)) {
             throw sufkit::Error(sufkit::ErrorCode::build_failure, "save/load checksum mismatch");
         }
         std::filesystem::remove(index_path);
@@ -433,7 +433,7 @@ void write_outputs(
     raw << "method\teffective_backend\tbackend_signature\tcoordinate_width\tthreads\tsampling_rate\tsuffix_count\t"
            "subproblem_count\tacceleration\trepetition\tbuild_wall_seconds\tuser_cpu_seconds\t"
            "system_cpu_seconds\tpeak_rss_mb\tserialized_bytes\tsa_checksum\texact_checksum\t"
-           "mem_checksum\tstatus\n";
+           "right_maximal_checksum\tstatus\n";
     raw << std::fixed << std::setprecision(6);
     for (const auto& result : results) {
         raw << result.method << '\t' << result.backend << '\t' << result.signature << '\t'
@@ -443,7 +443,7 @@ void write_outputs(
             << result.repetition << '\t' << result.build_seconds << '\t' << result.user_seconds << '\t'
             << result.system_seconds << '\t' << result.peak_rss_mb << '\t'
             << result.serialized_bytes << '\t' << hex_pair(result.sa_hash_1, result.sa_hash_2) << '\t'
-            << result.exact_checksum << '\t' << result.mem_checksum << '\t' << result.status << '\n';
+            << result.exact_checksum << '\t' << result.right_maximal_checksum << '\t' << result.status << '\n';
     }
 
     using Key = std::tuple<std::string, std::uint32_t, std::uint32_t>;
@@ -513,7 +513,7 @@ void correctness_gate(const std::vector<WorkerResult>& results) {
         if (result.text_symbols != reference->text_symbols ||
             result.fingerprint != reference->fingerprint ||
             result.exact_checksum != reference->exact_checksum ||
-            result.mem_checksum != reference->mem_checksum ||
+            result.right_maximal_checksum != reference->right_maximal_checksum ||
             (!inserted && (result.sa_hash_1 != same_sampling->sa_hash_1 ||
                            result.sa_hash_2 != same_sampling->sa_hash_2))) {
             throw sufkit::Error(

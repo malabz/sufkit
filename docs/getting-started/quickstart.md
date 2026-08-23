@@ -10,7 +10,7 @@ TTTTACGTACGTCCCC
 ```
 
 Save it as `reference.fa`. N is a hard reference boundary: an exact match or
-MEM cannot cross the N run or a contig boundary.
+right-maximal exact match cannot cross the N run or a contig boundary.
 
 ## Build and inspect an FM-index
 
@@ -60,7 +60,7 @@ not the result TSV on stdout.
 ```
 
 The default construction uses divsufsort and stores SA+ISA+LCP. It is ready
-for suffix-link MEM search. To request CaPS explicitly:
+for suffix-link right-maximal exact match search. To request CaPS explicitly:
 
 ```bash
 ./build/release/sufkit build --type sa \
@@ -80,10 +80,10 @@ To trade query work for a smaller loaded and serialized standalone SA:
 ```
 
 This retains suffix positions divisible by four. It does not reduce the peak
-memory of the underlying complete-SA constructor, and sampled MEM requires
+memory of the underlying complete-SA constructor, and sampled right-maximal exact match requires
 `min_length >= 4`.
 
-## Search MEMs
+## Search right-maximal exact matches
 
 Create `queries.fa`:
 
@@ -97,7 +97,7 @@ GATTACANNNACGT
 Then run:
 
 ```bash
-./build/release/sufkit mem --index reference.sa.sufidx \
+./build/release/sufkit right-maximal --index reference.sa.sufidx \
   --query queries.fa --min-length 4 --strand both
 ```
 
@@ -107,7 +107,7 @@ Output columns are:
 query_id	sequence_id	sequence_name	reference_start	query_start	length	strand
 ```
 
-The N characters in `query2` are hard breaks. MEM positions on the reverse
+The N characters in `query2` are hard breaks. right-maximal exact match positions on the reverse
 strand are still reported in the original forward query coordinate system.
 
 ## C++ equivalent
@@ -125,9 +125,9 @@ int main() {
     std::cout << exact.total_hits << '\n';
 
     auto sa = sufkit::SuffixArray::build(reference);
-    sufkit::MemOptions options;
+    sufkit::RightMaximalOptions options;
     options.min_length = 4;
-    for (const auto& match : sa.find_mems("GGGACGTACGTTTT", options).matches) {
+    for (const auto& match : sa.find_right_maximal_matches("GGGACGTACGTTTT", options).matches) {
         std::cout << match.sequence_id << '\t'
                   << match.reference_position << '\t'
                   << match.query_position << '\t'

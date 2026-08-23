@@ -4,24 +4,32 @@ All notable changes to sufkit are documented in this file.
 
 ## Unreleased
 
-- Changed the default SA acceleration to SA+ISA+LCP and changed MEM auto
-  selection to suffix-link; CHILD and full remain explicit capabilities.
+- Corrected the former MEM terminology without changing query logic. The
+  implementation guarantees right maximality but not left maximality, so
+  `Mem*`, `find_mems()`, `for_each_mem()`, `sufkit mem`, and `--workload mem`
+  were renamed to `RightMaximal*`, `find_right_maximal_matches()`,
+  `for_each_right_maximal_match()`, `sufkit right-maximal`, and
+  `--workload right-maximal`. MEM names are reserved for future two-sided
+  maximality support.
+- Changed the default SA acceleration to SA+ISA+LCP and changed right-maximal
+  search auto selection to suffix-link; CHILD and full remain explicit.
 - Added an optional, clean-room Sapling-style piecewise-linear learned SA index
   with deterministic integer interpolation and correctness-preserving local
   search.
 - Added explicit binary, LCP-aware binary, PWL, and CHILD exact-search control,
-  plus PWL initialization/fallback control for suffix-link MEM search.
+  plus PWL initialization/fallback control for suffix-link right-maximal search.
 - Extended `.sufidx` to format 1.2 for the optional learned-model section while
   retaining 1.0/1.1 compatibility and the unchanged SDSL FM payload.
-- Added learned-index construction/query metrics and exact/MEM benchmark
-  ablations. No Python, PyTorch, CUDA, or Sapling runtime dependency was added.
+- Added learned-index construction/query metrics and exact/right-maximal
+  benchmark ablations. No Python, PyTorch, CUDA, or Sapling runtime dependency
+  was added.
 - Added bundled CaPS-SA 32/64 shared-memory parallel suffix-array construction
   with ParlayLib, configurable build availability, stable persisted backend
   identities, conservative large-input auto-selection, and a dedicated
   isolated construction benchmark.
 - Added optional text-position sampled standalone suffix arrays with complete
-  exact count/locate and MEM recovery, format 1.3 persistence, CLI/inspection
-  controls, and sampled-SA correctness/benchmark coverage.
+  exact count/locate and right-maximal recovery, format 1.3 persistence,
+  CLI/inspection controls, and sampled-SA correctness/benchmark coverage.
 - Avoided redundant LCP construction: divsufsort now returns sampled ISA/LCP
   through a private fused adapter, while CaPS directly retains its merge-built
   LCP and compacts it by interval minima when sampling is enabled.
@@ -35,17 +43,22 @@ All notable changes to sufkit are documented in this file.
 
 ## 0.1.1
 
+Terminology note: 0.1.1 originally described this query as MEM search. The
+current contract corrects it to right-maximal exact matching because the
+implementation does not guarantee left maximality.
+
 - Added full-SA ESA auxiliary construction: ISA, Kasai LCP, and a persisted
   Abouelhoda-style CHILD table.
-- Added streaming and deterministic vector MEM APIs with forward,
-  reverse-complement, both-strand, hard-break, and bounded-result semantics.
-- Added baseline, LCP-assisted, CHILD, suffix-link, and combined MEM query
-  modes; suffix-link reuse is implemented with ISA/LCP interval expansion.
+- Added streaming and deterministic vector query APIs, originally named
+  `Mem*`, with forward, reverse-complement, both-strand, hard-break, and
+  bounded-result semantics.
+- Added baseline, LCP-assisted, CHILD, suffix-link, and combined query modes;
+  suffix-link reuse is implemented with ISA/LCP interval expansion.
 - Extended suffix-array `.sufidx` files to format 1.1 while retaining 1.0
   loading and 1.0 output for SA-only indexes.
-- Added `sufkit mem`, `--sa-acceleration`, auxiliary inspection fields, MEM
-  benchmark profiles, internal ablation, and optional MUMmer4 4.0.1
-  black-box comparison.
+- Added the command originally named `sufkit mem`, `--sa-acceleration`,
+  auxiliary inspection fields, benchmark profiles, internal ablation, and an
+  optional MUMmer4 4.0.1 black-box comparison.
 - Kept the SDSL FM-index implementation and payload format unchanged.
 
 ## 0.1.0

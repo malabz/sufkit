@@ -43,7 +43,7 @@ and truncation rules shared across backends.
 | `include/sufkit` | Stable declarations, options, results, errors | Third-party implementation types |
 | Reference layer | FASTA, normalization, metadata, encoded text, fingerprint | Index-specific structures |
 | Query utilities | Exact pattern encoding, reverse complement, deterministic result finalization | SA/FM traversal |
-| Suffix-array layer | Constructor dispatch, SA storage, ISA/LCP/CHILD/PWL, exact and MEM | SDSL CSA internals |
+| Suffix-array layer | Constructor dispatch, SA storage, ISA/LCP/CHILD/PWL, exact and right-maximal exact match | SDSL CSA internals |
 | FM layer | Fixed SDSL variants, scalar/batch backward search, CSA locate | Custom C/Occ/LF/rank/select |
 | Serialization | Outer container, CRC, bounded sections, atomic publication | Algorithm policy |
 | Inspection | Validate/report persisted metadata and compiled backend availability | Query construction |
@@ -106,7 +106,7 @@ explicit CHILD. FM range search uses SDSL `backward_search`. Backend paths must
 converge before public result finalization. A sampled standalone SA cannot
 return one `equal_range`, but count/locate recover all residue classes.
 
-## MEM query flow
+## right-maximal exact match query flow
 
 ```mermaid
 flowchart TD
@@ -117,7 +117,7 @@ flowchart TD
     R -->|K>1| A[Residue anchors, min_length >= K]
     A --> I
     I --> E[Extend and enumerate candidate rows]
-    E --> M[Check left and right maximality]
+    E --> M[Verify exactness and right maximality]
     M --> C[Map valid reference coordinates]
     C --> SL{Next query position}
     SL -->|ISA+LCP reusable| U[Suffix-link interval reuse]
@@ -126,8 +126,9 @@ flowchart TD
     C --> F[Stream callback or bounded sorted vector]
 ```
 
-The five algorithm modes share maximality and coordinate rules. Only interval
-discovery/reuse differs.
+The five algorithm modes share exactness, right-maximality, and coordinate
+rules. Only interval discovery/reuse differs. Left maximality is not part of
+the current contract.
 
 ## Load and inspection flow
 
@@ -159,7 +160,7 @@ third-party state. Unknown or damaged required data is never silently ignored.
 - Public index objects are move-only, preventing accidental expensive copies.
 - Const queries are concurrent. Mutable caller-owned statistics are outside
   that guarantee.
-- Synchronous MEM callbacks execute on the calling thread.
+- Synchronous right-maximal exact match callbacks execute on the calling thread.
 
 ## Dependency direction
 

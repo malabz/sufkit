@@ -92,7 +92,7 @@ std::uint64_t suffix_checksum(const sufkit::SuffixArray& index) {
     return hash;
 }
 
-bool same_mem(const sufkit::MemResult& left, const sufkit::MemResult& right) {
+bool same_right_maximal_result(const sufkit::RightMaximalResult& left, const sufkit::RightMaximalResult& right) {
     if (left.total_matches != right.total_matches ||
         left.truncated != right.truncated ||
         left.matches.size() != right.matches.size()) return false;
@@ -237,11 +237,11 @@ void test_caps_builds(const std::filesystem::path& directory) {
             options(sufkit::SaBackend::caps, sufkit::CoordinateWidth::bits32, 2, acceleration));
         compare_suffix_arrays(div, caps);
         CHECK(div.count("ACGTACGT") == caps.count("ACGTACGT"));
-        sufkit::MemOptions mem;
-        mem.min_length = 8;
-        mem.strands = sufkit::StrandMode::both;
-        CHECK(same_mem(div.find_mems("TTACACGTACGTGATTACATTTT"),
-                       caps.find_mems("TTACACGTACGTGATTACATTTT")));
+        sufkit::RightMaximalOptions right_maximal;
+        right_maximal.min_length = 8;
+        right_maximal.strands = sufkit::StrandMode::both;
+        CHECK(same_right_maximal_result(div.find_right_maximal_matches("TTACACGTACGTGATTACATTTT"),
+                       caps.find_right_maximal_matches("TTACACGTACGTGATTACATTTT")));
     }
 
     const auto tiny = sufkit::GenomeReference::from_records({{"tiny", "", "ACGT"}});

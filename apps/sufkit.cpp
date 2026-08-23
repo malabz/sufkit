@@ -86,14 +86,14 @@ sufkit::SaAcceleration parse_sa_acceleration(const std::string& value) {
     throw sufkit::Error(sufkit::ErrorCode::invalid_input, "invalid SA acceleration: " + value);
 }
 
-sufkit::MemSearchAlgorithm parse_mem_algorithm(const std::string& value) {
-    if (value == "auto") return sufkit::MemSearchAlgorithm::auto_select;
-    if (value == "baseline") return sufkit::MemSearchAlgorithm::baseline;
-    if (value == "lcp") return sufkit::MemSearchAlgorithm::lcp;
-    if (value == "child") return sufkit::MemSearchAlgorithm::child;
-    if (value == "suffix-link") return sufkit::MemSearchAlgorithm::suffix_link;
-    if (value == "full") return sufkit::MemSearchAlgorithm::full;
-    throw sufkit::Error(sufkit::ErrorCode::invalid_input, "invalid MEM algorithm: " + value);
+sufkit::RightMaximalSearchAlgorithm parse_right_maximal_algorithm(const std::string& value) {
+    if (value == "auto") return sufkit::RightMaximalSearchAlgorithm::auto_select;
+    if (value == "baseline") return sufkit::RightMaximalSearchAlgorithm::baseline;
+    if (value == "lcp") return sufkit::RightMaximalSearchAlgorithm::lcp;
+    if (value == "child") return sufkit::RightMaximalSearchAlgorithm::child;
+    if (value == "suffix-link") return sufkit::RightMaximalSearchAlgorithm::suffix_link;
+    if (value == "full") return sufkit::RightMaximalSearchAlgorithm::full;
+    throw sufkit::Error(sufkit::ErrorCode::invalid_input, "invalid right-maximal exact match algorithm: " + value);
 }
 
 sufkit::SaSearchAlgorithm parse_sa_search_algorithm(const std::string& value) {
@@ -108,11 +108,11 @@ sufkit::SaSearchAlgorithm parse_sa_search_algorithm(const std::string& value) {
 
 void print_usage(std::ostream& output) {
     output <<
-        "sufkit 0.1.1 - genome suffix arrays, ESA MEM search, and SDSL FM-indexes\n\n"
+        "sufkit 0.1.1 - genome suffix arrays, ESA right-maximal exact match search, and SDSL FM-indexes\n\n"
         "Commands:\n"
         "  sufkit build --type sa|fm --input REF.fa[.gz] --output REF.sufidx [options]\n"
         "  sufkit query --index REF.sufidx (--pattern ACGT | --query Q.fa[.gz]) [options]\n"
-        "  sufkit mem --index REF.sufidx --query Q.fa[.gz] [options]\n"
+        "  sufkit right-maximal --index REF.sufidx --query Q.fa[.gz] [options]\n"
         "  sufkit inspect --index REF.sufidx\n"
         "  sufkit bench --profile smoke|quick|standard|full --output-dir DIR\n\n"
         "Run a command with --help for its option summary.\n";
@@ -228,10 +228,10 @@ int run_build(const std::vector<std::string>& arguments) {
     throw sufkit::Error(sufkit::ErrorCode::invalid_input, "--type must be sa or fm");
 }
 
-int run_mem(const std::vector<std::string>& arguments) {
+int run_right_maximal(const std::vector<std::string>& arguments) {
     if (arguments.size() == 1 && arguments.front() == "--help") {
         std::cout <<
-            "sufkit mem --index PATH --query Q.fa[.gz] [--min-length N]\n"
+            "sufkit right-maximal --index PATH --query Q.fa[.gz] [--min-length N]\n"
             "  [--strand forward|reverse|both]\n"
             "  [--algorithm auto|baseline|lcp|child|suffix-link|full]\n"
             "  [--lookup-algorithm auto|binary|lcp-binary|sapling-pwl|child]\n"
@@ -245,15 +245,15 @@ int run_mem(const std::vector<std::string>& arguments) {
     const auto info = sufkit::inspect_index(index_path);
     if (info.kind != sufkit::IndexKind::suffix_array) {
         throw sufkit::Error(sufkit::ErrorCode::unsupported_backend,
-            "MEM search requires a suffix-array index in sufkit 0.1.1");
+            "right-maximal exact match search requires a suffix-array index in sufkit 0.1.1");
     }
     auto queries = sufkit::app::read_fasta_records(options.require("--query"));
     if (queries.empty()) throw sufkit::Error(sufkit::ErrorCode::invalid_input, "query FASTA contains no records");
-    sufkit::MemOptions mem_options;
-    mem_options.min_length = sufkit::app::parse_unsigned(options.value_or("--min-length", "20"), "--min-length");
-    mem_options.strands = parse_strand(options.value_or("--strand", "forward"));
-    mem_options.algorithm = parse_mem_algorithm(options.value_or("--algorithm", "auto"));
-    mem_options.lookup_algorithm = parse_sa_search_algorithm(
+    sufkit::RightMaximalOptions right_maximal_options;
+    right_maximal_options.min_length = sufkit::app::parse_unsigned(options.value_or("--min-length", "20"), "--min-length");
+    right_maximal_options.strands = parse_strand(options.value_or("--strand", "forward"));
+    right_maximal_options.algorithm = parse_right_maximal_algorithm(options.value_or("--algorithm", "auto"));
+    right_maximal_options.lookup_algorithm = parse_sa_search_algorithm(
         options.value_or("--lookup-algorithm", "auto"));
     std::optional<std::uint64_t> max_matches;
     if (options.has("--max-matches"))
@@ -264,7 +264,7 @@ int run_mem(const std::vector<std::string>& arguments) {
     for (const auto& query : queries) {
         if (query.name.empty() || !names.insert(query.name).second)
             throw sufkit::Error(sufkit::ErrorCode::invalid_input, "query names must be non-empty and unique");
-        const auto result = index.find_mems(query.sequence, mem_options, max_matches);
+        const auto result = index.find_right_maximal_matches(query.sequence, right_maximal_options, max_matches);
         for (const auto& match : result.matches) {
             const auto sequence = index.sequence_info(match.sequence_id);
             std::cout << query.name << '\t' << match.sequence_id << '\t' << sequence.name << '\t'
@@ -273,7 +273,7 @@ int run_mem(const std::vector<std::string>& arguments) {
         }
         if (result.truncated) {
             std::cerr << "query " << query.name << " truncated: reported " << result.matches.size()
-                      << " of " << result.total_matches << " MEMs\n";
+                      << " of " << result.total_matches << " right-maximal exact matches\n";
         }
     }
     return 0;
@@ -473,7 +473,7 @@ int main(int argc, char** argv) {
         }
         if (command == "build") return run_build(arguments);
         if (command == "query") return run_query(arguments);
-        if (command == "mem") return run_mem(arguments);
+        if (command == "right-maximal") return run_right_maximal(arguments);
         if (command == "inspect") return run_inspect(arguments);
         if (command == "bench") return sufkit::app::run_benchmark(arguments);
         throw sufkit::Error(sufkit::ErrorCode::invalid_input, "unknown command: " + command);

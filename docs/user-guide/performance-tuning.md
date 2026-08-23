@@ -1,7 +1,7 @@
 # Performance tuning
 
 Always measure the operation that dominates the application. Build, load,
-count, locate, and MEM have different bottlenecks.
+count, locate, and right-maximal exact match have different bottlenecks.
 
 ## Construction
 
@@ -23,7 +23,7 @@ count, locate, and MEM have different bottlenecks.
   constructor peak memory or out-of-core construction.
 - Exact searches at least K bases perform up to K anchor lookups; shorter
   patterns use direct contig scan.
-- Sampled MEM requires `min_length>=K` and may trade more interval/extension
+- Sampled right-maximal exact match requires `min_length>=K` and may trade more interval/extension
   work for lower resident memory.
 - PWL model size is budgeted against the sampled SA payload when both are used.
 
@@ -46,14 +46,14 @@ routing thresholds.
 - Locate with many hits is dominated by row recovery, coordinate mapping,
   sorting, and output; range acceleration may barely affect total time.
 
-## MEM
+## right-maximal exact match
 
 Suffix-link reuse is the default because it avoids restarting from the root at
 most query positions. Record suffix-link success and root/fallback lookup
 counts before adding another lookup accelerator. PWL can improve the remaining
 lookups but has workload-dependent end-to-end impact.
 
-Use `for_each_mem` when results can be consumed online. Use `find_mems` for a
+Use `for_each_right_maximal_match` when results can be consumed online. Use `find_right_maximal_matches` for a
 deterministic vector and apply `max_matches` to bound retained result memory.
 The full match count still requires complete traversal.
 

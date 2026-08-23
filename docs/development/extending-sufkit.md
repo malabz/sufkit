@@ -22,12 +22,12 @@ local implementation detail from becoming an incompatible public format.
    persisted. Confirm whether old builds can read the generic payload.
 8. Add availability descriptors, CLI values, inspection, save/load, disabled
    build behavior, and 32/64-bit tests.
-9. Differentially compare SA order, exact results, MEM results, deterministic
+9. Differentially compare SA order, exact results, right-maximal exact match results, deterministic
    serialization, and concurrency against divsufsort.
 10. Add an isolated constructor benchmark with time, CPU, peak RSS, checksum,
     threads, and explicit auto-routing evidence.
 11. Verify K=1 and sampled K>1 paths, including backend-provided LCP, against
-    the same exact/MEM checksums.
+    the same exact/right-maximal exact match checksums.
 
 CaPS is the reference example: optional compile-time availability, private
 Parlay scheduler, stable IDs 3/4, generic payload, and a conservative 1 GiB
@@ -66,10 +66,10 @@ compatible edit.
 8. Add work counters that explain the intended optimization without making
    the index mutable.
 
-## Add a MEM algorithm
+## Add a right-maximal exact match algorithm
 
-1. Preserve the formal maximality, hard-break, contig, strand, and coordinate
-   contracts.
+1. Preserve exactness, right maximality, hard-break, contig, strand, and
+   coordinate contracts; do not imply left maximality.
 2. Declare required `SaAcceleration` data and explicit unavailable behavior.
 3. Share candidate verification and result emission with existing paths.
 4. Reset safely when interval reuse or navigation cannot be proved valid.
@@ -77,9 +77,22 @@ compatible edit.
    every existing path for random small references and queries.
 6. Test streaming callback, vector ordering, retention N=0/1/many, callback
    exceptions, both strands, and concurrency.
-7. Use MUMmer4 only as a black-box compatible-subset comparator.
+7. Use MUMmer4 only as a black-box dataset-specific comparison. It emits MEMs,
+   so equality on one dataset does not establish semantic equivalence.
 8. Benchmark query bases/s, matches/s, lookup/reuse counters, index size, and
    construction phases separately.
+
+## Add true MEM support
+
+1. Introduce MEM-specific types and methods only after both maximality sides
+   are formally defined and tested.
+2. Add a brute-force oracle that independently rejects left- and
+   right-extendable candidates.
+3. Differentially compare the future MEM set with the right-maximal candidate
+   set and explain every filtered candidate.
+4. Re-run MUMmer4-compatible-subset comparisons under the true MEM contract.
+5. Do not silently change `RightMaximalMatch` semantics; retain it as the
+   broader candidate API.
 
 ## Add a `.sufidx` section or format version
 

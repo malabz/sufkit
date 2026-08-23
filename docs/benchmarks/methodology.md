@@ -1,4 +1,4 @@
-# Exact and MEM benchmark methodology
+# Exact and right-maximal exact match benchmark methodology
 
 The benchmark is a correctness-gated, deterministic comparison of the naive
 scanner, standalone divsufsort32/64 suffix arrays, and the fixed SDSL FM-index.
@@ -154,17 +154,17 @@ and checksum equality remains mandatory.
 The `standard` and `full` profiles are intended for explicit local runs and are
 not part of the normal release acceptance commands.
 
-## MEM workload (0.1.1)
+## right-maximal exact match workload (0.1.1)
 
 ```bash
 sufkit bench \
-  --workload mem \
+  --workload right-maximal \
   --profile quick \
   --scenarios mixed,repeat-rich \
-  --methods mem-baseline,mem-lcp,mem-child,mem-suffix-link,mem-full,mummer4 \
+  --methods right-maximal-baseline,right-maximal-lcp,right-maximal-child,right-maximal-suffix-link,right-maximal-full,mummer4 \
   --min-lengths 20,50,100 \
   --mummer4 /path/to/mummer \
-  --output-dir results/mem-quick
+  --output-dir results/right-maximal-quick
 ```
 
 The five internal methods build exactly the auxiliary structures their names
@@ -175,14 +175,14 @@ and `-load` for measured queries. Its reported query time therefore includes
 external process startup and index loading and must not be interpreted as an
 in-process query-only comparison.
 
-`mem-suffix-link-binary` and `mem-suffix-link-sapling` build the same
+`right-maximal-suffix-link-binary` and `right-maximal-suffix-link-sapling` build the same
 SA+ISA+LCP layout and differ only in initialization/fallback lookup. Their
 outputs report suffix-link success rate, previous-empty states, learned versus
 binary lookup counts, character/row accesses, prediction errors, search
-windows, and learned model space. `mem-full` remains an explicit CHILD
+windows, and learned model space. `right-maximal-full` remains an explicit CHILD
 ablation and is not an automatic default.
 
-The MEM workload also accepts `--profile standard`. It generates 32 MiB per
+The right-maximal exact match workload also accepts `--profile standard`. It generates 32 MiB per
 scenario with 5,000 queries of 256 bp and five measured query repetitions.
 When comparing the standard profile across the same six scenarios as the main
 benchmark, pass them explicitly with
@@ -191,4 +191,4 @@ benchmark, pass them explicitly with
 All internal and MUMmer4 rows are normalized to the same zero-based,
 query-first tuple checksum. A mismatch preserves diagnostic TSV files and
 returns nonzero. See
-[the 0.1.1 MEM report](results/v0.1.1-mem.md) for the measured release run.
+[the 0.1.1 right-maximal exact match report](results/v0.1.1-right-maximal.md) for the measured release run.

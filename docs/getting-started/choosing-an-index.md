@@ -9,10 +9,10 @@ operation first, then by build time, query throughput, and memory budget.
 |---|---|---|
 | Exact count with a compressed index | Huffman FM | Smallest available FM backend and stable default |
 | Faster FM count/locate, space is secondary | EPR FM | Faster in current DNA quick runs, but much larger and slower to load |
-| MEM search | SA+ISA+LCP | Suffix-link MEM is the current default and strongest general path |
+| right-maximal exact match search | SA+ISA+LCP | Suffix-link right-maximal exact match is the current default and strongest general path |
 | Direct SA row access or ESA research | Standalone SA | Exposes `suffix_at` and supports optional auxiliary structures |
 | Large, multithreaded SA construction | CaPS-SA | Shared-memory parallel construction; measure peak memory first |
-| Smaller resident/serialized standalone SA | Text-position sampled SA | Complete exact/MEM results with extra query work and constraints |
+| Smaller resident/serialized standalone SA | Text-position sampled SA | Complete exact/right-maximal exact match results with extra query work and constraints |
 | Experimental exact lookup acceleration | SA + Sapling PWL | Can narrow binary search for patterns at least model k |
 | Suffix-tree-style interval research | SA+LCP+CHILD | Explicit capability; not an automatic performance choice |
 
@@ -55,7 +55,7 @@ and row-based auxiliaries use approximately 1/K the entries.
 Use sampling when loaded memory or serialized size matters more than the extra
 residue recovery work. It does not reduce the complete-SA construction peak.
 Exact count/locate remain complete; patterns shorter than K use a direct
-contig scan, `equal_range` is unavailable, and MEM requires `min_length>=K`.
+contig scan, `equal_range` is unavailable, and right-maximal exact match requires `min_length>=K`.
 See [sampled suffix arrays](../concepts/sampled-suffix-arrays.md).
 
 ## SA acceleration layout
@@ -63,14 +63,14 @@ See [sampled suffix arrays](../concepts/sampled-suffix-arrays.md).
 | `SaAcceleration` | Persisted data | Main purpose |
 |---|---|---|
 | `none` | SA | Smallest standalone SA and baseline search |
-| `lcp` | SA+LCP | LCP-assisted search and MEM ablation |
+| `lcp` | SA+LCP | LCP-assisted search and right-maximal exact match ablation |
 | `lcp_child` | SA+LCP+CHILD | Explicit ESA interval navigation |
-| `lcp_suffix_link` | SA+ISA+LCP | Default suffix-link MEM path |
+| `lcp_suffix_link` | SA+ISA+LCP | Default suffix-link right-maximal exact match path |
 | `full` | SA+ISA+LCP+CHILD | Combined research/ablation capability |
 
 CHILD remains useful for future suffix-tree-style algorithms, repeat
 enumeration, MUM/MAM research, and explicit interval traversal. It is not
-automatically selected for exact search or MEM because current benchmarks
+automatically selected for exact search or right-maximal exact match because current benchmarks
 show negative or inconsistent speed effects.
 
 ## Learned SA lookup
@@ -80,7 +80,7 @@ from the first k bases, then uses exponential bracketing and local LCP-aware
 binary search. Prediction is only a hint, so correctness does not depend on
 model accuracy.
 
-Use it when exact patterns are at least k or suffix-link MEM has enough root
+Use it when exact patterns are at least k or suffix-link right-maximal exact match has enough root
 lookups/fallbacks to amortize the model. It is disabled by default. The current
 default model uses k=20 and a budget of 1% of the raw SA payload.
 

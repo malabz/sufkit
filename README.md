@@ -2,7 +2,11 @@
 
 `sufkit` is a C++17 library and command-line toolkit for genome-oriented
 suffix arrays, SDSL compressed suffix arrays (FM-indexes), exact pattern
-search, and maximal exact match (MEM) search.
+search, and right-maximal exact match search.
+
+The current right-maximal search is **not** a MEM implementation: it guarantees
+exactness and right maximality but does not yet guarantee left maximality. MEM
+names are reserved for a future two-sided implementation.
 
 The library is designed for two audiences:
 
@@ -24,7 +28,7 @@ release behavior is not confused with development behavior.
 |---|---|---|
 | divsufsort32/64 suffix-array construction | Released | Used for ordinary SA builds |
 | CaPS-SA 32/64 parallel construction | Unreleased | Auto-selected only for at least 1 GiB of symbols with more than one thread |
-| SA+ISA+Kasai LCP suffix-link MEM search | Released | Default SA acceleration |
+| SA+ISA+LCP suffix-link right-maximal search | Released behavior; terminology corrected on `main` | Default SA acceleration |
 | ESA CHILD construction and traversal | Released, explicit | Never auto-selected |
 | SDSL Huffman CSA | Released | Default FM backend |
 | SDSL balanced and DNA EPR CSA | Unreleased | Explicit only |
@@ -60,19 +64,19 @@ Build and query a compressed index:
   --pattern ACGTACGT --strand both
 ```
 
-Build a suffix array and enumerate MEMs:
+Build a suffix array and enumerate right-maximal exact matches:
 
 ```bash
 ./build/release/sufkit build --type sa \
   --input reference.fa.gz --output reference.sa.sufidx
 
-./build/release/sufkit mem --index reference.sa.sufidx \
+./build/release/sufkit right-maximal --index reference.sa.sufidx \
   --query queries.fa.gz --min-length 20 --strand both
 ```
 
 All public coordinates are zero-based and contig-local. Exact patterns accept
-only A/C/G/T after case normalization. MEM queries treat every other symbol as
-a hard break.
+only A/C/G/T after case normalization. Right-maximal queries treat every other
+symbol as a hard break.
 
 ## C++ integration
 
@@ -107,22 +111,22 @@ auto loaded = sufkit::FmIndex::load("reference.sufidx");
 auto result = loaded.locate("ACGTACGT");
 ```
 
-Minimal MEM example:
+Minimal right-maximal exact match example:
 
 ```cpp
 auto reference = sufkit::GenomeReference::from_fasta("reference.fa.gz");
 auto index = sufkit::SuffixArray::build(reference); // SA+ISA+LCP
 
-sufkit::MemOptions options;
+sufkit::RightMaximalOptions options;
 options.min_length = 20;
 options.strands = sufkit::StrandMode::both;
-auto result = index.find_mems("GGGACGTACGTNNNGATTACA", options);
+auto result = index.find_right_maximal_matches("GGGACGTACGTNNNGATTACA", options);
 ```
 
 To reduce resident and serialized SA memory, set
 `SuffixArrayBuildOptions::sampling_rate` or pass `--sa-sampling-rate K`.
 The builder still constructs a complete SA before compacting it, so sampling
-does not reduce constructor peak memory. Sampled MEM search requires
+does not reduce constructor peak memory. Sampled right-maximal search requires
 `min_length >= K`; direct `equal_range()` is intentionally unavailable because
 the sampled rows do not represent the complete suffix order.
 

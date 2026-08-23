@@ -37,7 +37,7 @@ one thread and a CaPS-enabled build. Explicit CaPS requires at least 16
 logical symbols. SA options are rejected for FM builds.
 
 For K>1, the stored SA retains text positions divisible by K. `count` and
-`locate` recover complete results; `equal_range` is unavailable and MEM
+`locate` recover complete results; `equal_range` is unavailable and right-maximal exact match
 requires `min_length>=K`.
 
 FM option:
@@ -78,10 +78,10 @@ query_id	sequence_id	sequence_name	start	end	strand
 Coordinates are zero-based and contig-local; `end` is exclusive. A truncation
 warning on stderr reports returned and total hits.
 
-## `sufkit mem`
+## `sufkit right-maximal`
 
 ```text
-sufkit mem --index PATH --query Q.fa[.gz]
+sufkit right-maximal --index PATH --query Q.fa[.gz]
   [--min-length N]
   [--strand forward|reverse|both]
   [--algorithm auto|baseline|lcp|child|suffix-link|full]
@@ -100,7 +100,7 @@ query_id	sequence_id	sequence_name	reference_start	query_start	length	strand
 
 Both reference and query positions are zero-based. Reverse matches use the
 original forward-query coordinate system. Unlike exact both-strand search,
-forward and reverse MEMs remain orientation-distinct.
+forward and reverse right-maximal exact matches remain orientation-distinct.
 
 ## `sufkit inspect`
 
@@ -127,10 +127,10 @@ Main controls include `--scenarios`, `--methods`, `--pattern-lengths`,
 `--locate-limits`, `--seed`, repetitions, warmups, learned-model parameters,
 `--fm-query-modes`, and `--fm-batch-widths`.
 
-MEM workload:
+right-maximal exact match workload:
 
 ```text
-sufkit bench --workload mem --profile smoke|quick|standard|full \
+sufkit bench --workload right-maximal --profile smoke|quick|standard|full \
   --output-dir DIR [options]
 ```
 

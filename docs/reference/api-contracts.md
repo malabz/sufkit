@@ -19,10 +19,11 @@ may be called concurrently.
   sequences.
 - Reference symbols normalize to A/C/G/T/N.
 - Exact patterns must be non-empty A/C/G/T after upper-casing.
-- MEM query non-ACGT symbols are hard breaks.
+- Right-maximal query non-ACGT symbols are hard breaks.
 - `min_length=0`, `threads=0`, invalid widths, budgets, batch widths, and
   incompatible explicit algorithms are rejected.
-- `sampling_rate=0` is rejected; sampled MEM also rejects `min_length < K`.
+- `sampling_rate=0` is rejected; sampled right-maximal search also rejects
+  `min_length < K`.
 
 ## Ranges and coordinates
 
@@ -34,8 +35,8 @@ SA (`sampling_rate>1`) complete exact results span residue-specific intervals,
 so `equal_range` explicitly returns `unsupported_backend`; use `count` or
 `locate` instead.
 
-`Match::position` and `MemMatch::reference_position` are zero-based,
-contig-local positions. `MemMatch::query_position` is zero-based in the
+`Match::position` and `RightMaximalMatch::reference_position` are zero-based,
+contig-local positions. `RightMaximalMatch::query_position` is zero-based in the
 original forward query. Sequence IDs follow reference input order.
 
 ## Ordering and truncation
@@ -43,17 +44,20 @@ original forward query. Sequence IDs follow reference input order.
 Exact vector results are ordered by sequence ID, position, length, and strand.
 Both-strand palindromic exact hits are merged with strand `both`.
 
-MEM vector results are ordered by query position, sequence ID, reference
-position, length, and strand. Forward and reverse MEMs remain distinct.
+Right-maximal results are ordered by query position, sequence ID, reference
+position, length, and strand. Forward and reverse results remain distinct.
+
+`RightMaximalMatch` guarantees exactness and non-extendability on the right. It
+does not guarantee left maximality and is not a MEM contract.
 
 `max_hits` and `max_matches` bound retained output, not the complete count.
 `total_hits`/`total_matches` remain accurate and `truncated` reports omission.
-MEM N=0 is therefore count-only but still performs full enumeration.
+Right-maximal N=0 is therefore count-only but still performs full enumeration.
 
 ## Callbacks and statistics
 
-`MemCallback` executes synchronously on the caller thread. Exceptions propagate
-unchanged. Streaming order is deliberately unspecified.
+`RightMaximalCallback` executes synchronously on the caller thread. Exceptions
+propagate unchanged. Streaming order is deliberately unspecified.
 
 Build and query statistics pointers are optional caller-owned mutable outputs.
 They are reset/populated by the call and are not part of index immutability.
@@ -93,7 +97,7 @@ logical text length and stored row count separate:
 
 `suffix_at(row)` addresses `[0,suffix_count)`. Exact count/locate preserve
 complete results through residue recovery; patterns shorter than K use a
-correct per-contig scan. MEM requires `min_length>=K`.
+correct per-contig scan. Right-maximal search requires `min_length>=K`.
 
 ## Complexity notes
 
@@ -105,8 +109,8 @@ Complexity depends on backend and result size. High-level guidance:
 - locate: at least O(z) result work plus backend recovery;
 - Complete or sampled generalized Kasai LCP and ISA: O(n) construction work,
   with O(ceil(n/K)) persisted rows for sampling rate K;
-- MEM: depends on query positions, interval reuse success, repeats, and output
-  size; use statistics and benchmark representative queries.
+- Right-maximal search: depends on query positions, interval reuse success,
+  repeats, and output size; use statistics and representative queries.
 
 No public timing or memory constant is guaranteed across compiler, hardware,
 backend revision, or genome distribution.

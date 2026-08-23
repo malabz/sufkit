@@ -71,7 +71,7 @@ auto sampled = sufkit::SuffixArray::build(reference, sampled_options);
 
 `sampled.sampling_rate()` returns four and
 `sampled.info().suffix_count` is the retained row count. Use `count` or
-`locate`, not `equal_range`, and keep MEM `min_length` at least four.
+`locate`, not `equal_range`, and keep right-maximal exact match `min_length` at least four.
 
 Enable the experimental PWL lookup independently:
 
@@ -155,23 +155,23 @@ Output order equals input order. Width zero selects 16; explicit widths must
 be 1–256. All patterns are validated before search, so one invalid pattern
 rejects the whole call. Locate remains scalar.
 
-## MEM search
+## right-maximal exact match search
 
 Vector API:
 
 ```cpp
-sufkit::MemOptions options;
+sufkit::RightMaximalOptions options;
 options.min_length = 20;
 options.strands = sufkit::StrandMode::both;
-options.algorithm = sufkit::MemSearchAlgorithm::auto_select;
+options.algorithm = sufkit::RightMaximalSearchAlgorithm::auto_select;
 
-auto result = sa.find_mems(query, options, 1000);
+auto result = sa.find_right_maximal_matches(query, options, 1000);
 ```
 
 Streaming API:
 
 ```cpp
-sa.for_each_mem(query, options, [](const sufkit::MemMatch& match) {
+sa.for_each_right_maximal_match(query, options, [](const sufkit::RightMaximalMatch& match) {
     consume(match);
 });
 ```
@@ -197,7 +197,7 @@ message for diagnostics.
 
 ## Concurrent queries
 
-After build/load, const `count`, `locate`, `equal_range`, and MEM operations do
+After build/load, const `count`, `locate`, `equal_range`, and right-maximal exact match operations do
 not mutate the index. Multiple threads may call them on the same object. Any
 statistics object passed to a query is mutable caller-owned output and must be
 thread-local or otherwise synchronized.

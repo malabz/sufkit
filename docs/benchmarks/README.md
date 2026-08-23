@@ -72,7 +72,7 @@ CHILD is an explicit research capability and a negative optimization here.
 
 See [Sapling results](results/unreleased-sapling.md).
 
-## MEM
+## right-maximal exact match
 
 Released 0.1.1 established suffix-link reuse as the main acceleration. The
 subsequent isolated-worker PWL comparison measured:
@@ -88,8 +88,8 @@ PWL improved five of six recorded combinations but regressed repeat-rich at
 minimum length 20 by about 4.2%. Suffix-link remains the default; PWL fallback
 and full CHILD remain explicit.
 
-See [released MEM results](results/v0.1.1-mem.md) and
-[updated Sapling/MEM results](results/unreleased-sapling.md).
+See [released right-maximal exact match results](results/v0.1.1-right-maximal.md) and
+[updated Sapling/right-maximal exact match results](results/unreleased-sapling.md).
 
 ## FM-index
 
@@ -112,7 +112,7 @@ See [FM backend results](results/unreleased-fm.md).
 
 - Correctness checksum disagreement makes a run fail; it is never summarized
   as successful performance.
-- Build, save, load, count, locate, and MEM are separate operations.
+- Build, save, load, count, locate, and right-maximal exact match are separate operations.
 - Method-local worker processes isolate peak RSS.
 - Medians follow warm-up and preserve measured repetition counts in local run
   artifacts.

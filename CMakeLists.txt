@@ -125,7 +125,7 @@ if(SUFKIT_BUILD_CLI)
             apps/benchmark_data.cpp
             apps/benchmark_output.cpp
             apps/benchmark_runner.cpp
-            apps/mem_benchmark.cpp)
+            apps/right_maximal_benchmark.cpp)
     else()
         list(APPEND _sufkit_cli_sources apps/benchmark_disabled.cpp)
     endif()
@@ -168,12 +168,12 @@ if(SUFKIT_BUILD_TESTS)
                 -DOUTPUT_ROOT=${CMAKE_CURRENT_BINARY_DIR}/test-benchmark
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_benchmark.cmake)
         set_tests_properties(sufkit_benchmark_smoke PROPERTIES TIMEOUT 180)
-        add_test(NAME sufkit_mem_benchmark_smoke
+        add_test(NAME sufkit_right_maximal_benchmark_smoke
             COMMAND ${CMAKE_COMMAND}
                 -DSUFKIT_EXECUTABLE=$<TARGET_FILE:sufkit_cli>
-                -DOUTPUT_ROOT=${CMAKE_CURRENT_BINARY_DIR}/test-mem-benchmark
-                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_mem_benchmark.cmake)
-        set_tests_properties(sufkit_mem_benchmark_smoke PROPERTIES TIMEOUT 180)
+                -DOUTPUT_ROOT=${CMAKE_CURRENT_BINARY_DIR}/test-right-maximal-benchmark
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_right_maximal_benchmark.cmake)
+        set_tests_properties(sufkit_right_maximal_benchmark_smoke PROPERTIES TIMEOUT 180)
     endif()
 endif()
 
@@ -184,8 +184,8 @@ if(SUFKIT_BUILD_EXAMPLES)
     target_link_libraries(sufkit_example_exact_sa PRIVATE sufkit::sufkit)
     add_executable(sufkit_example_fm_batch examples/fm_batch.cpp)
     target_link_libraries(sufkit_example_fm_batch PRIVATE sufkit::sufkit)
-    add_executable(sufkit_example_mem_stream examples/mem_stream.cpp)
-    target_link_libraries(sufkit_example_mem_stream PRIVATE sufkit::sufkit)
+    add_executable(sufkit_example_right_maximal_stream examples/right_maximal_stream.cpp)
+    target_link_libraries(sufkit_example_right_maximal_stream PRIVATE sufkit::sufkit)
     add_executable(sufkit_example_inspect_error examples/inspect_error.cpp)
     target_link_libraries(sufkit_example_inspect_error PRIVATE sufkit::sufkit)
 endif()

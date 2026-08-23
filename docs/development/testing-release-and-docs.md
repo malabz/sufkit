@@ -11,7 +11,7 @@ ctest --preset release --output-on-failure
 ```
 
 The suite must cover reference parsing/normalization, exact semantics, every
-available constructor/backend, MEM differential results, persistence,
+available constructor/backend, right-maximal exact match differential results, persistence,
 corruption rejection, inspection, CLI integration, and benchmark smoke gates.
 
 ### Sanitizers
@@ -46,10 +46,10 @@ every canonical example. Generated HTML is not committed.
 | Change | Required evidence |
 |---|---|
 | Reference model | Plain/gzip parity, boundaries, normalized fingerprint |
-| SA constructor | Full order/permutation, 32/64 parity, exact/MEM parity |
+| SA constructor | Full order/permutation, 32/64 parity, exact/right-maximal exact match parity |
 | SA sampling/LCP | K=1/K>1 order, sampled ISA/LCP, recovery parity, 1.3 corruption |
 | Exact algorithm | Range/count/sorted locate parity for all strands |
-| MEM algorithm | Brute-force random oracle plus all internal-mode parity |
+| right-maximal exact match algorithm | Brute-force random oracle plus all internal-mode parity |
 | FM backend/batch | Scalar/width/backend range, count, locate checksum parity |
 | Persistence | Round trip, old fixtures, corruption and allocation-bound tests |
 | Concurrency | Shared immutable index with thread-local statistics |

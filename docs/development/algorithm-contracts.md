@@ -54,7 +54,7 @@ by K, preserving lexicographic order. Build ISA by assigning row to
 The generalized Kasai scan visits sampled positions `p=sample*K`. For row r>0,
 compare against `SA[r-1]` from the previous retained common-prefix length,
 store `LCP[r]`, then reduce retained length by K with saturation at zero. K=1
-is ordinary Kasai. Hard encoded symbols participate in suffix ordering but MEM
+is ordinary Kasai. Hard encoded symbols participate in suffix ordering but right-maximal exact match
 code treats them as boundaries.
 
 CaPS produces complete LCP during merging. When K>1, the LCP between adjacent
@@ -66,9 +66,9 @@ Exact sampled recovery searches pattern suffixes for every residue r in
 omitted prefix and contig boundary. If pattern length is below K, direct contig
 scan is the correctness fallback. `equal_range` is rejected for K>1.
 
-Sampled MEM uses anchor length `min_length-K+1`, iterates query residue classes
-in K steps, extends candidates left by at most K and right to maximality, and
-rejects an anchor when an earlier sampled anchor belongs to the same MEM.
+Sampled right-maximal search uses anchor length `min_length-K+1`, iterates query
+residue classes in K steps, maps sampled anchors to candidate starts, extends
+right to maximality, and rejects duplicate anchors for the same output match.
 
 ## CHILD table
 
@@ -138,26 +138,26 @@ the complete count.
 FM `operator[]` may be used for bounded materialization; unbounded operations
 may use SDSL locate facilities if result semantics remain identical.
 
-## MEM baseline
+## Right-maximal exact match baseline
 
 Split a query orientation into maximal canonical A/C/G/T runs. For each start
 that can support `min_length`:
 
 1. find the min-length prefix range;
 2. compute right LCE for candidate suffixes;
-3. reject non-left-maximal candidates;
-4. emit valid right- and left-maximal reference/query pairs; and
+3. extend and verify the current right boundary;
+4. emit valid right-maximal reference/query pairs; and
 5. enforce contig and query-run bounds.
 
 Avoid constructing suffix substrings. Duplicate generation within a path must
 be normalized before public vector comparison.
 
-## LCP and CHILD MEM paths
+## LCP and CHILD right-maximal exact match paths
 
 LCP mode uses adjacent common-prefix information to expand/enumerate candidate
 intervals without repeating all suffix characters. CHILD mode navigates a
-query start top-down from the root. Both must call the same maximality and
-coordinate emission logic as baseline.
+query start top-down from the root. Both must call the same exactness,
+right-maximality, and coordinate emission logic as baseline.
 
 ## Suffix-link reuse
 
@@ -172,12 +172,16 @@ length, invalid shifted text position, degenerate expansion, or failed
 verification. Any failure resets to a root lookup. `full` combines explicit
 CHILD navigation with the same reuse contract.
 
-## MEM maximality and coordinates
+## Right maximality and coordinates
 
 A candidate `(r,q,l)` is valid only if all l canonical symbols equal. It is
-left maximal when either side is at a boundary or preceding symbols differ;
-right maximal is analogous for following symbols. Reference contig bounds and
-query canonical-run bounds are the authority.
+right maximal when either side is at its right boundary or the following
+symbols differ. Reference contig bounds and query canonical-run bounds are the
+authority. No left-maximality guarantee is made by this API.
+
+Consequently, these matches are candidates for a future MEM filter, not MEMs.
+Future MEM support must add and independently test the analogous preceding-
+symbol condition.
 
 Reverse orientation output position is:
 

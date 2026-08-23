@@ -1,5 +1,10 @@
 # Sapling-style learned-index benchmark (Unreleased)
 
+> Terminology correction: the non-exact workload was originally labeled MEM.
+> It measures the current right-maximal exact match candidate API, which does
+> not guarantee left maximality. Timings and checksums are unchanged and no
+> benchmark rerun was performed solely for the rename.
+
 ## Environment and scope
 
 Implementation commit: `192b392d4bf0e143bef96d3d232800e3d4548002`.
@@ -14,12 +19,15 @@ indexed methods used one query thread. The deterministic seed was 20260822.
 
 Exact quick used 4,194,304 reference bases and 1,000 queries per scenario.
 Mixed fingerprint was `c06bdfecb0dd3f1e`; repeat-rich fingerprint was
-`72e633da51d3d5e1`. MEM quick used the same reference scale and 256,000 query
+`72e633da51d3d5e1`. right-maximal exact match quick used the same reference scale and 256,000 query
 bases. Its fingerprints were `e03e5f311a2d59c1` and `f1783ace2d64ab44`.
 
 The learned configuration was k=20 with an automatic 100-basis-point (1% raw
 SA) budget. The resulting model was 98,352 bytes. That is 0.586% of the raw
 32-bit SA and approximately 0.18% of the complete persisted SA+ISA+LCP index.
+
+Commands below use the current terminology-corrected workload/method names;
+the measured executable used their former `mem-*` spellings.
 
 ```bash
 ./build/release/sufkit bench \
@@ -39,23 +47,23 @@ SA) budget. The resulting model was 98,352 bytes. That is 0.586% of the raw
   --output-dir build/bench/sapling-exact-quick
 
 ./build/release/sufkit bench \
-  --workload mem --profile quick \
+  --workload right-maximal --profile quick \
   --scenarios mixed,repeat-rich \
-  --methods mem-suffix-link-binary,mem-suffix-link-sapling,mem-full \
+  --methods right-maximal-suffix-link-binary,right-maximal-suffix-link-sapling,right-maximal-full \
   --min-lengths 20,50,100 \
-  --output-dir build/bench/sapling-mem-quick
+  --output-dir build/bench/sapling-right-maximal-quick
 
 ./build/release/sufkit bench \
-  --workload mem --profile quick \
+  --workload right-maximal --profile quick \
   --scenarios mixed,repeat-rich \
-  --methods mem-suffix-link-binary,mem-suffix-link-sapling,mummer4 \
+  --methods right-maximal-suffix-link-binary,right-maximal-suffix-link-sapling,mummer4 \
   --min-lengths 20,50,100 \
   --mummer4 /path/to/mummer4/mummer \
-  --output-dir build/bench/sapling-mem-mummer4-quick
+  --output-dir build/bench/sapling-right-maximal-mummer4-quick
 ```
 
-Six-scenario exact smoke, four-scenario MEM smoke, the two quick runs, and
-minimal user-FASTA exact/MEM integration runs all completed successfully. No
+Six-scenario exact smoke, four-scenario right-maximal exact match smoke, the two quick runs, and
+minimal user-FASTA exact/right-maximal exact match integration runs all completed successfully. No
 standard, full, or large real-genome run was executed.
 
 ## Correctness
@@ -66,11 +74,12 @@ hits and coordinate checksums. Randomized unit tests additionally compared the
 four SA range algorithms directly, including no-hit insertion positions, and
 normalized every empty result to `[0,0)`.
 
-For every MEM dataset and minimum length, suffix-link+binary,
-suffix-link+PWL, and explicit full produced the same normalized MEM checksum.
+For every right-maximal dataset and minimum length, suffix-link+binary,
+suffix-link+PWL, and explicit full produced the same normalized candidate
+checksum.
 Quick checksums were:
 
-| Scenario | Min length | MEMs | Checksum |
+| Scenario | Min length | Candidates | Checksum |
 |---|---:|---:|---|
 | mixed | 20 | 1,675 | `963f83ea8873b75f` |
 | mixed | 50 | 1,666 | `e0c4221f42ad284b` |
@@ -81,10 +90,11 @@ Quick checksums were:
 
 The current query sets were also rerun against the local MUMmer4 4.0.1 launcher
 (SHA-256 `db2aa7dea6050147d9fb3a6c5a39c6a0733bccac2d580ac7c3a2fb9f12ff158e`).
-For all six quick dataset/minimum-length combinations, MUMmer4 produced the
-same MEM totals and checksums shown above. This current rerun was necessary
-because a reference fingerprint alone does not fingerprint the generated
-query set.
+For all six quick dataset/minimum-length combinations, MUMmer4's MEM output
+happened to produce the same totals and checksums shown above. This is
+dataset-specific regression evidence, not proof that the current sufkit API
+has the two-sided MEM contract. The rerun was necessary because a reference
+fingerprint alone does not fingerprint the generated query set.
 
 ## Exact-query performance
 
@@ -111,7 +121,7 @@ length, with p99 windows usually 512 rows. Repeat-rich error was roughly
 157-206 rows, with p99 windows around 1,024 rows. Repetition therefore reduced
 model precision but did not defeat local search.
 
-## MEM-query performance
+## right-maximal exact match-query performance
 
 Median query-only wall time in seconds; speedup is suffix-link+binary divided
 by suffix-link+PWL time.
@@ -129,7 +139,7 @@ Suffix-link success was 99.25-99.70%, yet 14,986-68,266 initialization or
 empty/fallback lookups remained per workload. PWL accelerated those lookups
 enough to improve five of six cases. Repeat-rich/min-20 regressed by about
 4.2%, which remains inside the provisional 5% regression boundary but shows
-why the MEM learned path should remain explicit until a larger real-genome
+why the right-maximal exact match learned path should remain explicit until a larger real-genome
 study confirms the policy.
 
 The MUMmer4 black-box median `-load` plus external-process times were
@@ -143,11 +153,11 @@ reference points, not kernel-level speed comparisons.
 
 The PWL construction phase took about 5.5-6.1 ms on 4 MiB references. The
 complete serialized index grew from about 54.53 MB to 54.62 MB. In the
-isolated MEM workers, peak RSS changed from 180.50 to 180.78 MB on mixed and
+isolated right-maximal exact match workers, peak RSS changed from 180.50 to 180.78 MB on mixed and
 from 184.85 to 185.18 MB on repeat-rich. By comparison, explicit full CHILD
 indexes were about 71.30 MB and peaked at 276-281 MB.
 
-Every exact method and every internal MEM method now executes in a separate
+Every exact method and every internal right-maximal exact match method now executes in a separate
 worker process. Peak RSS is therefore method-local rather than a high-water
 mark inherited from a previous method. SA, ISA, LCP, CHILD, and PWL build phase
 times are recorded separately in the TSV output.
@@ -166,7 +176,7 @@ remains visible.
 | 24 | 781,861 | 527,983 | 98,352 |
 
 k=16 was fastest for aggregate exact count on this synthetic dataset. k=20
-remains the API default because it covers the default MEM minimum length
+remains the API default because it covers the default right-maximal exact match minimum length
 without changing the locked query contract; the benchmark makes the tradeoff
 visible rather than treating 20 as universally optimal.
 
@@ -186,7 +196,7 @@ this sweep and much larger budgets are not justified.
 ## Decision
 
 The learned index is technically viable and useful, especially for exact
-count and for MEM workloads with many unresolved lookups. It remains opt-in in
+count and for right-maximal exact match workloads with many unresolved lookups. It remains opt-in in
 this revision. The next promotion gate is a user-triggered real-genome run
 covering chromosome-scale mixed/repeat-rich references and representative
 high-similarity and no-hit query groups. CHILD remains available but disabled
