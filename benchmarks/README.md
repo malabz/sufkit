@@ -1,45 +1,30 @@
-# Benchmarks
+# Benchmark source layout
 
-The V1 benchmark is compiled into the `sufkit bench` command so the same
-installed executable can measure generated or user-supplied genome data.
-Its implementation is split across `apps/benchmark*.cpp`; the benchmark
-contract, TSV schema, correctness gate, and invocation examples are documented in
-`docs/benchmarks/methodology.md`.
+The installed `sufkit bench` command owns deterministic exact, FM, sampled-SA,
+and right-maximal workloads. The non-installed developer targets are:
 
-Use the smoke profile for a fast correctness check:
+| Target | Purpose |
+|---|---|
+| `sufkit_sa_build_bench` | Isolated divsufsort/CaPS construction, sampling, and auxiliary phases |
+| `sufkit_low_level_bench` | Scalar/SSE comparison-kernel correctness and timing |
+| `sufkit_query_allocation_bench` | Query allocation observations outside timed passes |
+| `sufkit_query_memory_bench` | Separate build/load/query current and peak RSS workers |
 
-```bash
-./build/release/sufkit bench \
-  --profile smoke \
-  --output-dir build/bench/smoke
-```
-
-Run the fixed approximately 4 MiB profile explicitly when performance numbers
-are needed:
+Build the benchmark targets with:
 
 ```bash
-./build/release/sufkit bench \
-  --profile quick \
-  --output-dir build/bench/quick
+cmake -S . -B build/bench-release \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DSUFKIT_BUILD_BENCHMARKS=ON
+cmake --build build/bench-release -j
 ```
 
-`standard` and `full` are opt-in large profiles. User FASTA input is accepted
-with `--reference` and optional `--queries`; the benchmark never downloads a
-dataset automatically.
+The authoritative command profiles, TSV schemas, timing scopes, correctness
+gates, and reproducibility rules are in the
+[benchmark methodology](../docs/benchmarks/methodology.md). Current conclusions
+and the source-only evidence entry point are in the
+[benchmark summary](../docs/benchmarks/README.md).
 
-Parallel suffix-array construction has a separate executable so CaPS work does
-not couple to the unified query benchmark:
-
-```bash
-./build/release/sufkit_sa_build_bench \
-  --profile quick \
-  --methods div32,caps32 \
-  --threads 1,2,4,8 \
-  --acceleration none \
-  --output-dir build/bench/sa-quick
-```
-
-See `docs/benchmarks/sa-construction-methodology.md` for timing boundaries and
-TSV fields, and `docs/benchmarks/results/unreleased-caps.md` for the measured
-smoke/quick results. Sampled-SA methodology and measurements are documented in
-`docs/benchmarks/results/unreleased-sampled-sa.md`.
+Raw result directories, generated FASTA, Doxygen output, and local profiler
+data are development artifacts and must not be committed. Developer benchmark
+executables are not installed with the library.

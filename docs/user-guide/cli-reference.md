@@ -36,9 +36,9 @@ SA options:
 one thread and a CaPS-enabled build. Explicit CaPS requires at least 16
 logical symbols. SA options are rejected for FM builds.
 
-For K>1, the stored SA retains text positions divisible by K. `count` and
-`locate` recover complete results; `equal_range` is unavailable and right-maximal exact match
-requires `min_length>=K`.
+For K>1, the stored SA retains text positions divisible by K. C++ `Count` and
+`Locate` recover complete results; `EqualRange` is unavailable and
+right-maximal exact match requires `min_length>=K`.
 
 FM option:
 
@@ -130,9 +130,14 @@ Main controls include `--scenarios`, `--methods`, `--pattern-lengths`,
 right-maximal exact match workload:
 
 ```text
-sufkit bench --workload right-maximal --profile smoke|quick|standard|full \
+sufkit bench --workload right-maximal --profile smoke|quick|standard \
+  --strands forward,reverse-complement,both \
   --output-dir DIR [options]
 ```
+
+The right-maximal compatibility default is `--strands forward`. Internal
+methods emit an independent summary/raw row for every explicitly selected
+orientation. MUMmer4 timed rows retain their historical forward-only scope.
 
 See [benchmark methodology](../benchmarks/methodology.md) for profiles,
 methods, schemas, correctness gates, and timing boundaries.

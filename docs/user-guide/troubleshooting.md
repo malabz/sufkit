@@ -34,7 +34,7 @@ inputs. Automatic selection already does so.
 
 ### 32-bit input is too large
 
-Use `CoordinateWidth::auto_select`, CLI `--sa-width auto`, or 64-bit storage.
+Use `CoordinateWidth::kAutoSelect`, CLI `--sa-width auto`, or 64-bit storage.
 divsufsort32 uses a signed limit; CaPS32 uses an unsigned limit.
 
 ### `threads` appears to have no effect
@@ -64,7 +64,7 @@ do not bypass validation.
 ### Wrong index kind
 
 right-maximal exact match requires a standalone SA. Exact query supports SA and FM. Load with the
-class matching `inspect_index(...).kind`.
+class matching `InspectIndex(...).kind`.
 
 ## Search behavior
 
@@ -80,10 +80,10 @@ The loaded index lacks the required learned or CHILD section. Rebuild with
 
 ### Locate or right-maximal exact match uses too much memory
 
-Use `count` when coordinates are unnecessary. Set `max_hits` or
-`max_matches`, stream right-maximal exact matches with `for_each_right_maximal_match`, and avoid complete locate on
-high-frequency patterns. Note that accurate total right-maximal exact match count still traverses
-the complete match set.
+Use `Count` when coordinates are unnecessary. Set `max_hits` or `max_matches`,
+stream right-maximal exact matches with `ForEachRightMaximalMatch`, and avoid
+complete `Locate` on high-frequency patterns. Note that an accurate total
+right-maximal exact match count still traverses the complete match set.
 
 ## Build-system issues
 

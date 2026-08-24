@@ -118,21 +118,20 @@ strand are still reported in the original forward query coordinate system.
 #include <iostream>
 
 int main() {
-    auto reference = sufkit::GenomeReference::from_fasta("reference.fa");
+  auto reference = sufkit::GenomeReference::FromFasta("reference.fa");
 
-    auto fm = sufkit::FmIndex::build(reference);
-    auto exact = fm.locate("ACGT");
-    std::cout << exact.total_hits << '\n';
+  auto fm = sufkit::FmIndex::Build(reference);
+  auto exact = fm.Locate("ACGT");
+  std::cout << exact.total_hits << '\n';
 
-    auto sa = sufkit::SuffixArray::build(reference);
-    sufkit::RightMaximalOptions options;
-    options.min_length = 4;
-    for (const auto& match : sa.find_right_maximal_matches("GGGACGTACGTTTT", options).matches) {
-        std::cout << match.sequence_id << '\t'
-                  << match.reference_position << '\t'
-                  << match.query_position << '\t'
-                  << match.length << '\n';
-    }
+  auto sa = sufkit::SuffixArray::Build(reference);
+  sufkit::RightMaximalOptions options;
+  options.min_length = 4;
+  const auto result = sa.FindRightMaximalMatches("GGGACGTACGTTTT", options);
+  for (const auto& match : result.matches) {
+    std::cout << match.sequence_id << '\t' << match.reference_position << '\t'
+              << match.query_position << '\t' << match.length << '\n';
+  }
 }
 ```
 

@@ -4,42 +4,59 @@ All notable changes to sufkit are documented in this file.
 
 ## Unreleased
 
+## 0.2.0 - 2026-08-24
+
+### Source interface and terminology
+
+- Standardized the C++ source interface on Google-style `PascalCase` functions
+  and `kPascalCase` enumerators. This is intentionally source-incompatible
+  with 0.1.x and no old-name forwarding aliases are provided. Public include
+  paths, the `sufkit::sufkit` CMake target, CLI syntax, serialized IDs, and
+  `.sufidx` compatibility remain unchanged.
 - Corrected the former MEM terminology without changing query logic. The
-  implementation guarantees right maximality but not left maximality, so
-  `Mem*`, `find_mems()`, `for_each_mem()`, `sufkit mem`, and `--workload mem`
-  were renamed to `RightMaximal*`, `find_right_maximal_matches()`,
-  `for_each_right_maximal_match()`, `sufkit right-maximal`, and
-  `--workload right-maximal`. MEM names are reserved for future two-sided
-  maximality support.
-- Changed the default SA acceleration to SA+ISA+LCP and changed right-maximal
-  search auto selection to suffix-link; CHILD and full remain explicit.
-- Added an optional, clean-room Sapling-style piecewise-linear learned SA index
-  with deterministic integer interpolation and correctness-preserving local
-  search.
-- Added explicit binary, LCP-aware binary, PWL, and CHILD exact-search control,
-  plus PWL initialization/fallback control for suffix-link right-maximal search.
-- Extended `.sufidx` to format 1.2 for the optional learned-model section while
-  retaining 1.0/1.1 compatibility and the unchanged SDSL FM payload.
-- Added learned-index construction/query metrics and exact/right-maximal
-  benchmark ablations. No Python, PyTorch, CUDA, or Sapling runtime dependency
-  was added.
-- Added bundled CaPS-SA 32/64 shared-memory parallel suffix-array construction
-  with ParlayLib, configurable build availability, stable persisted backend
-  identities, conservative large-input auto-selection, and a dedicated
-  isolated construction benchmark.
+  implementation guarantees right maximality but not left maximality, so its
+  public types, APIs, CLI command, and benchmark workload now use
+  `RightMaximal` and `right-maximal` names. MEM names are reserved for future
+  two-sided maximality support.
+
+### Suffix-array capabilities
+
+- Changed the default SA acceleration to SA+ISA+LCP and the automatic
+  right-maximal search path to suffix-link reuse. CHILD and the combined path
+  remain available through explicit selection.
+- Added bundled CaPS-SA 32/64 shared-memory parallel construction with
+  ParlayLib, stable persisted backend identities, configurable availability,
+  and conservative large-input auto-selection.
 - Added optional text-position sampled standalone suffix arrays with complete
-  exact count/locate and right-maximal recovery, format 1.3 persistence,
-  CLI/inspection controls, and sampled-SA correctness/benchmark coverage.
-- Avoided redundant LCP construction: divsufsort now returns sampled ISA/LCP
-  through a private fused adapter, while CaPS directly retains its merge-built
-  LCP and compacts it by interval minima when sampling is enabled.
+  exact count/locate and right-maximal recovery. Format 1.3 persists sampled
+  indexes while retaining readers for formats 1.0 through 1.2.
+- Reused builder-produced LCP data: divsufsort exposes sampled ISA/LCP through
+  a private fused adapter, and CaPS retains and compacts its merge-built LCP.
+- Added an optional clean-room Sapling-style piecewise-linear SA predictor with
+  deterministic integer interpolation, verified local search, explicit
+  binary/LCP/PWL/CHILD control, and format 1.2 persistence. It adds no Python,
+  PyTorch, CUDA, or Sapling runtime dependency.
+
+### FM-index capabilities
+
 - Added fixed SDSL balanced and DNA EPR `csa_wt` backends while retaining
   Huffman as the default and Sada as a reserved unavailable identity.
-- Added ordered FM `equal_range_batch` and `count_batch` APIs with fixed-width
-  interleaving and scalar-equivalent correctness gates.
+- Added ordered FM `EqualRangeBatch` and `CountBatch` APIs with interleaved
+  query processing and scalar-equivalent correctness gates.
+
+### Performance and project quality
+
+- Optimized existing SA, FM, sampled-SA, Sapling, and right-maximal paths with
+  complete-SA count and zero-retention locate fast paths, lazy bounded heaps,
+  encoded views and lookup tables, compact auxiliary arrays, delayed coordinate
+  mapping, SSE4.2 comparison, active-lane FM batch workspaces, and lower-copy
+  construction and persistence.
+- Added developer-only low-level, allocation, phase-RSS, sampled-query,
+  mixed-length FM batch, suffix-link-scan, learned-index, and construction
+  measurements with correctness checks and explicit evidence boundaries.
 - Added a layered English documentation set, concise Chinese onboarding,
-  contributor architecture/extension contracts, and local Doxygen API
-  generation.
+  contributor architecture and extension contracts, Google C++ style tooling,
+  local Doxygen API generation, and expanded local tests.
 
 ## 0.1.1
 
@@ -73,6 +90,6 @@ implementation does not guarantee left maximality.
   repetitions, multi-dimensional summaries, six synthetic scenarios, and
   correctness-gated count/locate workloads.
 
-The 0.1.x development line uses pinned vendored SDSL, libdivsufsort, CaPS-SA,
-ParlayLib, and kseq snapshots. Disk-backed construction, MUM/MAM, direct
+The project uses pinned vendored SDSL, libdivsufsort, CaPS-SA, ParlayLib, and
+kseq snapshots. Disk-backed construction, MUM/MAM, direct
 sparse-SA construction, r-index/RLBWT, and BigBWT/PFP remain future work.

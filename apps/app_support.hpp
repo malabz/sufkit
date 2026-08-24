@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #pragma once
 
 #include <filesystem>
@@ -8,8 +10,8 @@
 
 namespace sufkit::app {
 
-std::vector<SequenceRecord> read_fasta_records(const std::filesystem::path& path);
-std::uint64_t parse_unsigned(const std::string& text, const std::string& option_name);
+std::vector<SequenceRecord> ReadFastaRecords(const std::filesystem::path& path);
+std::uint64_t ParseUnsigned(const std::string& text,
+                            const std::string& option_name);
 
-} // namespace sufkit::app
-
+}  // namespace sufkit::app

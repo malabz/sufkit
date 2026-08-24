@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #pragma once
 
 #include <cstdint>
@@ -26,64 +28,67 @@ class FmIndex;
  * construction and is safe to read concurrently through const methods.
  */
 class SUFKIT_API GenomeReference {
-public:
-    /**
-     * Read plain or gzip FASTA through kseq/zlib.
-     * @param path Input FASTA path.
-     * @return Normalized reference.
-     * @throws Error with invalid_input for invalid records or io_error for
-     *         stream failures.
-     */
-    static GenomeReference from_fasta(const std::filesystem::path& path);
+ public:
+  /**
+   * Read plain or gzip FASTA through kseq/zlib.
+   * @param path Input FASTA path.
+   * @return Normalized reference.
+   * @throws Error with ErrorCode::kInvalidInput for invalid records or
+   *         ErrorCode::kIoError for
+   *         stream failures.
+   */
+  static GenomeReference FromFasta(const std::filesystem::path& path);
 
-    /**
-     * Validate and normalize in-memory records.
-     * @param records Records with unique non-empty names and non-empty sequence.
-     * @return Normalized reference.
-     * @throws Error with invalid_input when the record contract is violated.
-     */
-    static GenomeReference from_records(std::vector<SequenceRecord> records);
+  /**
+   * Validate and normalize in-memory records.
+   * @param records Records with unique non-empty names and non-empty
+   *        sequences.
+   * @return Normalized reference.
+   * @throws Error with ErrorCode::kInvalidInput when the record contract is
+   *         violated.
+   */
+  static GenomeReference FromRecords(std::vector<SequenceRecord> records);
 
-    /** @param other Source reference whose implementation is transferred. */
-    GenomeReference(GenomeReference&& other) noexcept;
-    /**
-     * @param other Source reference whose implementation is transferred.
-     * @return This object after transfer.
-     */
-    GenomeReference& operator=(GenomeReference&& other) noexcept;
-    /** Destructor. */
-    ~GenomeReference();
+  /** @param other Source reference whose implementation is transferred. */
+  GenomeReference(GenomeReference&& other) noexcept;
+  /**
+   * @param other Source reference whose implementation is transferred.
+   * @return This object after transfer.
+   */
+  GenomeReference& operator=(GenomeReference&& other) noexcept;
+  /** Destructor. */
+  ~GenomeReference();
 
-    /** @param other Copy source; copying is intentionally disabled. */
-    GenomeReference(const GenomeReference& other) = delete;
-    /**
-     * @param other Copy source; copying is intentionally disabled.
-     * @return This object; the operation is deleted.
-     */
-    GenomeReference& operator=(const GenomeReference& other) = delete;
+  /** @param other Copy source; copying is intentionally disabled. */
+  GenomeReference(const GenomeReference& other) = delete;
+  /**
+   * @param other Copy source; copying is intentionally disabled.
+   * @return This object; the operation is deleted.
+   */
+  GenomeReference& operator=(const GenomeReference& other) = delete;
 
-    /** @return Number of input-order contigs. */
-    std::uint64_t sequence_count() const noexcept;
-    /** @return Total biological bases, excluding separators/sentinel. */
-    std::uint64_t total_bases() const noexcept;
-    /** @return Number of symbols normalized to N. */
-    std::uint64_t ambiguous_bases() const noexcept;
-    /** @return Deterministic FNV-1a-64 normalized-content fingerprint. */
-    std::uint64_t fingerprint() const noexcept;
-    /**
-     * @param id Zero-based input-order contig ID.
-     * @return Immutable metadata copy.
-     * @throws Error with invalid_input when id is out of range.
-     */
-    SequenceInfo sequence_info(SequenceId id) const;
+  /** @return Number of input-order contigs. */
+  std::uint64_t SequenceCount() const noexcept;
+  /** @return Total biological bases, excluding separators/sentinel. */
+  std::uint64_t TotalBases() const noexcept;
+  /** @return Number of symbols normalized to N. */
+  std::uint64_t AmbiguousBases() const noexcept;
+  /** @return Deterministic FNV-1a-64 normalized-content fingerprint. */
+  std::uint64_t Fingerprint() const noexcept;
+  /**
+   * @param id Zero-based input-order contig ID.
+   * @return Immutable metadata copy.
+   * @throws Error with ErrorCode::kInvalidInput when id is out of range.
+   */
+  SequenceInfo GetSequenceInfo(SequenceId id) const;
 
-private:
-    struct Impl;
-    explicit GenomeReference(std::unique_ptr<Impl> impl);
-    std::unique_ptr<Impl> impl_;
+ private:
+  struct Impl;
+  explicit GenomeReference(std::unique_ptr<Impl> impl);
+  std::unique_ptr<Impl> impl_;
 
-    friend class SuffixArray;
-    friend class FmIndex;
+  friend class SuffixArray;
+  friend class FmIndex;
 };
 
-} // namespace sufkit
+}  // namespace sufkit

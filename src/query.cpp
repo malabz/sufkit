@@ -1,7 +1,10 @@
+// SPDX-License-Identifier: MIT
+
 #include "query.hpp"
 
 #include <algorithm>
-#include <cctype>
+#include <array>
+#include <limits>
 #include <tuple>
 
 #include "reference_data.hpp"
@@ -9,104 +12,146 @@
 namespace sufkit::detail {
 namespace {
 
-bool match_less(const Match& left, const Match& right) {
-    return std::tie(left.sequence_id, left.position, left.length, left.strand) <
-           std::tie(right.sequence_id, right.position, right.length, right.strand);
+constexpr std::uint8_t kInvalidQuerySymbol =
+    std::numeric_limits<std::uint8_t>::max();
+
+constexpr std::array<std::uint8_t, 256> MakeQueryEncodingTable() {
+  std::array<std::uint8_t, 256> table{};
+  for (auto& value : table) {
+    value = kInvalidQuerySymbol;
+  }
+  table[static_cast<unsigned char>('A')] = kA;
+  table[static_cast<unsigned char>('a')] = kA;
+  table[static_cast<unsigned char>('C')] = kC;
+  table[static_cast<unsigned char>('c')] = kC;
+  table[static_cast<unsigned char>('G')] = kG;
+  table[static_cast<unsigned char>('g')] = kG;
+  table[static_cast<unsigned char>('T')] = kT;
+  table[static_cast<unsigned char>('t')] = kT;
+  return table;
 }
 
-} // namespace
+constexpr std::array<std::uint8_t, 7> kComplement = {
+    kInvalidQuerySymbol, kInvalidQuerySymbol, kT, kG, kC, kA,
+    kInvalidQuerySymbol};
+constexpr auto kQueryEncoding = MakeQueryEncodingTable();
 
-std::vector<std::uint8_t> encode_pattern(std::string_view pattern) {
-    if (pattern.empty()) {
-        throw Error(ErrorCode::invalid_input, "pattern must not be empty");
-    }
-    std::vector<std::uint8_t> encoded;
-    encoded.reserve(pattern.size());
-    for (const char raw : pattern) {
-        const auto value = static_cast<unsigned char>(raw);
-        switch (static_cast<char>(std::toupper(value))) {
-        case 'A': encoded.push_back(kA); break;
-        case 'C': encoded.push_back(kC); break;
-        case 'G': encoded.push_back(kG); break;
-        case 'T': encoded.push_back(kT); break;
-        default:
-            throw Error(
-                ErrorCode::invalid_input,
-                "pattern contains a non-ACGT character");
-        }
-    }
-    return encoded;
+bool MatchLess(const Match& left, const Match& right) {
+  return std::tie(left.sequence_id, left.position, left.length, left.strand) <
+         std::tie(right.sequence_id, right.position, right.length,
+                  right.strand);
 }
 
-std::vector<std::uint8_t> reverse_complement(const std::vector<std::uint8_t>& pattern) {
-    std::vector<std::uint8_t> result;
-    result.reserve(pattern.size());
-    for (auto it = pattern.rbegin(); it != pattern.rend(); ++it) {
-        switch (*it) {
-        case kA: result.push_back(kT); break;
-        case kC: result.push_back(kG); break;
-        case kG: result.push_back(kC); break;
-        case kT: result.push_back(kA); break;
-        default:
-            throw Error(ErrorCode::invalid_input, "internal pattern encoding is invalid");
-        }
+}  // namespace
+
+std::vector<std::uint8_t> EncodePattern(std::string_view pattern) {
+  if (pattern.empty()) {
+    throw Error(ErrorCode::kInvalidInput, "pattern must not be empty");
+  }
+  std::vector<std::uint8_t> encoded;
+  encoded.resize(pattern.size());
+  // Keeping query symbols in ACGT ensures that N, separators, and the sentinel
+  // remain hard boundaries in every index backend.
+  for (std::size_t index = 0; index < pattern.size(); ++index) {
+    const auto symbol =
+        kQueryEncoding[static_cast<unsigned char>(pattern[index])];
+    if (symbol == kInvalidQuerySymbol) {
+      throw Error(ErrorCode::kInvalidInput,
+                  "pattern contains a non-ACGT character");
     }
-    return result;
+    encoded[index] = symbol;
+  }
+  return encoded;
 }
 
-bool is_reverse_complement_palindrome(const std::vector<std::uint8_t>& pattern) {
-    return pattern == reverse_complement(pattern);
+std::vector<std::uint8_t> ReverseComplement(
+    const std::vector<std::uint8_t>& pattern) {
+  std::vector<std::uint8_t> result;
+  result.resize(pattern.size());
+  for (std::size_t index = 0; index < pattern.size(); ++index) {
+    const auto symbol = pattern[pattern.size() - index - 1];
+    if (symbol >= kComplement.size() ||
+        kComplement[symbol] == kInvalidQuerySymbol) {
+      throw Error(ErrorCode::kInvalidInput,
+                  "internal pattern encoding is invalid");
+    }
+    result[index] = kComplement[symbol];
+  }
+  return result;
 }
 
-void retain_match(
-    std::vector<Match>& matches,
-    Match match,
-    const LocateOptions& options) {
-    if (!options.max_hits) {
-        matches.push_back(std::move(match));
-        return;
+bool IsReverseComplementPalindrome(const std::vector<std::uint8_t>& pattern) {
+  for (std::size_t index = 0; index < pattern.size() / 2; ++index) {
+    const auto left = pattern[index];
+    const auto right = pattern[pattern.size() - index - 1];
+    if (left >= kComplement.size() || right >= kComplement.size() ||
+        kComplement[right] != left) {
+      return false;
     }
-    const auto limit = *options.max_hits;
-    if (limit == 0) {
-        return;
-    }
-    if (matches.size() < limit) {
-        matches.push_back(std::move(match));
-        std::push_heap(matches.begin(), matches.end(), match_less);
-        return;
-    }
-    if (match_less(match, matches.front())) {
-        std::pop_heap(matches.begin(), matches.end(), match_less);
-        matches.back() = std::move(match);
-        std::push_heap(matches.begin(), matches.end(), match_less);
-    }
+  }
+  return pattern.size() % 2 == 0;
 }
 
-QueryResult finalize_matches(
-    std::vector<Match> matches,
-    std::uint64_t total_hits) {
-    std::sort(matches.begin(), matches.end(), match_less);
-
-    std::vector<Match> merged;
-    merged.reserve(matches.size());
-    for (const auto& match : matches) {
-        if (!merged.empty() &&
-            merged.back().sequence_id == match.sequence_id &&
-            merged.back().position == match.position &&
-            merged.back().length == match.length) {
-            if (merged.back().strand != match.strand) {
-                merged.back().strand = Strand::both;
-            }
-            continue;
-        }
-        merged.push_back(match);
-    }
-
-    QueryResult result;
-    result.total_hits = total_hits;
-    result.hits = std::move(merged);
-    result.truncated = result.hits.size() < result.total_hits;
-    return result;
+void RetainMatch(std::vector<Match>& matches, Match match,
+                 const LocateOptions& options, bool& heap_active) {
+  if (!options.max_hits) {
+    matches.push_back(std::move(match));
+    return;
+  }
+  const auto limit = *options.max_hits;
+  if (limit == 0) {
+    return;
+  }
+  if (!heap_active && matches.size() < limit) {
+    matches.push_back(std::move(match));
+    return;
+  }
+  if (!heap_active) {
+    // Delay heap construction until the first omitted candidate. A generous
+    // max_hits therefore retains the same append-only path as an unlimited
+    // locate instead of paying O(log N) for results that are never truncated.
+    std::make_heap(matches.begin(), matches.end(), MatchLess);
+    heap_active = true;
+  }
+  // The max-heap keeps only the lexicographically smallest requested hits;
+  // callers count all occurrences separately to retain an exact total.
+  if (MatchLess(match, matches.front())) {
+    std::pop_heap(matches.begin(), matches.end(), MatchLess);
+    matches.back() = std::move(match);
+    std::push_heap(matches.begin(), matches.end(), MatchLess);
+  }
 }
 
-} // namespace sufkit::detail
+QueryResult FinalizeMatches(std::vector<Match> matches,
+                            std::uint64_t total_hits) {
+  // Public results are deterministic regardless of SA row order or backend.
+  std::sort(matches.begin(), matches.end(), MatchLess);
+
+  std::size_t output = 0;
+  for (auto& match : matches) {
+    if (output != 0 && matches[output - 1].sequence_id == match.sequence_id &&
+        matches[output - 1].position == match.position &&
+        matches[output - 1].length == match.length) {
+      // Identical coordinates found on both strands retain that provenance
+      // without exposing duplicate public hits.
+      if (matches[output - 1].strand != match.strand) {
+        matches[output - 1].strand = Strand::kBoth;
+      }
+      continue;
+    }
+    const auto input = static_cast<std::size_t>(&match - matches.data());
+    if (output != input) {
+      matches[output] = std::move(match);
+    }
+    ++output;
+  }
+  matches.resize(output);
+
+  QueryResult result;
+  result.total_hits = total_hits;
+  result.hits = std::move(matches);
+  result.truncated = result.hits.size() < result.total_hits;
+  return result;
+}
+
+}  // namespace sufkit::detail

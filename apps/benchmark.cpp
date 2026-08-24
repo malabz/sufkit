@@ -29,16 +29,16 @@ namespace {
 using namespace bench;
 
 std::vector<std::string> split_csv(const std::string& text, const std::string& option) {
-    if (text.empty()) throw Error(ErrorCode::invalid_input, option + " must not be empty");
+    if (text.empty()) throw Error(ErrorCode::kInvalidInput, option + " must not be empty");
     std::vector<std::string> values;
     std::set<std::string> unique;
     std::size_t begin = 0;
     while (begin <= text.size()) {
         const auto end = text.find(',', begin);
         const auto value = text.substr(begin, end == std::string::npos ? text.size() - begin : end - begin);
-        if (value.empty()) throw Error(ErrorCode::invalid_input, option + " contains an empty value");
+        if (value.empty()) throw Error(ErrorCode::kInvalidInput, option + " contains an empty value");
         if (!unique.insert(value).second) {
-            throw Error(ErrorCode::invalid_input, option + " contains a duplicate value: " + value);
+            throw Error(ErrorCode::kInvalidInput, option + " contains a duplicate value: " + value);
         }
         values.push_back(value);
         if (end == std::string::npos) break;
@@ -51,9 +51,9 @@ std::uint32_t parse_u32(
     const std::string& value,
     const std::string& option,
     bool allow_zero) {
-    const auto parsed = parse_unsigned(value, option);
+    const auto parsed = ParseUnsigned(value, option);
     if ((!allow_zero && parsed == 0) || parsed > std::numeric_limits<std::uint32_t>::max()) {
-        throw Error(ErrorCode::invalid_input, "invalid value for " + option + ": " + value);
+        throw Error(ErrorCode::kInvalidInput, "invalid value for " + option + ": " + value);
     }
     return static_cast<std::uint32_t>(parsed);
 }
@@ -62,26 +62,32 @@ std::vector<std::string> parse_methods(const std::string& text) {
     const std::set<std::string> supported{
         "naive", "sa32", "sa64", "sa32-none", "sa64-none",
         "fm", "fm-huff", "fm-balanced", "fm-epr",
-        "sa32-binary", "sa32-lcp-binary", "sa32-sapling", "sa32-child"};
+        "sa32-binary", "sa32-lcp-binary", "sa32-sapling", "sa32-child",
+        "sa32-sampled-k2-binary", "sa32-sampled-k2-lcp-binary",
+        "sa32-sampled-k4-binary", "sa32-sampled-k4-lcp-binary",
+        "sa32-sampled-k8-binary", "sa32-sampled-k8-lcp-binary",
+        "sa64-sampled-k2-binary", "sa64-sampled-k2-lcp-binary",
+        "sa64-sampled-k4-binary", "sa64-sampled-k4-lcp-binary",
+        "sa64-sampled-k8-binary", "sa64-sampled-k8-lcp-binary"};
     auto methods = split_csv(text, "--methods");
     for (const auto& method : methods) {
         if (supported.count(method) == 0) {
-            throw Error(ErrorCode::invalid_input, "invalid benchmark method: " + method);
+            throw Error(ErrorCode::kInvalidInput, "invalid benchmark method: " + method);
         }
     }
     if (std::find(methods.begin(), methods.end(), "fm") != methods.end() &&
         std::find(methods.begin(), methods.end(), "fm-huff") != methods.end()) {
-        throw Error(ErrorCode::invalid_input, "fm and fm-huff are aliases and cannot be selected together");
+        throw Error(ErrorCode::kInvalidInput, "fm and fm-huff are aliases and cannot be selected together");
     }
     return methods;
 }
 
 std::vector<std::string> parse_fm_query_modes(const std::string& text) {
-    const std::set<std::string> supported{"scalar", "batch"};
+    const std::set<std::string> supported{"scalar", "batch", "batch-mixed"};
     auto modes = split_csv(text, "--fm-query-modes");
     for (const auto& mode : modes) {
         if (supported.count(mode) == 0) {
-            throw Error(ErrorCode::invalid_input, "invalid FM query mode: " + mode);
+            throw Error(ErrorCode::kInvalidInput, "invalid FM query mode: " + mode);
         }
     }
     return modes;
@@ -92,7 +98,7 @@ std::vector<std::uint32_t> parse_fm_batch_widths(const std::string& text) {
     for (const auto& value : split_csv(text, "--fm-batch-widths")) {
         const auto width = parse_u32(value, "--fm-batch-widths", false);
         if (width > 256) {
-            throw Error(ErrorCode::invalid_input, "FM batch width must be in [1,256]");
+            throw Error(ErrorCode::kInvalidInput, "FM batch width must be in [1,256]");
         }
         widths.push_back(width);
     }
@@ -108,9 +114,9 @@ std::vector<Scenario> parse_scenarios(const std::string& text) {
 std::vector<std::uint64_t> parse_lengths(const std::string& text) {
     std::vector<std::uint64_t> lengths;
     for (const auto& value : split_csv(text, "--pattern-lengths")) {
-        const auto parsed = parse_unsigned(value, "--pattern-lengths");
+        const auto parsed = ParseUnsigned(value, "--pattern-lengths");
         if (parsed == 0 || parsed > 1000000) {
-            throw Error(ErrorCode::invalid_input, "invalid pattern length: " + value);
+            throw Error(ErrorCode::kInvalidInput, "invalid pattern length: " + value);
         }
         lengths.push_back(parsed);
     }
@@ -121,7 +127,7 @@ std::vector<LocateLimit> parse_locate_limits(const std::string& text) {
     std::vector<LocateLimit> limits;
     for (const auto& value : split_csv(text, "--locate-limits")) {
         if (value == "all") limits.push_back({true, 0});
-        else limits.push_back({false, parse_unsigned(value, "--locate-limits")});
+        else limits.push_back({false, ParseUnsigned(value, "--locate-limits")});
     }
     return limits;
 }
@@ -129,7 +135,7 @@ std::vector<LocateLimit> parse_locate_limits(const std::string& text) {
 std::string require_value(const std::vector<std::string>& arguments, std::size_t& index) {
     const auto& option = arguments[index];
     if (index + 1 >= arguments.size()) {
-        throw Error(ErrorCode::invalid_input, "missing value for " + option);
+        throw Error(ErrorCode::kInvalidInput, "missing value for " + option);
     }
     return arguments[++index];
 }
@@ -171,7 +177,7 @@ Options parse_benchmark_options(const std::vector<std::string>& arguments) {
         else if (option == "--locate-limits") limits = require_value(arguments, index);
         else if (option == "--fm-query-modes") fm_query_modes = require_value(arguments, index);
         else if (option == "--fm-batch-widths") fm_batch_widths = require_value(arguments, index);
-        else if (option == "--seed") options.seed = parse_unsigned(require_value(arguments, index), option);
+        else if (option == "--seed") options.seed = ParseUnsigned(require_value(arguments, index), option);
         else if (option == "--build-repetitions") {
             options.build_repetitions = parse_u32(require_value(arguments, index), option, false);
         } else if (option == "--query-repetitions") {
@@ -181,35 +187,35 @@ Options parse_benchmark_options(const std::vector<std::string>& arguments) {
         } else if (option == "--learned-k") {
             options.learned_k = parse_u32(require_value(arguments, index), option, false);
             if (options.learned_k > 31)
-                throw Error(ErrorCode::invalid_input, "--learned-k must be in [1,31]");
+                throw Error(ErrorCode::kInvalidInput, "--learned-k must be in [1,31]");
         } else if (option == "--learned-memory-bp") {
             options.learned_memory_overhead_basis_points =
                 parse_u32(require_value(arguments, index), option, false);
         } else if (option == "--learned-bucket-bits") {
             options.learned_bucket_bits = parse_u32(require_value(arguments, index), option, true);
             if (*options.learned_bucket_bits > 31)
-                throw Error(ErrorCode::invalid_input, "--learned-bucket-bits must be at most 31");
+                throw Error(ErrorCode::kInvalidInput, "--learned-bucket-bits must be at most 31");
         } else {
-            throw Error(ErrorCode::invalid_input, "unknown benchmark option: " + option);
+            throw Error(ErrorCode::kInvalidInput, "unknown benchmark option: " + option);
         }
     }
 
     const auto synthetic_selectors = static_cast<unsigned>(options.profile_explicit) +
         static_cast<unsigned>(options.legacy_quick) + static_cast<unsigned>(options.legacy_smoke);
     if (synthetic_selectors > 1) {
-        throw Error(ErrorCode::invalid_input, "--profile, --quick, and --smoke are mutually exclusive");
+        throw Error(ErrorCode::kInvalidInput, "--profile, --quick, and --smoke are mutually exclusive");
     }
     if (options.reference_path && synthetic_selectors != 0) {
-        throw Error(ErrorCode::invalid_input, "--reference cannot be combined with a synthetic profile");
+        throw Error(ErrorCode::kInvalidInput, "--reference cannot be combined with a synthetic profile");
     }
     if (options.query_path && !options.reference_path) {
-        throw Error(ErrorCode::invalid_input, "--queries requires --reference");
+        throw Error(ErrorCode::kInvalidInput, "--queries requires --reference");
     }
     if (!options.reference_path && synthetic_selectors == 0) {
-        throw Error(ErrorCode::invalid_input, "provide --profile, --quick, --smoke, or --reference");
+        throw Error(ErrorCode::kInvalidInput, "provide --profile, --quick, --smoke, or --reference");
     }
     if (options.output_path.has_value() == options.output_directory.has_value()) {
-        throw Error(ErrorCode::invalid_input, "provide exactly one of --output or --output-dir");
+        throw Error(ErrorCode::kInvalidInput, "provide exactly one of --output or --output-dir");
     }
 
     if (options.reference_path) options.profile = Profile::user;
@@ -225,7 +231,7 @@ Options parse_benchmark_options(const std::vector<std::string>& arguments) {
 
     if (scenarios) {
         if (options.profile == Profile::user) {
-            throw Error(ErrorCode::invalid_input, "--scenarios is invalid with --reference");
+            throw Error(ErrorCode::kInvalidInput, "--scenarios is invalid with --reference");
         }
         options.scenarios = parse_scenarios(*scenarios);
     } else if (options.profile == Profile::standard) {
@@ -244,7 +250,7 @@ Options parse_benchmark_options(const std::vector<std::string>& arguments) {
     if (fm_query_modes) options.fm_query_modes = parse_fm_query_modes(*fm_query_modes);
     if (fm_batch_widths) options.fm_batch_widths = parse_fm_batch_widths(*fm_batch_widths);
     if (options.output_path && options.scenarios.size() != 1) {
-        throw Error(ErrorCode::invalid_input, "--output supports one scenario; use --output-dir for multiple scenarios");
+        throw Error(ErrorCode::kInvalidInput, "--output supports one scenario; use --output-dir for multiple scenarios");
     }
     return options;
 }
@@ -259,7 +265,7 @@ public:
             ("sufkit-benchmark-" + std::to_string(static_cast<long long>(getpid())) + "-" +
              std::to_string(static_cast<long long>(tick)));
         if (!std::filesystem::create_directory(path_)) {
-            throw Error(ErrorCode::io_error, "cannot create benchmark scratch directory: " + path_.string());
+            throw Error(ErrorCode::kIoError, "cannot create benchmark scratch directory: " + path_.string());
         }
     }
 
@@ -289,10 +295,10 @@ std::string utc_timestamp() {
 
 void classify_user_dataset(Dataset& dataset, const std::filesystem::path& scratch) {
     if (dataset.queries.empty() || dataset.queries.front().group != "user") return;
-    auto reference = GenomeReference::from_records(dataset.records);
-    auto classifier = FmIndex::build(reference);
+    auto reference = GenomeReference::FromRecords(dataset.records);
+    auto classifier = FmIndex::Build(reference);
     const auto path = scratch / "user-query-classifier.sufidx";
-    classifier.save(path);
+    classifier.Save(path);
     classify_user_queries(dataset, path);
     std::error_code ignored;
     std::filesystem::remove(path, ignored);
@@ -306,8 +312,15 @@ void print_help() {
         "Options:\n"
         "  --scenarios mixed,balanced,gc-skewed,repeat-rich,n-islands,many-contig\n"
         "  --methods naive,sa32,sa64,sa32-none,sa64-none,fm,fm-huff,fm-balanced,"
-        "fm-epr,sa32-binary,sa32-lcp-binary,sa32-sapling,sa32-child\n"
-        "  --fm-query-modes scalar,batch --fm-batch-widths 1,4,8,16,32\n"
+        "fm-epr,sa32-binary,sa32-lcp-binary,sa32-sapling,sa32-child,\n"
+        "            sa32-sampled-k2-binary,sa32-sampled-k2-lcp-binary,\n"
+        "            sa32-sampled-k4-binary,sa32-sampled-k4-lcp-binary,\n"
+        "            sa32-sampled-k8-binary,sa32-sampled-k8-lcp-binary,\n"
+        "            sa64-sampled-k2-binary,sa64-sampled-k2-lcp-binary,\n"
+        "            sa64-sampled-k4-binary,sa64-sampled-k4-lcp-binary,\n"
+        "            sa64-sampled-k8-binary,sa64-sampled-k8-lcp-binary\n"
+        "  --fm-query-modes scalar,batch,batch-mixed "
+        "--fm-batch-widths 1,4,8,16,32\n"
         "  --learned-k 20 --learned-memory-bp 100 [--learned-bucket-bits N]\n"
         "  --pattern-lengths 20,50,100,200,500\n"
         "  --locate-limits 1,10,1000,all\n"
@@ -318,6 +331,8 @@ void print_help() {
         "  --methods right-maximal-baseline,right-maximal-lcp,right-maximal-child,right-maximal-suffix-link,right-maximal-full,\n"
         "            right-maximal-suffix-link-binary,right-maximal-suffix-link-sapling,mummer4\n"
         "  --min-lengths 20,50,100 [--mummer4 PATH]\n"
+        "  --strands forward,reverse-complement,both\n"
+        "  --query-repetitions N\n"
         "  --learned-k 20 --learned-memory-bp 100 [--learned-bucket-bits N]\n"
         "  or --workload right-maximal --reference REF.fa[.gz] [--queries Q.fa[.gz]]\n";
 }
@@ -409,6 +424,7 @@ int run_benchmark(const std::vector<std::string>& arguments) {
             std::to_string(options.learned_memory_overhead_basis_points);
         context.learned_bucket_bits = options.learned_bucket_bits
             ? std::to_string(*options.learned_bucket_bits) : "auto";
+        context.provenance = CollectBenchmarkProvenance(arguments);
         write_result_directory(*options.output_directory, context, datasets, all_results);
     } else {
         write_legacy_output(*options.output_path, datasets.front(), all_results.front());

@@ -80,55 +80,20 @@ Kasai ISA/LCP. Optional sampling compacts rows before the remaining auxiliary
 pipeline. Persisted invariants and query results remain constructor
 independent even though phase ownership differs.
 
-## Exact query flow
+## Query data flow
 
-```mermaid
-flowchart TD
-    P[Pattern] --> V[Validate and encode A/C/G/T]
-    V --> R{Strand mode}
-    R --> Q1[Forward encoded query]
-    R --> Q2[Reverse complement]
-    Q1 --> K{Complete or sampled SA / FM}
-    Q2 --> K
-    K -->|Complete SA or FM| X[One backend range search]
-    K -->|Sampled SA| Y[Residue intervals or short-pattern contig scan]
-    X --> C{count or locate}
-    Y --> C
-    C -->|count| T[Complete interval sizes]
-    C -->|locate| L[Recover global positions]
-    L --> B[Contig-boundary verification]
-    B --> M[Map to contig-local coordinates]
-    M --> S[Sort, merge strand duplicates, retain first N]
-```
+Queries are encoded and expanded by strand before backend dispatch. Complete
+SA exact search chooses binary, LCP-aware binary, eligible PWL, or explicit
+CHILD; sampled SA recovers residue classes; FM search calls the selected SDSL
+CSA. Every path converges on common boundary validation, contig mapping,
+sorting, strand merging, and retention logic.
 
-SA range search dispatches among binary, LCP-aware binary, eligible PWL, or
-explicit CHILD. FM range search uses SDSL `backward_search`. Backend paths must
-converge before public result finalization. A sampled standalone SA cannot
-return one `equal_range`, but count/locate recover all residue classes.
-
-## right-maximal exact match query flow
-
-```mermaid
-flowchart TD
-    Q[Raw query] --> H[Encode canonical runs and hard breaks]
-    H --> O[Forward / reverse orientation]
-    O --> R{Complete or sampled SA}
-    R -->|K=1| I[Initialize min-length interval]
-    R -->|K>1| A[Residue anchors, min_length >= K]
-    A --> I
-    I --> E[Extend and enumerate candidate rows]
-    E --> M[Verify exactness and right maximality]
-    M --> C[Map valid reference coordinates]
-    C --> SL{Next query position}
-    SL -->|ISA+LCP reusable| U[Suffix-link interval reuse]
-    SL -->|invalid / empty / hard break| I
-    U --> E
-    C --> F[Stream callback or bounded sorted vector]
-```
-
-The five algorithm modes share exactness, right-maximality, and coordinate
-rules. Only interval discovery/reuse differs. Left maximality is not part of
-the current contract.
+Right-maximal search exists only on standalone SA. It splits a query into
+canonical runs, initializes or reuses a suffix interval, extends candidates,
+verifies exactness and right maximality, and emits through the common stream or
+bounded-vector layer. Sampled recovery changes the anchor domain, not output
+semantics. Detailed traversal rules are maintained in
+[algorithm internals](algorithm-internals.md).
 
 ## Load and inspection flow
 
@@ -169,5 +134,5 @@ implementation. Backends may use common encoding and metadata but must not
 invent different public coordinate or strand semantics. CLI and benchmarks
 consume the library; the library never depends on application-layer code.
 
-Read [internal invariants](internal-invariants.md) before changing any arrow in
+Read [algorithm internals](algorithm-internals.md) before changing any arrow in
 these diagrams.

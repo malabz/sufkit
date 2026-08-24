@@ -1,14 +1,14 @@
+// SPDX-License-Identifier: MIT
+
 #pragma once
 
-#include <sufkit/genome_reference.hpp>
-
 #include "reference_data.hpp"
+#include <sufkit/genome_reference.hpp>
 
 namespace sufkit {
 
 struct GenomeReference::Impl {
-    detail::ReferenceData data;
+  detail::ReferenceData data;
 };
 
-} // namespace sufkit
-
+}  // namespace sufkit
