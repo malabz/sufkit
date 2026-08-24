@@ -1,0 +1,3 @@
+method	query_bases	seconds_median	query_bases_per_second	matches_per_second	total_matches	speedup_vs_baseline	result_checksum	raw_repetitions	expected_repetitions	status
+SA baseline	2560000	13.523154	189304.950605	1352.864872	18295	1	30d7071b5ffeed99	3	3	ok
+SA suffix-link default	2560000	2.279003	1123298.214175	8027.633136	18295	5.933803	30d7071b5ffeed99	3	3	ok

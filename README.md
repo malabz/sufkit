@@ -1,34 +1,52 @@
 # sufkit
 
-`sufkit` 0.2.0 is a C++17 library and CLI for genome-oriented suffix arrays,
-SDSL compressed suffix arrays (FM-indexes), exact pattern search, and
-right-maximal exact-match enumeration.
+`sufkit` is a C++17 library and command-line toolkit for genome-oriented
+suffix arrays, SDSL compressed suffix arrays (FM-indexes), exact pattern
+search, and right-maximal exact match search.
 
-The right-maximal API is **not** MEM search: matches are exact and cannot
-extend to the right, but left maximality is not guaranteed. MEM names are
-reserved for a future two-sided implementation.
+The current right-maximal search is **not** a MEM implementation: it guarantees
+exactness and right maximality but does not yet guarantee left maximality. MEM
+names are reserved for a future two-sided implementation.
 
-## Capabilities
+The library is designed for two audiences:
 
-- FASTA/FASTA.gz input, multi-contig A/C/G/T/N normalization, and stable
-  contig-local coordinates;
-- divsufsort32/64 and optional CaPS-SA32/64 construction;
-- complete or text-position sampled standalone suffix arrays;
-- optional ISA, LCP, CHILD, suffix-link reuse, and Sapling-style PWL lookup;
-- fixed SDSL Huffman, balanced, and DNA EPR CSA backends;
-- scalar and batched FM count, exact locate, and right-maximal streaming;
-- CRC-protected, self-contained `.sufidx` persistence and inspection; and
-- `add_subdirectory` and installed `find_package` CMake integration.
+- applications that need an embeddable, move-only C++ index with no SDSL or
+  divsufsort types in the public API; and
+- users who want to build, query, inspect, and benchmark self-contained
+  `.sufidx` files from FASTA or FASTA.gz input.
 
-Huffman FM and SA+ISA+LCP are the conservative defaults. CHILD, Sapling PWL,
-sampled SA, balanced FM, and EPR FM are explicit choices. The
-[index-selection guide](docs/getting-started/choosing-an-index.md) explains
-their trade-offs.
+[中文说明](README.zh-CN.md) · [Documentation](docs/README.md) ·
+[Contributing](CONTRIBUTING.md) · [Benchmark performance](benchmarks/README.md)
 
-## Build and query
+## Feature status
 
-Requirements are Linux or WSL x86_64 with SSE4.2 and POPCNT, GCC or Clang,
-CMake 3.20+, C++17, and ZLIB. Other dependencies are vendored.
+The released library version is `0.1.1`. The current `main` branch also
+contains the following unreleased additions; they are marked explicitly so
+release behavior is not confused with development behavior.
+
+| Capability | Status on `main` | Default |
+|---|---|---|
+| divsufsort32/64 suffix-array construction | Released | Used for ordinary SA builds |
+| CaPS-SA 32/64 parallel construction | Unreleased | Auto-selected only for at least 1 GiB of symbols with more than one thread |
+| SA+ISA+LCP suffix-link right-maximal search | Released behavior; terminology corrected on `main` | Default SA acceleration |
+| ESA CHILD construction and traversal | Released, explicit | Never auto-selected |
+| SDSL Huffman CSA | Released | Default FM backend |
+| SDSL balanced and DNA EPR CSA | Unreleased | Explicit only |
+| FM batched count | Unreleased | Scalar remains the ordinary API |
+| Sapling-style piecewise-linear SA lookup | Unreleased, experimental | Disabled unless requested |
+| Text-position sampled SA | Unreleased, experimental | Disabled (`sampling_rate=1`) unless requested |
+| `.sufidx` 1.0/1.1 read support | Released | Old indexes remain readable |
+| `.sufidx` 1.2 learned section | Unreleased | Written only when PWL is present |
+| `.sufidx` 1.3 sampled-SA section | Unreleased | Written only when `sampling_rate > 1` |
+
+All FM data structures are provided by the bundled SDSL 3.0.3 implementation.
+`sufkit` does not reimplement BWT rank/select, C/Occ, LF mapping, SA sampling,
+or FM locate.
+
+## Five-minute start
+
+Requirements are Linux or WSL, GCC or Clang, CMake 3.20 or newer, a C++17
+toolchain, and ZLIB. Other third-party sources are bundled.
 
 ```bash
 cmake --preset release
@@ -36,55 +54,100 @@ cmake --build --preset release -j
 ctest --preset release --output-on-failure
 ```
 
+Build and query a compressed index:
+
 ```bash
 ./build/release/sufkit build --type fm \
-  --input reference.fa.gz --output reference.sufidx
+  --input reference.fa.gz --output reference.fm.sufidx
 
-./build/release/sufkit query --index reference.sufidx \
+./build/release/sufkit query --index reference.fm.sufidx \
   --pattern ACGTACGT --strand both
 ```
 
-See the [five-minute quick start](docs/getting-started/quickstart.md) and
-[CLI reference](docs/user-guide/cli-reference.md) for SA construction,
-right-maximal search, batch queries, and inspection.
+Build a suffix array and enumerate right-maximal exact matches:
+
+```bash
+./build/release/sufkit build --type sa \
+  --input reference.fa.gz --output reference.sa.sufidx
+
+./build/release/sufkit right-maximal --index reference.sa.sufidx \
+  --query queries.fa.gz --min-length 20 --strand both
+```
+
+All public coordinates are zero-based and contig-local. Exact patterns accept
+only A/C/G/T after case normalization. Right-maximal queries treat every other
+symbol as a hard break.
 
 ## C++ integration
+
+From a source tree:
 
 ```cmake
 add_subdirectory(path/to/sufkit)
 target_link_libraries(my_program PRIVATE sufkit::sufkit)
 ```
 
-or install the project and use:
+After installation:
+
+```bash
+cmake --install build/release --prefix /path/to/prefix
+```
 
 ```cmake
-find_package(sufkit 0.2 CONFIG REQUIRED)
+find_package(sufkit CONFIG REQUIRED)
 target_link_libraries(my_program PRIVATE sufkit::sufkit)
 ```
+
+Minimal exact-search example:
 
 ```cpp
 #include <sufkit/sufkit.hpp>
 
-auto reference = sufkit::GenomeReference::FromFasta("reference.fa.gz");
-auto index = sufkit::FmIndex::Build(reference);
-index.Save("reference.sufidx");
+auto reference = sufkit::GenomeReference::from_fasta("reference.fa.gz");
+auto index = sufkit::FmIndex::build(reference);
+index.save("reference.sufidx");
 
-auto loaded = sufkit::FmIndex::Load("reference.sufidx");
-auto hits = loaded.Locate("ACGTACGT");
+auto loaded = sufkit::FmIndex::load("reference.sufidx");
+auto result = loaded.locate("ACGTACGT");
 ```
 
-Public coordinates are zero-based and contig-local. Exact patterns accept only
-A/C/G/T after case normalization; right-maximal queries treat every other
-symbol as a hard break.
+Minimal right-maximal exact match example:
 
-## Compatibility and documentation
+```cpp
+auto reference = sufkit::GenomeReference::from_fasta("reference.fa.gz");
+auto index = sufkit::SuffixArray::build(reference); // SA+ISA+LCP
 
-Version 0.2.0 is source-incompatible with 0.1.x because public functions and
-enumerators adopted Google-style names without compatibility wrappers. Public
-include paths, the `sufkit::sufkit` target, main CLI interface, enum values,
-and `.sufidx` 1.0–1.3 reading remain stable. See the
-[migration guide](docs/development/api-naming-migration-0.2.0.md).
+sufkit::RightMaximalOptions options;
+options.min_length = 20;
+options.strands = sufkit::StrandMode::both;
+auto result = index.find_right_maximal_matches("GGGACGTACGTNNNGATTACA", options);
+```
 
-[Documentation](docs/README.md) · [中文说明](README.zh-CN.md) ·
-[Contributing](CONTRIBUTING.md) ·
-[Benchmark summary](docs/benchmarks/README.md)
+To reduce resident and serialized SA memory, set
+`SuffixArrayBuildOptions::sampling_rate` or pass `--sa-sampling-rate K`.
+The builder still constructs a complete SA before compacting it, so sampling
+does not reduce constructor peak memory. Sampled right-maximal search requires
+`min_length >= K`; direct `equal_range()` is intentionally unavailable because
+the sampled rows do not represent the complete suffix order.
+
+See the [installation guide](docs/getting-started/installation.md),
+[quick start](docs/getting-started/quickstart.md), and
+[index selection guide](docs/getting-started/choosing-an-index.md) before
+choosing a production backend.
+
+## Project boundaries
+
+- Linux/WSL x86_64 with GCC and Clang is the validated platform.
+- FM construction currently uses SDSL's in-memory `construct_im` path.
+- CaPS is a shared-memory builder and can use substantially more peak memory
+  than divsufsort; it is not a disk-backed constructor.
+- Sampled SA is text-position sampling over an initially complete SA, not a
+  direct sparse-SA constructor.
+- MUM, MAM, r-index/RLBWT, BigBWT/PFP, approximate matching, and
+  disk-cached construction are not implemented.
+- Synthetic profiles are useful for controlled comparisons but are not a
+  substitute for application-specific real-genome measurements.
+
+The [documentation hub](docs/README.md) separates short user guidance from
+API contracts, algorithm descriptions, internal architecture, contributor
+instructions, index-format details, and evidence-bounded benchmark reports.

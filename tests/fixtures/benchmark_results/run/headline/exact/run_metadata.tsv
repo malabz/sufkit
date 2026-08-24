@@ -1,0 +1,2 @@
+run_id	timestamp	profile	scenario	seed	dataset	dataset_fingerprint	total_bases	contigs	query_set_checksum	query_count	query_bases	compiler	compiler_version	cmake_version	build_type	os	architecture	cpu_model	logical_cpus
+fixture	2026-08-23T00:00:00Z	full	mixed	20260822	full-mixed	abcdef	268435456	4	query-set	10000	1000000	GCC	13.1.0	3.26.4	Release	Linux	x86_64	Fixture CPU	128

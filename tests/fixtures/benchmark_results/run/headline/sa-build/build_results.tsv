@@ -1,0 +1,3 @@
+method	effective_backend	threads	sampling_rate	acceleration	build_seconds_median	status
+div32	divsufsort32	1	1	suffix-link	13	ok
+caps32	caps32	64	1	suffix-link	6	ok

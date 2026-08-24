@@ -1,0 +1,166 @@
+workload	check	groups_checked	mismatches	status	details
+exact	unexpected_status	288703	0	ok	NA
+sa-build	unexpected_status	76	0	ok	NA
+right-maximal	unexpected_status	4512	0	ok	NA
+right-maximal	naive_oracle	25	0	ok	NA
+exact	repetition_result_stability	51378	0	ok	NA
+right-maximal	repetition_result_stability	958	0	ok	NA
+sa-build	repetition_result_stability	17	0	ok	NA
+exact	cross_method_result_equivalence	24780	0	ok	NA
+right-maximal	cross_method_result_equivalence	507	0	ok	NA
+sa-build	cross_method_exact_checksum	10	0	ok	NA
+sa-build	cross_method_right_maximal_checksum	10	0	ok	NA
+profile-audit	smoke:required_workload_exact	1	0	ok	present
+profile-audit	smoke:required_workload_sa-build	1	0	ok	present
+profile-audit	smoke:required_workload_right-maximal	1	0	ok	present
+profile-audit	smoke:recognized_raw_schemas	1	0	ok	all raw schemas recognized
+profile-audit	smoke:schema:smoke/exact/raw_repetitions.tsv	1	0	ok	57 columns; 23449 rows
+profile-audit	smoke:files:smoke/exact	1	0	ok	required TSV files present
+profile-audit	smoke:schema:smoke/right-maximal/raw_repetitions.tsv	1	0	ok	37 columns; 387 rows
+profile-audit	smoke:files:smoke/right-maximal	1	0	ok	required TSV files present
+profile-audit	smoke:schema:smoke/sa-build-caps-default-k1/raw_repetitions.tsv	1	0	ok	40 columns; 8 rows
+profile-audit	smoke:files:smoke/sa-build-caps-default-k1	1	0	ok	required TSV files present
+profile-audit	smoke:schema:smoke/sa-build-default-k1/raw_repetitions.tsv	1	0	ok	40 columns; 2 rows
+profile-audit	smoke:files:smoke/sa-build-default-k1	1	0	ok	required TSV files present
+profile-audit	smoke:schema:smoke/sa-build-full-k1/raw_repetitions.tsv	1	0	ok	40 columns; 1 rows
+profile-audit	smoke:files:smoke/sa-build-full-k1	1	0	ok	required TSV files present
+profile-audit	smoke:schema:smoke/sa-build-none-k1/raw_repetitions.tsv	1	0	ok	40 columns; 2 rows
+profile-audit	smoke:files:smoke/sa-build-none-k1	1	0	ok	required TSV files present
+profile-audit	smoke:schema:smoke/sa-build-sampled-k2-k4-k8/raw_repetitions.tsv	1	0	ok	40 columns; 3 rows
+profile-audit	smoke:files:smoke/sa-build-sampled-k2-k4-k8	1	0	ok	required TSV files present
+profile-audit	smoke:schema:smoke/sa-build-sapling-k1/raw_repetitions.tsv	1	0	ok	40 columns; 1 rows
+profile-audit	smoke:files:smoke/sa-build-sapling-k1	1	0	ok	required TSV files present
+profile-audit	smoke:exact_metadata_contract	1	0	ok	regular benchmark metadata matches its declared suite matrix
+profile-audit	smoke:exact:unexpected_status	1	0	ok	groups=23449; mismatches=0; details=NA
+profile-audit	smoke:sa-build:unexpected_status	1	0	ok	groups=17; mismatches=0; details=NA
+profile-audit	smoke:right-maximal:unexpected_status	1	0	ok	groups=387; mismatches=0; details=NA
+profile-audit	smoke:right-maximal:naive_oracle	1	0	ok	groups=3; mismatches=0; details=NA
+profile-audit	smoke:exact:repetition_result_stability	1	0	ok	groups=7770; mismatches=0; details=NA
+profile-audit	smoke:right-maximal:repetition_result_stability	1	0	ok	groups=108; mismatches=0; details=NA
+profile-audit	smoke:sa-build:repetition_result_stability	1	0	ok	groups=0; mismatches=0; details=single-repetition groups; cardinality checked by profile matrix
+profile-audit	smoke:exact:cross_method_result_equivalence	1	0	ok	groups=2205; mismatches=0; details=NA
+profile-audit	smoke:right-maximal:cross_method_result_equivalence	1	0	ok	groups=39; mismatches=0; details=NA
+profile-audit	smoke:sa-build:cross_method_exact_checksum	1	0	ok	groups=2; mismatches=0; details=NA
+profile-audit	smoke:sa-build:cross_method_right_maximal_checksum	1	0	ok	groups=2; mismatches=0; details=NA
+profile-audit	smoke:matrix_expected_scenarios	1	0	ok	scenarios=mixed
+profile-audit	smoke:matrix_exact_methods	1	0	ok	1 scenario(s) x 13 method(s)
+profile-audit	smoke:matrix_exact_query_slices	1	0	ok	all exact query slices have 3 measured repetition(s)
+profile-audit	smoke:matrix_exact_build_repetitions	1	0	ok	all exact build slices have 1 repetition(s); naive uses 1
+profile-audit	smoke:matrix_sa_build_submatrices	1	0	ok	17 SA-build configurations complete
+profile-audit	smoke:matrix_right_maximal_methods	1	0	ok	1 scenario(s) x 12 method/capability rows
+profile-audit	smoke:matrix_right_maximal_query_slices	1	0	ok	all right-maximal query slices have 3 repetition(s); FM capability rows are not_supported
+profile-audit	smoke:matrix_right_maximal_build_repetitions	1	0	ok	all right-maximal build slices have 1 repetition(s)
+profile-audit	quick:required_workload_exact	1	0	ok	present
+profile-audit	quick:required_workload_sa-build	1	0	ok	present
+profile-audit	quick:required_workload_right-maximal	1	0	ok	present
+profile-audit	quick:recognized_raw_schemas	1	0	ok	all raw schemas recognized
+profile-audit	quick:schema:quick/exact/raw_repetitions.tsv	1	0	ok	57 columns; 227008 rows
+profile-audit	quick:files:quick/exact	1	0	ok	required TSV files present
+profile-audit	quick:schema:quick/right-maximal/raw_repetitions.tsv	1	0	ok	37 columns; 3942 rows
+profile-audit	quick:files:quick/right-maximal	1	0	ok	required TSV files present
+profile-audit	quick:schema:quick/sa-build-caps-default-k1/raw_repetitions.tsv	1	0	ok	40 columns; 24 rows
+profile-audit	quick:files:quick/sa-build-caps-default-k1	1	0	ok	required TSV files present
+profile-audit	quick:schema:quick/sa-build-default-k1/raw_repetitions.tsv	1	0	ok	40 columns; 6 rows
+profile-audit	quick:files:quick/sa-build-default-k1	1	0	ok	required TSV files present
+profile-audit	quick:schema:quick/sa-build-full-k1/raw_repetitions.tsv	1	0	ok	40 columns; 3 rows
+profile-audit	quick:files:quick/sa-build-full-k1	1	0	ok	required TSV files present
+profile-audit	quick:schema:quick/sa-build-none-k1/raw_repetitions.tsv	1	0	ok	40 columns; 6 rows
+profile-audit	quick:files:quick/sa-build-none-k1	1	0	ok	required TSV files present
+profile-audit	quick:schema:quick/sa-build-sampled-k2-k4-k8/raw_repetitions.tsv	1	0	ok	40 columns; 9 rows
+profile-audit	quick:files:quick/sa-build-sampled-k2-k4-k8	1	0	ok	required TSV files present
+profile-audit	quick:schema:quick/sa-build-sapling-k1/raw_repetitions.tsv	1	0	ok	40 columns; 3 rows
+profile-audit	quick:files:quick/sa-build-sapling-k1	1	0	ok	required TSV files present
+profile-audit	quick:exact_metadata_contract	1	0	ok	regular benchmark metadata matches its declared suite matrix
+profile-audit	quick:exact:unexpected_status	1	0	ok	groups=227008; mismatches=0; details=NA
+profile-audit	quick:sa-build:unexpected_status	1	0	ok	groups=51; mismatches=0; details=NA
+profile-audit	quick:right-maximal:unexpected_status	1	0	ok	groups=3942; mismatches=0; details=NA
+profile-audit	quick:right-maximal:naive_oracle	1	0	ok	groups=18; mismatches=0; details=NA
+profile-audit	quick:exact:repetition_result_stability	1	0	ok	groups=42642; mismatches=0; details=NA
+profile-audit	quick:right-maximal:repetition_result_stability	1	0	ok	groups=810; mismatches=0; details=NA
+profile-audit	quick:sa-build:repetition_result_stability	1	0	ok	groups=17; mismatches=0; details=NA
+profile-audit	quick:exact:cross_method_result_equivalence	1	0	ok	groups=21630; mismatches=0; details=NA
+profile-audit	quick:right-maximal:cross_method_result_equivalence	1	0	ok	groups=414; mismatches=0; details=NA
+profile-audit	quick:sa-build:cross_method_exact_checksum	1	0	ok	groups=6; mismatches=0; details=NA
+profile-audit	quick:sa-build:cross_method_right_maximal_checksum	1	0	ok	groups=6; mismatches=0; details=NA
+profile-audit	quick:matrix_expected_scenarios	1	0	ok	scenarios=mixed,balanced,gc-skewed,repeat-rich,n-islands,many-contig
+profile-audit	quick:matrix_exact_methods	1	0	ok	6 scenario(s) x 13 method(s)
+profile-audit	quick:matrix_exact_query_slices	1	0	ok	all exact query slices have 5 measured repetition(s); quick naive uses 1
+profile-audit	quick:matrix_exact_build_repetitions	1	0	ok	all exact build slices have 3 repetition(s); naive uses 1
+profile-audit	quick:matrix_sa_build_submatrices	1	0	ok	17 SA-build configurations complete
+profile-audit	quick:matrix_right_maximal_methods	1	0	ok	6 scenario(s) x 12 method/capability rows
+profile-audit	quick:matrix_right_maximal_query_slices	1	0	ok	all right-maximal query slices have 5 repetition(s); FM capability rows are not_supported
+profile-audit	quick:matrix_right_maximal_build_repetitions	1	0	ok	all right-maximal build slices have 3 repetition(s)
+profile-audit	standard:required_workload_exact	1	0	ok	present
+profile-audit	standard:required_workload_sa-build	1	0	ok	present
+profile-audit	standard:required_workload_right-maximal	1	0	ok	present
+profile-audit	standard:recognized_raw_schemas	1	0	ok	all raw schemas recognized
+profile-audit	standard:schema:standard/exact/raw_repetitions.tsv	1	0	ok	57 columns; 7280 rows
+profile-audit	standard:files:standard/exact	1	0	ok	required TSV files present
+profile-audit	standard:schema:standard/right-maximal/raw_repetitions.tsv	1	0	ok	37 columns; 105 rows
+profile-audit	standard:files:standard/right-maximal	1	0	ok	required TSV files present
+profile-audit	standard:schema:standard/sa-build-caps-default-k1-t64/raw_repetitions.tsv	1	0	ok	40 columns; 1 rows
+profile-audit	standard:files:standard/sa-build-caps-default-k1-t64	1	0	ok	required TSV files present
+profile-audit	standard:schema:standard/sa-build-default-k1/raw_repetitions.tsv	1	0	ok	40 columns; 2 rows
+profile-audit	standard:files:standard/sa-build-default-k1	1	0	ok	required TSV files present
+profile-audit	standard:schema:standard/sa-build-sampled-k4/raw_repetitions.tsv	1	0	ok	40 columns; 1 rows
+profile-audit	standard:files:standard/sa-build-sampled-k4	1	0	ok	required TSV files present
+profile-audit	standard:exact_metadata_contract	1	0	ok	regular benchmark metadata matches its declared suite matrix
+profile-audit	standard:exact:unexpected_status	1	0	ok	groups=7280; mismatches=0; details=NA
+profile-audit	standard:sa-build:unexpected_status	1	0	ok	groups=4; mismatches=0; details=NA
+profile-audit	standard:right-maximal:unexpected_status	1	0	ok	groups=105; mismatches=0; details=NA
+profile-audit	standard:right-maximal:naive_oracle	1	0	ok	groups=2; mismatches=0; details=NA
+profile-audit	standard:exact:repetition_result_stability	1	0	ok	groups=756; mismatches=0; details=NA
+profile-audit	standard:right-maximal:repetition_result_stability	1	0	ok	groups=24; mismatches=0; details=NA
+profile-audit	standard:sa-build:repetition_result_stability	1	0	ok	groups=0; mismatches=0; details=single-repetition groups; cardinality checked by profile matrix
+profile-audit	standard:exact:cross_method_result_equivalence	1	0	ok	groups=567; mismatches=0; details=NA
+profile-audit	standard:right-maximal:cross_method_result_equivalence	1	0	ok	groups=27; mismatches=0; details=NA
+profile-audit	standard:sa-build:cross_method_exact_checksum	1	0	ok	groups=1; mismatches=0; details=NA
+profile-audit	standard:sa-build:cross_method_right_maximal_checksum	1	0	ok	groups=1; mismatches=0; details=NA
+profile-audit	standard:matrix_expected_scenarios	1	0	ok	scenarios=mixed
+profile-audit	standard:matrix_exact_methods	1	0	ok	1 scenario(s) x 4 method(s)
+profile-audit	standard:matrix_exact_query_slices	1	0	ok	all exact query slices have 3 measured repetition(s)
+profile-audit	standard:matrix_exact_build_repetitions	1	0	ok	all exact build slices have 1 repetition(s); naive uses 1
+profile-audit	standard:matrix_sa_build_submatrices	1	0	ok	4 SA-build configurations complete
+profile-audit	standard:matrix_right_maximal_methods	1	0	ok	1 scenario(s) x 3 method/capability rows
+profile-audit	standard:matrix_right_maximal_query_slices	1	0	ok	all right-maximal query slices have 3 repetition(s); FM capability rows are not_supported
+profile-audit	standard:matrix_right_maximal_build_repetitions	1	0	ok	all right-maximal build slices have 1 repetition(s)
+profile-audit	full:required_workload_exact	1	0	ok	present
+profile-audit	full:required_workload_sa-build	1	0	ok	present
+profile-audit	full:required_workload_right-maximal	1	0	ok	present
+profile-audit	full:recognized_raw_schemas	1	0	ok	all raw schemas recognized
+profile-audit	full:schema:full/exact/raw_repetitions.tsv	1	0	ok	57 columns; 10387 rows
+profile-audit	full:files:full/exact	1	0	ok	required TSV files present
+profile-audit	full:schema:full/right-maximal/raw_repetitions.tsv	1	0	ok	37 columns; 78 rows
+profile-audit	full:files:full/right-maximal	1	0	ok	required TSV files present
+profile-audit	full:schema:full/sa-build-caps-default-k1-t64/raw_repetitions.tsv	1	0	ok	40 columns; 1 rows
+profile-audit	full:files:full/sa-build-caps-default-k1-t64	1	0	ok	required TSV files present
+profile-audit	full:schema:full/sa-build-default-k1/raw_repetitions.tsv	1	0	ok	40 columns; 2 rows
+profile-audit	full:files:full/sa-build-default-k1	1	0	ok	required TSV files present
+profile-audit	full:schema:full/sa-build-sampled-k4/raw_repetitions.tsv	1	0	ok	40 columns; 1 rows
+profile-audit	full:files:full/sa-build-sampled-k4	1	0	ok	required TSV files present
+profile-audit	full:exact_metadata_contract	1	0	ok	regular benchmark metadata matches its declared suite matrix
+profile-audit	full:exact:unexpected_status	1	0	ok	groups=10387; mismatches=0; details=NA
+profile-audit	full:sa-build:unexpected_status	1	0	ok	groups=4; mismatches=0; details=NA
+profile-audit	full:right-maximal:unexpected_status	1	0	ok	groups=78; mismatches=0; details=NA
+profile-audit	full:right-maximal:naive_oracle	1	0	ok	groups=2; mismatches=0; details=NA
+profile-audit	full:exact:repetition_result_stability	1	0	ok	groups=126; mismatches=0; details=NA
+profile-audit	full:right-maximal:repetition_result_stability	1	0	ok	groups=16; mismatches=0; details=NA
+profile-audit	full:sa-build:repetition_result_stability	1	0	ok	groups=0; mismatches=0; details=single-repetition groups; cardinality checked by profile matrix
+profile-audit	full:exact:cross_method_result_equivalence	1	0	ok	groups=126; mismatches=0; details=NA
+profile-audit	full:right-maximal:cross_method_result_equivalence	1	0	ok	groups=27; mismatches=0; details=NA
+profile-audit	full:sa-build:cross_method_exact_checksum	1	0	ok	groups=1; mismatches=0; details=NA
+profile-audit	full:sa-build:cross_method_right_maximal_checksum	1	0	ok	groups=1; mismatches=0; details=NA
+profile-audit	full:matrix_expected_scenarios	1	0	ok	scenarios=mixed
+profile-audit	full:matrix_exact_methods	1	0	ok	1 scenario(s) x 3 method(s)
+profile-audit	full:matrix_exact_query_slices	1	0	ok	all exact query slices have 3 measured repetition(s)
+profile-audit	full:matrix_exact_build_repetitions	1	0	ok	all exact build slices have 1 repetition(s); naive uses 1
+profile-audit	full:matrix_sa_build_submatrices	1	0	ok	2 SA-build configurations complete
+profile-audit	full:matrix_right_maximal_methods	1	0	ok	1 scenario(s) x 2 method/capability rows
+profile-audit	full:matrix_right_maximal_query_slices	1	0	ok	all right-maximal query slices have 3 repetition(s); FM capability rows are not_supported
+profile-audit	full:matrix_right_maximal_build_repetitions	1	0	ok	all right-maximal build slices have 1 repetition(s)
+snapshot	completed_stage_markers	1	0	ok	all required .complete markers present
+snapshot	excluded_unfinished_headline_right_maximal	1	0	ok	dedicated headline/right-maximal excluded; full/right-maximal used
+snapshot	snapshot_headline_build_repetitions	1	0	ok	three dedicated build repetitions
+snapshot	snapshot_headline_exact_repetitions	1	0	ok	five dedicated exact repetitions
+snapshot	snapshot_full_right_maximal_repetitions	1	0	ok	three audited full repetitions
+snapshot	snapshot_right_maximal_checksum_stability	1	0	ok	stable across three repetitions

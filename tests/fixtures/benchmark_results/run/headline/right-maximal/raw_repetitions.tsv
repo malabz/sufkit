@@ -1,0 +1,3 @@
+dataset	method	operation	min_length	repetition	seconds	peak_rss_mb	peak_rss_scope	query_bases	serialized_bytes	allocated_disk_bytes	auxiliary_bytes	total_matches	reported_matches	count_checksum	result_checksum	status
+full-mixed	right-maximal-baseline	streaming	50	0	10.0	300	query_worker	2560000	2147483648	2147483648	1024	100000	100000	c1	r1	ok
+full-mixed	right-maximal-suffix-link	streaming	50	0	2.0	400	query_worker	2560000	2147483648	2147483648	536870912	100000	100000	c1	r1	ok

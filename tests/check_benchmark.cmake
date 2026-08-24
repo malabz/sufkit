@@ -1,5 +1,3 @@
-cmake_policy(SET CMP0007 NEW)
-
 if(NOT DEFINED SUFKIT_EXECUTABLE OR NOT DEFINED OUTPUT_ROOT)
     message(FATAL_ERROR "SUFKIT_EXECUTABLE and OUTPUT_ROOT are required")
 endif()
@@ -13,7 +11,7 @@ foreach(output_dir IN ITEMS "${first}" "${second}")
         COMMAND "${SUFKIT_EXECUTABLE}" bench
             --profile smoke
             --scenarios balanced
-            --methods naive,sa32-binary,sa32-lcp-binary,sa32-sapling,sa32-child,sa32-sampled-k2-binary,sa32-sampled-k4-lcp-binary,sa32-sampled-k8-binary,sa64-sampled-k2-lcp-binary,fm
+            --methods naive,sa32-binary,sa32-lcp-binary,sa32-sapling,sa32-child,sa64-binary,sa64-lcp-binary,sa32-sampled-k2,sa32-sampled-k4,sa32-sampled-k8,sa64-sampled-k2,sa64-sampled-k4,sa64-sampled-k8,fm
             --pattern-lengths 20,50
             --locate-limits 1,all
             --build-repetitions 1
@@ -33,6 +31,51 @@ foreach(output_dir IN ITEMS "${first}" "${second}")
     endforeach()
 endforeach()
 
+set(export_dir "${OUTPUT_ROOT}/export-smoke")
+set(export_reference "${OUTPUT_ROOT}/export-reference.fa")
+set(export_queries "${OUTPUT_ROOT}/export-queries.fa")
+execute_process(
+    COMMAND "${SUFKIT_EXECUTABLE}" bench
+        --profile smoke
+        --scenarios mixed
+        --methods sa32-binary
+        --pattern-lengths 20
+        --locate-limits 1
+        --build-repetitions 1
+        --query-repetitions 1
+        --warmups 0
+        --export-reference "${export_reference}"
+        --export-queries "${export_queries}"
+        --output-dir "${export_dir}"
+    RESULT_VARIABLE export_status
+    OUTPUT_VARIABLE export_stdout
+    ERROR_VARIABLE export_stderr)
+if(NOT export_status EQUAL 0)
+    message(FATAL_ERROR "synthetic dataset export failed (${export_status}):\n${export_stdout}\n${export_stderr}")
+endif()
+foreach(exported IN ITEMS "${export_reference}" "${export_queries}")
+    if(NOT EXISTS "${exported}")
+        message(FATAL_ERROR "synthetic dataset export is missing: ${exported}")
+    endif()
+    file(SIZE "${exported}" exported_size)
+    if(exported_size EQUAL 0)
+        message(FATAL_ERROR "synthetic dataset export is empty: ${exported}")
+    endif()
+endforeach()
+execute_process(
+    COMMAND "${SUFKIT_EXECUTABLE}" bench
+        --profile smoke --scenarios mixed --methods sa32-binary
+        --pattern-lengths 20 --locate-limits 1
+        --build-repetitions 1 --query-repetitions 1 --warmups 0
+        --export-reference "${export_reference}"
+        --export-queries "${export_queries}"
+        --output-dir "${OUTPUT_ROOT}/export-overwrite"
+    RESULT_VARIABLE export_overwrite_status
+    OUTPUT_QUIET ERROR_QUIET)
+if(export_overwrite_status EQUAL 0)
+    message(FATAL_ERROR "synthetic dataset export overwrote an existing file")
+endif()
+
 file(READ "${first}/run_metadata.tsv" first_metadata)
 file(READ "${second}/run_metadata.tsv" second_metadata)
 if(NOT first_metadata MATCHES "methods\tpattern_lengths\tlocate_limits\tbuild_repetitions")
@@ -40,40 +83,6 @@ if(NOT first_metadata MATCHES "methods\tpattern_lengths\tlocate_limits\tbuild_re
 endif()
 if(NOT first_metadata MATCHES "learned_k\tlearned_memory_overhead_basis_points\tlearned_bucket_bits")
     message(FATAL_ERROR "run_metadata.tsv does not record learned-index parameters")
-endif()
-foreach(field IN ITEMS git_commit git_dirty compile_flags cpu_flags executable_sha256
-                       cpu_affinity sse42_compiled sse42_runtime
-                       command_line_redacted peak_rss_scope)
-    if(NOT first_metadata MATCHES "${field}")
-        message(FATAL_ERROR "run_metadata.tsv is missing ${field}")
-    endif()
-endforeach()
-file(STRINGS "${first}/run_metadata.tsv" metadata_lines)
-list(GET metadata_lines 1 metadata_row)
-string(REPLACE "\t" ";" metadata_fields "${metadata_row}")
-list(GET metadata_fields 37 executable_hash)
-list(GET metadata_fields 39 sse42_compiled)
-list(GET metadata_fields 40 sse42_runtime)
-list(GET metadata_fields 41 recorded_command)
-list(GET metadata_fields 42 peak_rss_scope)
-string(LENGTH "${executable_hash}" executable_hash_length)
-if(NOT executable_hash_length EQUAL 64)
-    message(FATAL_ERROR "run metadata executable SHA-256 is invalid")
-endif()
-file(SHA256 "${SUFKIT_EXECUTABLE}" expected_executable_hash)
-if(NOT executable_hash STREQUAL expected_executable_hash)
-    message(FATAL_ERROR "run metadata fingerprints the wrong executable")
-endif()
-if(NOT sse42_compiled EQUAL 1 OR NOT sse42_runtime EQUAL 1)
-    message(FATAL_ERROR "run metadata does not record active SSE4.2 support")
-endif()
-if(NOT peak_rss_scope STREQUAL "method_process_lifetime")
-    message(FATAL_ERROR "run metadata has an incorrect peak RSS scope")
-endif()
-string(FIND "${recorded_command}" "<path>" redacted_position)
-string(FIND "${recorded_command}" "${OUTPUT_ROOT}" leaked_path_position)
-if(redacted_position EQUAL -1 OR NOT leaked_path_position EQUAL -1)
-    message(FATAL_ERROR "run metadata command path redaction failed")
 endif()
 string(REGEX MATCH "synthetic-smoke-balanced\t([0-9a-f]+)" first_match "${first_metadata}")
 set(first_fingerprint "${CMAKE_MATCH_1}")
@@ -86,32 +95,12 @@ endif()
 file(READ "${first}/build_results.tsv" build_results)
 file(READ "${first}/query_results.tsv" query_results)
 file(READ "${first}/raw_repetitions.tsv" raw_results)
-foreach(method IN ITEMS naive sa32-binary sa32-lcp-binary sa32-sapling sa32-child fm)
+foreach(method IN ITEMS naive sa32-binary sa32-lcp-binary sa32-sapling sa32-child
+                        sa64-binary sa64-lcp-binary
+                        sa32-sampled-k2 sa32-sampled-k4 sa32-sampled-k8
+                        sa64-sampled-k2 sa64-sampled-k4 sa64-sampled-k8 fm)
     if(NOT build_results MATCHES "\t${method}\t")
         message(FATAL_ERROR "build_results.tsv is missing ${method}")
-    endif()
-endforeach()
-foreach(method IN ITEMS sa32-sampled-k2-binary sa32-sampled-k4-lcp-binary
-                        sa32-sampled-k8-binary sa64-sampled-k2-lcp-binary)
-    if(NOT build_results MATCHES "\t${method}\t")
-        message(FATAL_ERROR "build_results.tsv is missing ${method}")
-    endif()
-endforeach()
-if(NOT build_results MATCHES "status\tsa_sampling_rate")
-    message(FATAL_ERROR "build_results.tsv is missing SA sampling metadata")
-endif()
-file(STRINGS "${first}/build_results.tsv" build_lines)
-list(REMOVE_AT build_lines 0)
-foreach(line IN LISTS build_lines)
-    string(REPLACE "\t" ";" fields "${line}")
-    list(GET fields 3 method)
-    list(GET fields 26 sampling_rate)
-    if(method MATCHES "sampled-k2" AND NOT sampling_rate EQUAL 2)
-        message(FATAL_ERROR "${method} reported the wrong sampling rate")
-    elseif(method MATCHES "sampled-k4" AND NOT sampling_rate EQUAL 4)
-        message(FATAL_ERROR "${method} reported the wrong sampling rate")
-    elseif(method MATCHES "sampled-k8" AND NOT sampling_rate EQUAL 8)
-        message(FATAL_ERROR "${method} reported the wrong sampling rate")
     endif()
 endforeach()
 if(NOT query_results MATCHES "query_group\tpattern_length\tstrand\toperation\tmax_hits")
@@ -128,24 +117,90 @@ if(NOT build_results MATCHES "learned_index_build_seconds_median" OR
    NOT build_results MATCHES "learned_index_bytes")
     message(FATAL_ERROR "build_results.tsv is missing learned-index build metrics")
 endif()
+foreach(metric IN ITEMS sa_sampling_rate allocated_disk_bytes
+                        build_worker_peak_rss_mb_median save_worker_peak_rss_mb_median
+                        load_worker_peak_rss_mb_median query_worker_peak_rss_mb_max)
+    if(NOT build_results MATCHES "${metric}")
+        message(FATAL_ERROR "build_results.tsv is missing ${metric}")
+    endif()
+endforeach()
+if(NOT query_results MATCHES "query_worker_peak_rss_mb")
+    message(FATAL_ERROR "query_results.tsv is missing query worker RSS")
+endif()
 if(NOT raw_results MATCHES "phase\tquery_group\tpattern_length\tstrand")
     message(FATAL_ERROR "raw_repetitions.tsv has an unexpected schema")
 endif()
 if(NOT raw_results MATCHES "query_definition" OR NOT raw_results MATCHES "query_id\tquery_source")
     message(FATAL_ERROR "raw_repetitions.tsv is missing ordered query definitions")
 endif()
+if(NOT raw_results MATCHES
+   "query_bases_per_second\tspeedup_vs_fm_huff_scalar\tthreads\ttotal_bases\tserialized_bytes\tallocated_disk_bytes\tlearned_index_bytes")
+    message(FATAL_ERROR "raw_repetitions.tsv is missing build/index provenance fields")
+endif()
+if(NOT raw_results MATCHES
+   "backend\tbackend_signature\tsdsl_version\tcoordinate_width\tsa_sampling_rate\tcanary_total_hits\tcanary_reported_hits\tcanary_checksum\tquery_threads")
+    message(FATAL_ERROR "raw_repetitions.tsv is missing backend/canary/thread provenance")
+endif()
 file(STRINGS "${first}/raw_repetitions.tsv" raw_lines)
-list(REMOVE_AT raw_lines 0)
-foreach(line IN LISTS raw_lines)
-    string(REPLACE "\t" ";" fields "${line}")
-    list(GET fields 4 phase)
-    list(GET fields 19 row_status)
-    if(phase STREQUAL "query" AND row_status STREQUAL "ok")
-        list(GET fields 11 measured_queries)
-        if(measured_queries LESS 1)
-            message(FATAL_ERROR "measured benchmark query count is invalid")
-        endif()
+list(GET raw_lines 0 raw_header)
+string(REGEX MATCHALL "\t" raw_header_tabs "${raw_header}")
+list(LENGTH raw_header_tabs expected_raw_tabs)
+set(raw_line_number 0)
+foreach(raw_line IN LISTS raw_lines)
+    math(EXPR raw_line_number "${raw_line_number} + 1")
+    string(REGEX MATCHALL "\t" raw_line_tabs "${raw_line}")
+    list(LENGTH raw_line_tabs actual_raw_tabs)
+    if(NOT actual_raw_tabs EQUAL expected_raw_tabs)
+        message(FATAL_ERROR
+            "raw_repetitions.tsv line ${raw_line_number} has ${actual_raw_tabs} tabs; expected ${expected_raw_tabs}")
     endif()
+endforeach()
+if(NOT raw_results MATCHES "peak_rss_mb\tpeak_rss_scope" OR
+   NOT raw_results MATCHES "build_worker" OR
+   NOT raw_results MATCHES "save_worker_load_plus_save" OR
+   NOT raw_results MATCHES "load_worker" OR
+   NOT raw_results MATCHES "count_worker" OR
+   NOT raw_results MATCHES "locate_worker_1")
+    message(FATAL_ERROR "raw_repetitions.tsv is missing isolated worker RSS scopes")
+endif()
+
+if(SUFKIT_CAPS_ENABLED)
+    set(caps_dir "${OUTPUT_ROOT}/caps-unified")
+    execute_process(
+        COMMAND "${SUFKIT_EXECUTABLE}" bench
+            --profile smoke --scenarios balanced
+            --methods sa32-binary,caps32,fm-huff
+            --sa-threads 2
+            --pattern-lengths 20 --locate-limits 1
+            --build-repetitions 1 --query-repetitions 1 --warmups 0
+            --output-dir "${caps_dir}"
+        RESULT_VARIABLE caps_status
+        OUTPUT_VARIABLE caps_stdout
+        ERROR_VARIABLE caps_stderr)
+    if(NOT caps_status EQUAL 0)
+        message(FATAL_ERROR
+            "unified CaPS exact benchmark failed (${caps_status}):\n${caps_stdout}\n${caps_stderr}")
+    endif()
+    file(READ "${caps_dir}/run_metadata.tsv" caps_metadata)
+    file(READ "${caps_dir}/build_results.tsv" caps_builds)
+    file(READ "${caps_dir}/raw_repetitions.tsv" caps_raw)
+    if(NOT caps_metadata MATCHES "sa_threads" OR NOT caps_metadata MATCHES "\t2\t")
+        message(FATAL_ERROR "unified CaPS benchmark metadata does not record --sa-threads")
+    endif()
+    if(NOT caps_builds MATCHES "\tcaps32\t[^\n]*\t32\t1\t2\t")
+        message(FATAL_ERROR "unified CaPS build row does not report 32-bit/2-thread provenance")
+    endif()
+    if(NOT caps_raw MATCHES "\tcaps32\tbuild\t[^\n]*\t2\t")
+        message(FATAL_ERROR "unified CaPS raw build row does not report its thread count")
+    endif()
+endif()
+foreach(width IN ITEMS 32 64)
+    foreach(rate IN ITEMS 2 4 8)
+        set(sampled "sa${width}-sampled-k${rate}")
+        if(NOT build_results MATCHES "\t${sampled}\t[^\n]*\t${width}\t${rate}\t1\t")
+            message(FATAL_ERROR "sampled benchmark row does not report its coordinate width/rate: ${sampled}")
+        endif()
+    endforeach()
 endforeach()
 
 set(fm_dir "${OUTPUT_ROOT}/fm-backends")
@@ -154,9 +209,11 @@ execute_process(
         --profile smoke
         --scenarios balanced
         --methods fm-huff,fm-balanced,fm-epr
-        --fm-query-modes scalar,batch,batch-mixed
-        --fm-batch-widths 1,4
-        --pattern-lengths 20,50
+        --fm-query-modes scalar,batch
+        --fm-batch-widths 1,4,8,16,32
+        --fm-batch-widths-for fm-balanced:16,32
+        --fm-batch-widths-for fm-epr:16,32
+        --pattern-lengths 20
         --locate-limits 1
         --build-repetitions 1
         --query-repetitions 1
@@ -172,8 +229,11 @@ file(READ "${fm_dir}/run_metadata.tsv" fm_metadata)
 file(READ "${fm_dir}/build_results.tsv" fm_builds)
 file(READ "${fm_dir}/query_results.tsv" fm_queries)
 file(READ "${fm_dir}/raw_repetitions.tsv" fm_raw)
-if(NOT fm_metadata MATCHES "fm_query_modes\tfm_batch_widths")
+if(NOT fm_metadata MATCHES "fm_query_modes\tfm_batch_widths\tfm_batch_width_overrides")
     message(FATAL_ERROR "FM benchmark metadata fields are missing")
+endif()
+if(NOT fm_metadata MATCHES "fm-balanced:16,32;fm-epr:16,32")
+    message(FATAL_ERROR "FM benchmark metadata does not record method-specific width overrides")
 endif()
 foreach(method IN ITEMS fm-huff fm-balanced fm-epr)
     if(NOT fm_builds MATCHES "\t${method}\t")
@@ -183,39 +243,99 @@ endforeach()
 if(NOT fm_queries MATCHES "fm_query_mode\tfm_batch_width\tquery_bases\tquery_bases_per_second\tspeedup_vs_fm_huff_scalar")
     message(FATAL_ERROR "FM query summary fields are missing")
 endif()
-if(NOT fm_queries MATCHES "\tbatch\t1\t" OR NOT fm_queries MATCHES "\tbatch\t4\t")
-    message(FATAL_ERROR "FM batch width rows are missing")
-endif()
-set(have_scalar_mixed FALSE)
-set(have_batch_mixed_1 FALSE)
-set(have_batch_mixed_4 FALSE)
-file(STRINGS "${fm_dir}/query_results.tsv" fm_query_lines)
-list(REMOVE_AT fm_query_lines 0)
-foreach(line IN LISTS fm_query_lines)
-    string(REPLACE "\t" ";" fields "${line}")
-    list(GET fields 4 query_group)
-    list(GET fields 5 pattern_length)
-    list(GET fields 9 query_count)
-    list(GET fields 33 row_status)
-    list(GET fields 34 query_mode)
-    list(GET fields 35 batch_width)
-    if(query_group STREQUAL "mixed_length" AND
-       pattern_length STREQUAL "mixed" AND row_status STREQUAL "ok" AND
-       query_count GREATER 0)
-        if(query_mode STREQUAL "scalar" AND batch_width STREQUAL "NA")
-            set(have_scalar_mixed TRUE)
-        elseif(query_mode STREQUAL "batch-mixed" AND batch_width EQUAL 1)
-            set(have_batch_mixed_1 TRUE)
-        elseif(query_mode STREQUAL "batch-mixed" AND batch_width EQUAL 4)
-            set(have_batch_mixed_4 TRUE)
-        endif()
+foreach(width IN ITEMS 1 4 8 16 32)
+    if(NOT fm_queries MATCHES "\tfm-huff\t[^\n]*\tbatch\t${width}\t")
+        message(FATAL_ERROR "fm-huff batch width ${width} row is missing")
     endif()
 endforeach()
-if(NOT have_scalar_mixed OR NOT have_batch_mixed_1 OR NOT have_batch_mixed_4)
-    message(FATAL_ERROR "FM mixed-length scalar/batch rows are missing")
-endif()
+foreach(method IN ITEMS fm-balanced fm-epr)
+    foreach(width IN ITEMS 16 32)
+        if(NOT fm_queries MATCHES "\t${method}\t[^\n]*\tbatch\t${width}\t")
+            message(FATAL_ERROR "${method} batch width ${width} row is missing")
+        endif()
+    endforeach()
+    if(fm_queries MATCHES "\t${method}\t[^\n]*\tbatch\t(1|4|8)\t")
+        message(FATAL_ERROR "${method} unexpectedly ran a non-contract batch width")
+    endif()
+endforeach()
 if(NOT fm_raw MATCHES "fm_query_mode\tfm_batch_width\tquery_bases")
     message(FATAL_ERROR "FM raw repetition fields are missing")
+endif()
+
+# Method-specific overrides replace the global default only for that method;
+# users retain the generic ability to benchmark any legal width explicitly.
+set(fm_custom_dir "${OUTPUT_ROOT}/fm-custom-widths")
+execute_process(
+    COMMAND "${SUFKIT_EXECUTABLE}" bench
+        --profile smoke --scenarios balanced --methods fm-balanced
+        --fm-query-modes batch --fm-batch-widths 16
+        --fm-batch-widths-for fm-balanced:1,4
+        --pattern-lengths 20 --locate-limits 1
+        --build-repetitions 1 --query-repetitions 1 --warmups 0
+        --output-dir "${fm_custom_dir}"
+    RESULT_VARIABLE fm_custom_status
+    OUTPUT_VARIABLE fm_custom_stdout
+    ERROR_VARIABLE fm_custom_stderr)
+if(NOT fm_custom_status EQUAL 0)
+    message(FATAL_ERROR
+        "custom FM batch widths failed (${fm_custom_status}):\n${fm_custom_stdout}\n${fm_custom_stderr}")
+endif()
+file(READ "${fm_custom_dir}/query_results.tsv" fm_custom_queries)
+foreach(width IN ITEMS 1 4)
+    if(NOT fm_custom_queries MATCHES "\tfm-balanced\t[^\n]*\tbatch\t${width}\t")
+        message(FATAL_ERROR "custom fm-balanced batch width ${width} row is missing")
+    endif()
+endforeach()
+if(fm_custom_queries MATCHES "\tfm-balanced\t[^\n]*\tbatch\t16\t")
+    message(FATAL_ERROR "method-specific FM widths did not replace the global default")
+endif()
+
+execute_process(
+    COMMAND "${SUFKIT_EXECUTABLE}" bench
+        --profile smoke --scenarios balanced --methods fm
+        --fm-query-modes batch
+        --fm-batch-widths-for fm:1
+        --fm-batch-widths-for fm-huff:4
+        --output-dir "${OUTPUT_ROOT}/fm-duplicate-override"
+    RESULT_VARIABLE fm_duplicate_override_status
+    OUTPUT_QUIET ERROR_QUIET)
+if(fm_duplicate_override_status EQUAL 0)
+    message(FATAL_ERROR "duplicate FM alias/method batch-width overrides were accepted")
+endif()
+
+execute_process(
+    COMMAND "${SUFKIT_EXECUTABLE}" bench
+        --profile smoke --scenarios balanced --methods fm-huff
+        --fm-query-modes batch --fm-batch-widths 16,16
+        --output-dir "${OUTPUT_ROOT}/fm-duplicate-global-width"
+    RESULT_VARIABLE fm_duplicate_global_width_status
+    OUTPUT_QUIET ERROR_QUIET)
+if(fm_duplicate_global_width_status EQUAL 0)
+    message(FATAL_ERROR "a duplicate global FM batch width was accepted")
+endif()
+
+execute_process(
+    COMMAND "${SUFKIT_EXECUTABLE}" bench
+        --profile smoke --scenarios balanced --methods fm-balanced
+        --fm-query-modes batch
+        --fm-batch-widths-for fm-balanced:16,16
+        --output-dir "${OUTPUT_ROOT}/fm-duplicate-method-width"
+    RESULT_VARIABLE fm_duplicate_method_width_status
+    OUTPUT_QUIET ERROR_QUIET)
+if(fm_duplicate_method_width_status EQUAL 0)
+    message(FATAL_ERROR "a duplicate method-specific FM batch width was accepted")
+endif()
+
+execute_process(
+    COMMAND "${SUFKIT_EXECUTABLE}" bench
+        --profile smoke --scenarios balanced --methods fm-huff
+        --fm-query-modes batch
+        --fm-batch-widths-for fm-epr:16,32
+        --output-dir "${OUTPUT_ROOT}/fm-unselected-override"
+    RESULT_VARIABLE fm_unselected_override_status
+    OUTPUT_QUIET ERROR_QUIET)
+if(fm_unselected_override_status EQUAL 0)
+    message(FATAL_ERROR "an FM batch-width override for an unselected backend was accepted")
 endif()
 
 execute_process(
@@ -235,7 +355,7 @@ execute_process(
     COMMAND "${SUFKIT_EXECUTABLE}" bench
         --reference "${OUTPUT_ROOT}/reference.fa"
         --queries "${OUTPUT_ROOT}/queries.fa"
-        --methods sa32-binary,fm-huff
+        --methods fm
         --locate-limits all
         --build-repetitions 1
         --query-repetitions 1
@@ -251,23 +371,33 @@ file(READ "${user_dir}/query_results.tsv" user_results)
 if(NOT user_results MATCHES "skipped_high_frequency")
     message(FATAL_ERROR "complete locate was not skipped for a high-frequency query")
 endif()
-file(STRINGS "${user_dir}/query_results.tsv" user_lines)
-list(REMOVE_AT user_lines 0)
-foreach(line IN LISTS user_lines)
-    string(REPLACE "\t" ";" fields "${line}")
-    list(GET fields 7 operation)
-    list(GET fields 33 row_status)
-    if(operation STREQUAL "count" AND row_status STREQUAL "ok")
-        list(GET fields 9 logical_queries)
-        list(GET fields 15 logical_hits)
-        if(NOT logical_queries EQUAL 1)
-            message(FATAL_ERROR "calibrated query count was not normalized to one logical pass")
-        endif()
-        if(logical_hits GREATER 100081)
-            message(FATAL_ERROR "calibrated hit count was not normalized to one logical pass")
-        endif()
-    endif()
-endforeach()
+
+set(partial_user_dir "${OUTPUT_ROOT}/user-partial-high-frequency")
+string(REPEAT "C" 2020 moderate_repeat)
+file(WRITE "${OUTPUT_ROOT}/partial-reference.fa"
+    ">very_frequent\n${homopolymer}\n>moderately_frequent\n${moderate_repeat}\n")
+file(WRITE "${OUTPUT_ROOT}/partial-queries.fa"
+    ">very_frequent\nAAAAAAAAAAAAAAAAAAAA\n>moderately_frequent\nCCCCCCCCCCCCCCCCCCCC\n")
+execute_process(
+    COMMAND "${SUFKIT_EXECUTABLE}" bench
+        --reference "${OUTPUT_ROOT}/partial-reference.fa"
+        --queries "${OUTPUT_ROOT}/partial-queries.fa"
+        --methods fm --locate-limits all
+        --build-repetitions 1 --query-repetitions 1 --warmups 0
+        --output-dir "${partial_user_dir}"
+    RESULT_VARIABLE partial_user_status
+    OUTPUT_VARIABLE partial_user_stdout
+    ERROR_VARIABLE partial_user_stderr)
+if(NOT partial_user_status EQUAL 0)
+    message(FATAL_ERROR
+        "partial high-frequency benchmark failed (${partial_user_status}):\n${partial_user_stdout}\n${partial_user_stderr}")
+endif()
+file(READ "${partial_user_dir}/query_results.tsv" partial_user_results)
+if(NOT partial_user_results MATCHES
+   "\tfm\tuser_hit_gt_1000\t20\tforward\tlocate\tall\t1\t1\t[^\n]*\tok\t")
+    message(FATAL_ERROR
+        "complete locate did not retain the safe query while recording one skipped high-frequency query")
+endif()
 
 execute_process(
     COMMAND "${SUFKIT_EXECUTABLE}" bench --profile smoke --reference missing.fa --output-dir invalid

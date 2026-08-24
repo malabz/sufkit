@@ -1,0 +1,3 @@
+dataset	method	operation	min_length	query_count	query_bases	total_matches	result_checksum	status
+full-mixed	right-maximal-baseline	streaming	50	10000	2560000	100000	r1	ok
+full-mixed	right-maximal-suffix-link	streaming	50	10000	2560000	100000	r1	ok

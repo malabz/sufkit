@@ -10,7 +10,9 @@
 #include <chrono>
 #include <cstdint>
 #include <ctime>
+#include <exception>
 #include <filesystem>
+#include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <limits>
@@ -28,17 +30,23 @@ namespace {
 
 using namespace bench;
 
+struct ParsedBenchmarkOptions {
+    Options options;
+    std::optional<std::filesystem::path> export_reference;
+    std::optional<std::filesystem::path> export_queries;
+};
+
 std::vector<std::string> split_csv(const std::string& text, const std::string& option) {
-    if (text.empty()) throw Error(ErrorCode::kInvalidInput, option + " must not be empty");
+    if (text.empty()) throw Error(ErrorCode::invalid_input, option + " must not be empty");
     std::vector<std::string> values;
     std::set<std::string> unique;
     std::size_t begin = 0;
     while (begin <= text.size()) {
         const auto end = text.find(',', begin);
         const auto value = text.substr(begin, end == std::string::npos ? text.size() - begin : end - begin);
-        if (value.empty()) throw Error(ErrorCode::kInvalidInput, option + " contains an empty value");
+        if (value.empty()) throw Error(ErrorCode::invalid_input, option + " contains an empty value");
         if (!unique.insert(value).second) {
-            throw Error(ErrorCode::kInvalidInput, option + " contains a duplicate value: " + value);
+            throw Error(ErrorCode::invalid_input, option + " contains a duplicate value: " + value);
         }
         values.push_back(value);
         if (end == std::string::npos) break;
@@ -51,9 +59,9 @@ std::uint32_t parse_u32(
     const std::string& value,
     const std::string& option,
     bool allow_zero) {
-    const auto parsed = ParseUnsigned(value, option);
+    const auto parsed = parse_unsigned(value, option);
     if ((!allow_zero && parsed == 0) || parsed > std::numeric_limits<std::uint32_t>::max()) {
-        throw Error(ErrorCode::kInvalidInput, "invalid value for " + option + ": " + value);
+        throw Error(ErrorCode::invalid_input, "invalid value for " + option + ": " + value);
     }
     return static_cast<std::uint32_t>(parsed);
 }
@@ -61,48 +69,80 @@ std::uint32_t parse_u32(
 std::vector<std::string> parse_methods(const std::string& text) {
     const std::set<std::string> supported{
         "naive", "sa32", "sa64", "sa32-none", "sa64-none",
-        "fm", "fm-huff", "fm-balanced", "fm-epr",
+        "sa32-sampled-k2", "sa32-sampled-k4", "sa32-sampled-k8",
+        "sa64-sampled-k2", "sa64-sampled-k4", "sa64-sampled-k8",
+        "fm", "fm-huff", "fm-balanced", "fm-epr", "caps32", "caps64",
         "sa32-binary", "sa32-lcp-binary", "sa32-sapling", "sa32-child",
-        "sa32-sampled-k2-binary", "sa32-sampled-k2-lcp-binary",
-        "sa32-sampled-k4-binary", "sa32-sampled-k4-lcp-binary",
-        "sa32-sampled-k8-binary", "sa32-sampled-k8-lcp-binary",
-        "sa64-sampled-k2-binary", "sa64-sampled-k2-lcp-binary",
-        "sa64-sampled-k4-binary", "sa64-sampled-k4-lcp-binary",
-        "sa64-sampled-k8-binary", "sa64-sampled-k8-lcp-binary"};
+        "sa64-binary", "sa64-lcp-binary"};
     auto methods = split_csv(text, "--methods");
     for (const auto& method : methods) {
         if (supported.count(method) == 0) {
-            throw Error(ErrorCode::kInvalidInput, "invalid benchmark method: " + method);
+            throw Error(ErrorCode::invalid_input, "invalid benchmark method: " + method);
         }
     }
     if (std::find(methods.begin(), methods.end(), "fm") != methods.end() &&
         std::find(methods.begin(), methods.end(), "fm-huff") != methods.end()) {
-        throw Error(ErrorCode::kInvalidInput, "fm and fm-huff are aliases and cannot be selected together");
+        throw Error(ErrorCode::invalid_input, "fm and fm-huff are aliases and cannot be selected together");
     }
     return methods;
 }
 
 std::vector<std::string> parse_fm_query_modes(const std::string& text) {
-    const std::set<std::string> supported{"scalar", "batch", "batch-mixed"};
+    const std::set<std::string> supported{"scalar", "batch"};
     auto modes = split_csv(text, "--fm-query-modes");
     for (const auto& mode : modes) {
         if (supported.count(mode) == 0) {
-            throw Error(ErrorCode::kInvalidInput, "invalid FM query mode: " + mode);
+            throw Error(ErrorCode::invalid_input, "invalid FM query mode: " + mode);
         }
     }
     return modes;
 }
 
-std::vector<std::uint32_t> parse_fm_batch_widths(const std::string& text) {
+std::vector<std::uint32_t> parse_fm_batch_widths(
+    const std::string& text,
+    const std::string& option = "--fm-batch-widths") {
     std::vector<std::uint32_t> widths;
-    for (const auto& value : split_csv(text, "--fm-batch-widths")) {
-        const auto width = parse_u32(value, "--fm-batch-widths", false);
+    std::set<std::uint32_t> seen;
+    for (const auto& value : split_csv(text, option)) {
+        const auto width = parse_u32(value, option, false);
         if (width > 256) {
-            throw Error(ErrorCode::kInvalidInput, "FM batch width must be in [1,256]");
+            throw Error(ErrorCode::invalid_input, "FM batch width must be in [1,256]");
+        }
+        if (!seen.insert(width).second) {
+            throw Error(ErrorCode::invalid_input,
+                "duplicate FM batch width for " + option + ": " + value);
         }
         widths.push_back(width);
     }
     return widths;
+}
+
+std::string canonical_fm_method(std::string method) {
+    if (method == "fm") return "fm-huff";
+    return method;
+}
+
+void parse_fm_batch_width_override(
+    const std::string& text,
+    std::map<std::string, std::vector<std::uint32_t>>& overrides) {
+    const auto separator = text.find(':');
+    if (separator == std::string::npos || separator == 0 || separator + 1 == text.size() ||
+        text.find(':', separator + 1) != std::string::npos) {
+        throw Error(ErrorCode::invalid_input,
+            "--fm-batch-widths-for expects METHOD:WIDTH1,WIDTH2");
+    }
+    const auto method = canonical_fm_method(text.substr(0, separator));
+    const std::set<std::string> supported{"fm-huff", "fm-balanced", "fm-epr"};
+    if (supported.count(method) == 0) {
+        throw Error(ErrorCode::invalid_input,
+            "--fm-batch-widths-for requires fm-huff, fm-balanced, or fm-epr");
+    }
+    if (overrides.count(method) != 0) {
+        throw Error(ErrorCode::invalid_input,
+            "duplicate --fm-batch-widths-for override for " + method);
+    }
+    overrides.emplace(method, parse_fm_batch_widths(
+        text.substr(separator + 1), "--fm-batch-widths-for " + method));
 }
 
 std::vector<Scenario> parse_scenarios(const std::string& text) {
@@ -114,9 +154,9 @@ std::vector<Scenario> parse_scenarios(const std::string& text) {
 std::vector<std::uint64_t> parse_lengths(const std::string& text) {
     std::vector<std::uint64_t> lengths;
     for (const auto& value : split_csv(text, "--pattern-lengths")) {
-        const auto parsed = ParseUnsigned(value, "--pattern-lengths");
+        const auto parsed = parse_unsigned(value, "--pattern-lengths");
         if (parsed == 0 || parsed > 1000000) {
-            throw Error(ErrorCode::kInvalidInput, "invalid pattern length: " + value);
+            throw Error(ErrorCode::invalid_input, "invalid pattern length: " + value);
         }
         lengths.push_back(parsed);
     }
@@ -127,7 +167,7 @@ std::vector<LocateLimit> parse_locate_limits(const std::string& text) {
     std::vector<LocateLimit> limits;
     for (const auto& value : split_csv(text, "--locate-limits")) {
         if (value == "all") limits.push_back({true, 0});
-        else limits.push_back({false, ParseUnsigned(value, "--locate-limits")});
+        else limits.push_back({false, parse_unsigned(value, "--locate-limits")});
     }
     return limits;
 }
@@ -135,7 +175,7 @@ std::vector<LocateLimit> parse_locate_limits(const std::string& text) {
 std::string require_value(const std::vector<std::string>& arguments, std::size_t& index) {
     const auto& option = arguments[index];
     if (index + 1 >= arguments.size()) {
-        throw Error(ErrorCode::kInvalidInput, "missing value for " + option);
+        throw Error(ErrorCode::invalid_input, "missing value for " + option);
     }
     return arguments[++index];
 }
@@ -152,8 +192,9 @@ std::string join_values(const Values& values, Formatter&& formatter) {
     return output.str();
 }
 
-Options parse_benchmark_options(const std::vector<std::string>& arguments) {
-    Options options;
+ParsedBenchmarkOptions parse_benchmark_options(const std::vector<std::string>& arguments) {
+    ParsedBenchmarkOptions parsed;
+    auto& options = parsed.options;
     std::optional<std::string> methods;
     std::optional<std::string> scenarios;
     std::optional<std::string> lengths;
@@ -171,51 +212,59 @@ Options parse_benchmark_options(const std::vector<std::string>& arguments) {
         else if (option == "--queries") options.query_path = require_value(arguments, index);
         else if (option == "--output") options.output_path = require_value(arguments, index);
         else if (option == "--output-dir") options.output_directory = require_value(arguments, index);
+        else if (option == "--export-reference") parsed.export_reference = require_value(arguments, index);
+        else if (option == "--export-queries") parsed.export_queries = require_value(arguments, index);
         else if (option == "--methods") methods = require_value(arguments, index);
         else if (option == "--scenarios") scenarios = require_value(arguments, index);
         else if (option == "--pattern-lengths") lengths = require_value(arguments, index);
         else if (option == "--locate-limits") limits = require_value(arguments, index);
         else if (option == "--fm-query-modes") fm_query_modes = require_value(arguments, index);
         else if (option == "--fm-batch-widths") fm_batch_widths = require_value(arguments, index);
-        else if (option == "--seed") options.seed = ParseUnsigned(require_value(arguments, index), option);
+        else if (option == "--fm-batch-widths-for") {
+            parse_fm_batch_width_override(
+                require_value(arguments, index), options.fm_batch_width_overrides);
+        }
+        else if (option == "--seed") options.seed = parse_unsigned(require_value(arguments, index), option);
         else if (option == "--build-repetitions") {
             options.build_repetitions = parse_u32(require_value(arguments, index), option, false);
         } else if (option == "--query-repetitions") {
             options.query_repetitions = parse_u32(require_value(arguments, index), option, false);
         } else if (option == "--warmups") {
             options.warmups = parse_u32(require_value(arguments, index), option, true);
+        } else if (option == "--sa-threads") {
+            options.sa_threads = parse_u32(require_value(arguments, index), option, false);
         } else if (option == "--learned-k") {
             options.learned_k = parse_u32(require_value(arguments, index), option, false);
             if (options.learned_k > 31)
-                throw Error(ErrorCode::kInvalidInput, "--learned-k must be in [1,31]");
+                throw Error(ErrorCode::invalid_input, "--learned-k must be in [1,31]");
         } else if (option == "--learned-memory-bp") {
             options.learned_memory_overhead_basis_points =
                 parse_u32(require_value(arguments, index), option, false);
         } else if (option == "--learned-bucket-bits") {
             options.learned_bucket_bits = parse_u32(require_value(arguments, index), option, true);
             if (*options.learned_bucket_bits > 31)
-                throw Error(ErrorCode::kInvalidInput, "--learned-bucket-bits must be at most 31");
+                throw Error(ErrorCode::invalid_input, "--learned-bucket-bits must be at most 31");
         } else {
-            throw Error(ErrorCode::kInvalidInput, "unknown benchmark option: " + option);
+            throw Error(ErrorCode::invalid_input, "unknown benchmark option: " + option);
         }
     }
 
     const auto synthetic_selectors = static_cast<unsigned>(options.profile_explicit) +
         static_cast<unsigned>(options.legacy_quick) + static_cast<unsigned>(options.legacy_smoke);
     if (synthetic_selectors > 1) {
-        throw Error(ErrorCode::kInvalidInput, "--profile, --quick, and --smoke are mutually exclusive");
+        throw Error(ErrorCode::invalid_input, "--profile, --quick, and --smoke are mutually exclusive");
     }
     if (options.reference_path && synthetic_selectors != 0) {
-        throw Error(ErrorCode::kInvalidInput, "--reference cannot be combined with a synthetic profile");
+        throw Error(ErrorCode::invalid_input, "--reference cannot be combined with a synthetic profile");
     }
     if (options.query_path && !options.reference_path) {
-        throw Error(ErrorCode::kInvalidInput, "--queries requires --reference");
+        throw Error(ErrorCode::invalid_input, "--queries requires --reference");
     }
     if (!options.reference_path && synthetic_selectors == 0) {
-        throw Error(ErrorCode::kInvalidInput, "provide --profile, --quick, --smoke, or --reference");
+        throw Error(ErrorCode::invalid_input, "provide --profile, --quick, --smoke, or --reference");
     }
     if (options.output_path.has_value() == options.output_directory.has_value()) {
-        throw Error(ErrorCode::kInvalidInput, "provide exactly one of --output or --output-dir");
+        throw Error(ErrorCode::invalid_input, "provide exactly one of --output or --output-dir");
     }
 
     if (options.reference_path) options.profile = Profile::user;
@@ -231,12 +280,18 @@ Options parse_benchmark_options(const std::vector<std::string>& arguments) {
 
     if (scenarios) {
         if (options.profile == Profile::user) {
-            throw Error(ErrorCode::kInvalidInput, "--scenarios is invalid with --reference");
+            throw Error(ErrorCode::invalid_input, "--scenarios is invalid with --reference");
         }
         options.scenarios = parse_scenarios(*scenarios);
-    } else if (options.profile == Profile::standard) {
+    } else if (options.profile == Profile::quick && options.output_path) {
+        // Preserve the legacy single-file quick benchmark contract.
+        options.scenarios = {Scenario::mixed};
+    } else if (options.profile == Profile::quick || options.profile == Profile::standard) {
         options.scenarios = {Scenario::mixed, Scenario::balanced, Scenario::gc_skewed,
             Scenario::repeat_rich, Scenario::n_islands, Scenario::many_contig};
+    } else if (options.profile == Profile::full) {
+        options.scenarios = {
+            Scenario::mixed, Scenario::repeat_rich, Scenario::many_contig};
     } else if (options.profile == Profile::user) {
         options.scenarios = {Scenario::user};
     } else {
@@ -249,10 +304,36 @@ Options parse_benchmark_options(const std::vector<std::string>& arguments) {
         ? parse_locate_limits(*limits) : std::vector<LocateLimit>{{false, 1}, {false, 10}, {false, 1000}};
     if (fm_query_modes) options.fm_query_modes = parse_fm_query_modes(*fm_query_modes);
     if (fm_batch_widths) options.fm_batch_widths = parse_fm_batch_widths(*fm_batch_widths);
-    if (options.output_path && options.scenarios.size() != 1) {
-        throw Error(ErrorCode::kInvalidInput, "--output supports one scenario; use --output-dir for multiple scenarios");
+    std::set<std::string> selected_fm_methods;
+    for (const auto& method : options.methods) {
+        const auto canonical = canonical_fm_method(method);
+        if (canonical == "fm-huff" || canonical == "fm-balanced" || canonical == "fm-epr")
+            selected_fm_methods.insert(canonical);
     }
-    return options;
+    for (const auto& override : options.fm_batch_width_overrides) {
+        if (selected_fm_methods.count(override.first) == 0) {
+            throw Error(ErrorCode::invalid_input,
+                "--fm-batch-widths-for names an unselected method: " + override.first);
+        }
+    }
+    if (options.output_path && options.scenarios.size() != 1) {
+        throw Error(ErrorCode::invalid_input, "--output supports one scenario; use --output-dir for multiple scenarios");
+    }
+    if ((parsed.export_reference || parsed.export_queries) && options.reference_path) {
+        throw Error(ErrorCode::invalid_input,
+            "--export-reference/--export-queries require a synthetic benchmark profile");
+    }
+    if ((parsed.export_reference || parsed.export_queries) && options.scenarios.size() != 1) {
+        throw Error(ErrorCode::invalid_input,
+            "dataset export requires exactly one synthetic scenario");
+    }
+    if (parsed.export_reference && parsed.export_queries &&
+        std::filesystem::absolute(*parsed.export_reference).lexically_normal() ==
+            std::filesystem::absolute(*parsed.export_queries).lexically_normal()) {
+        throw Error(ErrorCode::invalid_input,
+            "--export-reference and --export-queries must name different files");
+    }
+    return parsed;
 }
 
 class ScratchDirectory {
@@ -265,7 +346,7 @@ public:
             ("sufkit-benchmark-" + std::to_string(static_cast<long long>(getpid())) + "-" +
              std::to_string(static_cast<long long>(tick)));
         if (!std::filesystem::create_directory(path_)) {
-            throw Error(ErrorCode::kIoError, "cannot create benchmark scratch directory: " + path_.string());
+            throw Error(ErrorCode::io_error, "cannot create benchmark scratch directory: " + path_.string());
         }
     }
 
@@ -295,13 +376,75 @@ std::string utc_timestamp() {
 
 void classify_user_dataset(Dataset& dataset, const std::filesystem::path& scratch) {
     if (dataset.queries.empty() || dataset.queries.front().group != "user") return;
-    auto reference = GenomeReference::FromRecords(dataset.records);
-    auto classifier = FmIndex::Build(reference);
+    auto reference = GenomeReference::from_records(dataset.records);
+    auto classifier = FmIndex::build(reference);
     const auto path = scratch / "user-query-classifier.sufidx";
-    classifier.Save(path);
+    classifier.save(path);
     classify_user_queries(dataset, path);
     std::error_code ignored;
     std::filesystem::remove(path, ignored);
+}
+
+void write_wrapped_sequence(std::ofstream& output, const std::string& sequence) {
+    constexpr std::size_t line_width = 80;
+    for (std::size_t offset = 0; offset < sequence.size(); offset += line_width) {
+        output.write(
+            sequence.data() + static_cast<std::ptrdiff_t>(offset),
+            static_cast<std::streamsize>(std::min(line_width, sequence.size() - offset)));
+        output.put('\n');
+    }
+}
+
+void prepare_export_path(const std::filesystem::path& path) {
+    if (std::filesystem::exists(path)) {
+        throw Error(ErrorCode::io_error,
+            "benchmark export target already exists: " + path.string());
+    }
+    if (!path.parent_path().empty()) std::filesystem::create_directories(path.parent_path());
+}
+
+void export_synthetic_dataset(
+    const Dataset& dataset,
+    const std::optional<std::filesystem::path>& reference_path,
+    const std::optional<std::filesystem::path>& query_path) {
+    if (reference_path) prepare_export_path(*reference_path);
+    if (query_path) prepare_export_path(*query_path);
+    if (reference_path) {
+        std::ofstream output(*reference_path, std::ios::binary);
+        if (!output) {
+            throw Error(ErrorCode::io_error,
+                "cannot create benchmark reference export: " + reference_path->string());
+        }
+        for (const auto& record : dataset.records) {
+            output << '>' << record.name;
+            if (!record.description.empty()) output << ' ' << record.description;
+            output << '\n';
+            write_wrapped_sequence(output, record.sequence);
+        }
+        output.flush();
+        if (!output) {
+            throw Error(ErrorCode::io_error,
+                "cannot write benchmark reference export: " + reference_path->string());
+        }
+    }
+    if (query_path) {
+        std::ofstream output(*query_path, std::ios::binary);
+        if (!output) {
+            throw Error(ErrorCode::io_error,
+                "cannot create benchmark query export: " + query_path->string());
+        }
+        for (const auto& query : dataset.queries) {
+            output << '>' << query.id << " group=" << query.group
+                   << " pattern_length=" << query.pattern_length
+                   << " source=" << query.source << '\n';
+            write_wrapped_sequence(output, query.sequence);
+        }
+        output.flush();
+        if (!output) {
+            throw Error(ErrorCode::io_error,
+                "cannot write benchmark query export: " + query_path->string());
+        }
+    }
 }
 
 void print_help() {
@@ -312,18 +455,18 @@ void print_help() {
         "Options:\n"
         "  --scenarios mixed,balanced,gc-skewed,repeat-rich,n-islands,many-contig\n"
         "  --methods naive,sa32,sa64,sa32-none,sa64-none,fm,fm-huff,fm-balanced,"
-        "fm-epr,sa32-binary,sa32-lcp-binary,sa32-sapling,sa32-child,\n"
-        "            sa32-sampled-k2-binary,sa32-sampled-k2-lcp-binary,\n"
-        "            sa32-sampled-k4-binary,sa32-sampled-k4-lcp-binary,\n"
-        "            sa32-sampled-k8-binary,sa32-sampled-k8-lcp-binary,\n"
-        "            sa64-sampled-k2-binary,sa64-sampled-k2-lcp-binary,\n"
-        "            sa64-sampled-k4-binary,sa64-sampled-k4-lcp-binary,\n"
-        "            sa64-sampled-k8-binary,sa64-sampled-k8-lcp-binary\n"
-        "  --fm-query-modes scalar,batch,batch-mixed "
-        "--fm-batch-widths 1,4,8,16,32\n"
+        "fm-epr,caps32,caps64,sa32-binary,sa32-lcp-binary,sa32-sapling,sa32-child,"
+        "sa64-binary,sa64-lcp-binary,\n"
+        "            sa32-sampled-k2,sa32-sampled-k4,sa32-sampled-k8,\n"
+        "            sa64-sampled-k2,sa64-sampled-k4,sa64-sampled-k8\n"
+        "  --fm-query-modes scalar,batch --fm-batch-widths 1,4,8,16,32\n"
+        "  --fm-batch-widths-for METHOD:WIDTH1,WIDTH2  Per-FM-method override; repeatable\n"
+        "  --sa-threads N   Thread count for private caps32/caps64 benchmark methods\n"
         "  --learned-k 20 --learned-memory-bp 100 [--learned-bucket-bits N]\n"
         "  --pattern-lengths 20,50,100,200,500\n"
         "  --locate-limits 1,10,1000,all\n"
+        "  --export-reference REF.fa --export-queries QUERIES.fa\n"
+        "      Export one synthetic scenario without overwriting existing files.\n"
         "  --seed 20260822\n"
         "  --build-repetitions N --query-repetitions N --warmups N\n\n"
         "right-maximal exact match workload:\n"
@@ -331,8 +474,6 @@ void print_help() {
         "  --methods right-maximal-baseline,right-maximal-lcp,right-maximal-child,right-maximal-suffix-link,right-maximal-full,\n"
         "            right-maximal-suffix-link-binary,right-maximal-suffix-link-sapling,mummer4\n"
         "  --min-lengths 20,50,100 [--mummer4 PATH]\n"
-        "  --strands forward,reverse-complement,both\n"
-        "  --query-repetitions N\n"
         "  --learned-k 20 --learned-memory-bp 100 [--learned-bucket-bits N]\n"
         "  or --workload right-maximal --reference REF.fa[.gz] [--queries Q.fa[.gz]]\n";
 }
@@ -349,31 +490,22 @@ int run_benchmark(const std::vector<std::string>& arguments) {
         print_help();
         return 0;
     }
-    const auto options = parse_benchmark_options(arguments);
+    const auto parsed = parse_benchmark_options(arguments);
+    const auto& options = parsed.options;
     const auto output_target = options.output_directory
         ? *options.output_directory : *options.output_path;
     ScratchDirectory scratch(output_target.parent_path());
 
     std::vector<Dataset> datasets;
-    if (options.reference_path) {
-        datasets.push_back(load_user_dataset(
-            *options.reference_path,
-            options.query_path,
-            options.seed,
-            profile_spec(Profile::user).query_count,
-            options.pattern_lengths));
-        classify_user_dataset(datasets.back(), scratch.path());
-    } else {
-        for (const auto scenario : options.scenarios) {
-            datasets.push_back(generate_dataset(
-                options.profile, scenario, options.seed, options.pattern_lengths));
-        }
-    }
-
     std::vector<std::vector<MethodResult>> all_results;
-    all_results.reserve(datasets.size());
-    for (std::size_t dataset_index = 0; dataset_index < datasets.size(); ++dataset_index) {
-        const auto& dataset = datasets[dataset_index];
+    datasets.reserve(options.reference_path ? 1 : options.scenarios.size());
+    all_results.reserve(options.reference_path ? 1 : options.scenarios.size());
+    std::exception_ptr validation_error;
+    const auto run_dataset = [&](Dataset dataset, std::size_t dataset_index) {
+        if (dataset_index == 0 && (parsed.export_reference || parsed.export_queries)) {
+            export_synthetic_dataset(
+                dataset, parsed.export_reference, parsed.export_queries);
+        }
         std::vector<MethodResult> results;
         const auto dataset_scratch = scratch.path() / ("dataset-" + std::to_string(dataset_index));
         std::filesystem::create_directory(dataset_scratch);
@@ -381,7 +513,32 @@ int run_benchmark(const std::vector<std::string>& arguments) {
             std::cerr << "benchmarking " << dataset.name << " with " << method << "...\n";
             results.push_back(run_method_isolated(method, dataset, options, dataset_scratch));
         }
+        try {
+            validate_results(dataset, results, options.profile);
+        } catch (...) {
+            validation_error = std::current_exception();
+        }
+        dataset.records.clear();
+        dataset.records.shrink_to_fit();
+        datasets.push_back(std::move(dataset));
         all_results.push_back(std::move(results));
+    };
+
+    if (options.reference_path) {
+        auto dataset = load_user_dataset(
+            *options.reference_path,
+            options.query_path,
+            options.seed,
+            profile_spec(Profile::user).query_count,
+            options.pattern_lengths);
+        classify_user_dataset(dataset, scratch.path());
+        run_dataset(std::move(dataset), 0);
+    } else {
+        for (const auto scenario : options.scenarios) {
+            run_dataset(generate_dataset(
+                options.profile, scenario, options.seed, options.pattern_lengths), datasets.size());
+            if (validation_error) break;
+        }
     }
 
     if (options.output_directory) {
@@ -404,6 +561,20 @@ int run_benchmark(const std::vector<std::string>& arguments) {
         context.fm_batch_widths = join_values(options.fm_batch_widths, [](const auto value) {
             return std::to_string(value);
         });
+        if (options.fm_batch_width_overrides.empty()) {
+            context.fm_batch_width_overrides = "none";
+        } else {
+            std::ostringstream overrides;
+            bool first_method = true;
+            for (const auto& [method, widths] : options.fm_batch_width_overrides) {
+                if (!first_method) overrides << ';';
+                first_method = false;
+                overrides << method << ':' << join_values(widths, [](const auto value) {
+                    return std::to_string(value);
+                });
+            }
+            context.fm_batch_width_overrides = overrides.str();
+        }
         const auto spec = profile_spec(options.profile);
         context.build_repetitions = std::to_string(
             options.build_repetitions.value_or(spec.build_repetitions));
@@ -419,19 +590,17 @@ int run_benchmark(const std::vector<std::string>& arguments) {
                 std::find(options.methods.begin(), options.methods.end(), "naive") != options.methods.end()
                 ? std::to_string(spec.warmups) + ";naive=0"
                 : std::to_string(spec.warmups));
+        context.sa_threads = std::to_string(options.sa_threads);
         context.learned_k = std::to_string(options.learned_k);
         context.learned_memory_overhead_basis_points =
             std::to_string(options.learned_memory_overhead_basis_points);
         context.learned_bucket_bits = options.learned_bucket_bits
             ? std::to_string(*options.learned_bucket_bits) : "auto";
-        context.provenance = CollectBenchmarkProvenance(arguments);
         write_result_directory(*options.output_directory, context, datasets, all_results);
     } else {
         write_legacy_output(*options.output_path, datasets.front(), all_results.front());
     }
-    for (std::size_t index = 0; index < datasets.size(); ++index) {
-        validate_results(datasets[index], all_results[index], options.profile);
-    }
+    if (validation_error) std::rethrow_exception(validation_error);
     const auto& destination = options.output_directory ? *options.output_directory : *options.output_path;
     std::cerr << "benchmark results written to " << destination.string() << '\n';
     return 0;

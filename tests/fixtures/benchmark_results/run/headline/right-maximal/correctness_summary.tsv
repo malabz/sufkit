@@ -1,0 +1,2 @@
+dataset	scenario	oracle	min_length	reference_bases	query_count	query_bases	total_matches	result_checksum	status
+full-mixed	mixed	naive-right-maximal-forward	50	4096	16	4096	12	oracle1	ok

@@ -1,8 +1,8 @@
 # Exact and right-maximal exact match benchmark methodology
 
 The benchmark is a correctness-gated, deterministic comparison of the naive
-scanner, standalone divsufsort32/64 suffix arrays, and the fixed SDSL FM-index.
-It records construction, serialization, loading, count, and locate separately.
+scanner, standalone suffix arrays, and SDSL FM-index backends. It records
+construction, serialization, loading, count, and locate separately.
 Performance numbers are descriptive; sufkit does not impose absolute speed
 thresholds across machines.
 
@@ -11,73 +11,31 @@ Exact-search ablation methods additionally include `sa32-binary`,
 parameters are controlled with `--learned-k`, `--learned-memory-bp`, and
 `--learned-bucket-bits`.
 
-Sampled-SA lookup is selected explicitly so it cannot be confused with a
-complete SA result. Both coordinate widths support sampling rates 2, 4, and 8
-with either the ordinary binary or legal LCP-assisted search path:
-
-```text
-sa32-sampled-k2-binary       sa32-sampled-k2-lcp-binary
-sa32-sampled-k4-binary       sa32-sampled-k4-lcp-binary
-sa32-sampled-k8-binary       sa32-sampled-k8-lcp-binary
-sa64-sampled-k2-binary       sa64-sampled-k2-lcp-binary
-sa64-sampled-k4-binary       sa64-sampled-k4-lcp-binary
-sa64-sampled-k8-binary       sa64-sampled-k8-lcp-binary
-```
-
-The build table appends `sa_sampling_rate`, which is 2, 4, or 8 for these
-methods. Sampled lookup still participates in the same complete range, hit,
-coordinate, and checksum correctness gate as every other selected method.
-
-## Standalone-SA construction workload
-
-The dedicated constructor driver isolates divsufsort/CaPS, coordinate width,
-thread count, sampling rate, and auxiliary layout:
-
-```bash
-./build/release/sufkit_sa_build_bench \
-  --profile quick \
-  --methods div32,div64,caps32,caps64 \
-  --threads 1,2,4,8 \
-  --sampling-rates 1,2,4,8 \
-  --acceleration none \
-  --output-dir results/sa-build
-```
-
-Synthetic construction profiles contain 1 MiB (`smoke`), 64 MiB (`quick`),
-or 1 GiB (`standard`) of deterministic mixed sequence; `--reference` accepts a
-user FASTA. Every repetition uses a child process. Core timing excludes FASTA
-parsing, checksumming, persistence, and TSV formatting, while peak RSS covers
-the complete child lifetime.
-
-`acceleration=none` isolates the SA constructor. Other layouts include their
-ISA/LCP/CHILD work; divsufsort timing includes its fused sampled ISA/Kasai
-adapter and CaPS retains merge-built LCP. Sampling compacts only after the
-complete suffix order exists, so it must not be described as sparse-SA
-construction memory.
-
-The driver compares two independent SA hashes at the same K and exact plus
-right-maximal checksums across every K before success. It writes metadata, raw
-repetitions, build summaries, and the generated synthetic FASTA. Diagnostic
-files remain available if the correctness gate fails.
-
 ## Profiles
 
-| Profile | Total reference | Queries | Default scenarios | Default methods | Build/query repetitions |
+The exact, standalone SA-construction, and right-maximal drivers use one shared
+profile definition. Scenario sweeps apply to the exact and right-maximal
+drivers; the standalone SA-construction driver uses one deterministic mixed
+reference at the selected profile size.
+
+| Profile | Total reference | Queries | Server-suite scenarios | Default methods | Build/query repetitions |
 |---|---:|---:|---|---|---|
 | `smoke` | 16 KiB | 100 | mixed | naive, SA32, SA64, FM | 1 / 3 |
-| `quick` | 4 MiB | 1,000 | mixed | naive, SA32, SA64, FM | 3 / 5 indexed, 1 naive |
+| `quick` | 4 MiB | 1,000 | all six | naive, SA32, SA64, FM | 3 / 5 indexed, 1 naive |
 | `standard` | 32 MiB per scenario | 5,000 | all six | SA32, SA64, FM | 3 / 7 |
-| `full` | 256 MiB | 10,000 | mixed | SA32, SA64, FM | 1 / 5 |
+| `full` | 256 MiB per scenario | 10,000 | mixed, repeat-rich, many-contig | SA32, SA64, FM | 1 / 5 |
 
 Every profile performs one query warm-up by default, except that the `quick`
 naive baseline uses one measured repetition and no warm-up. This keeps the
 interactive profile near its intended scale while still scanning every query,
 strand, and operation and participating in the complete correctness gate.
 Explicit `--query-repetitions` or `--warmups` values override this policy for
-all methods. `standard` covers
-`mixed`, `balanced`, `gc-skewed`, `repeat-rich`, `n-islands`, and
-`many-contig`; scenarios can be selected explicitly for every synthetic
-profile.
+all methods. The six selectable scenarios are `mixed`, `balanced`,
+`gc-skewed`, `repeat-rich`, `n-islands`, and `many-contig`. The controlled
+server suite runs all six for `quick` and `standard`, and the three listed
+large scenarios for `full`. Scenarios can be selected explicitly for every
+synthetic profile. The legacy single-file `--quick --output` compatibility
+path remains a one-scenario `mixed` run.
 
 ```bash
 sufkit bench \
@@ -102,21 +60,22 @@ FM backend and batched-count comparisons use:
 ```bash
 sufkit bench --profile quick \
   --methods fm-huff,fm-balanced,fm-epr \
-  --fm-query-modes scalar,batch,batch-mixed \
+  --fm-query-modes scalar,batch \
   --fm-batch-widths 1,4,8,16,32 \
+  --fm-batch-widths-for fm-balanced:16,32 \
+  --fm-batch-widths-for fm-epr:16,32 \
   --output-dir results/fm-quick
 ```
 
 `fm` remains an alias for `fm-huff`; selecting both in one run is rejected.
 Scalar mode records count and locate. Batch mode records count only and keeps
-one row per batch width for every existing equal-length group. The optional
-`batch-mixed` mode adds a separate `mixed_length`/`mixed` group containing the
-dataset's queries in their deterministic order when at least two lengths are
-available; when scalar mode is also selected, the same mixed group gets a
-scalar baseline for a meaningful speedup ratio. It does not replace or change
-the equal-length rows. Query
-summaries append the mode, width, processed query bases, bases/s, and speedup
-relative to the matching Huffman scalar row.
+one row per batch width. Query summaries append the mode, width, processed
+query bases, bases/s, and speedup relative to the matching Huffman scalar row.
+`--fm-batch-widths` supplies the default width set, while each repeatable
+`--fm-batch-widths-for METHOD:...` replaces that set for the named FM backend.
+The strict server matrix measures Huffman at widths 1, 4, 8, 16, and 32, and
+balanced and EPR at widths 16 and 32. The selected default and per-backend
+overrides are retained in `run_metadata.tsv`.
 
 ## Synthetic datasets and query groups
 
@@ -142,9 +101,14 @@ combination that cannot be generated remains in the output with
 `not_applicable`; it is never silently replaced with a shorter pattern.
 
 Count and locate are measured for `forward`, `reverse-complement`, and `both`.
-Locate limits may contain numeric limits and `all`. Complete locate is skipped
-with status `skipped_high_frequency` if any query in that result group has more
-than 100,000 hits, preventing accidental high-frequency materialization.
+Locate limits may contain numeric limits and `all`. For complete locate, the
+driver pre-counts each query independently. A query with more than 100,000
+hits is omitted from that complete-locate measurement while lower-frequency
+queries in the same group still run. `query_count` and `query_bases` describe
+the measured subset and `skipped_high_frequency_queries` records the omitted
+cardinality. Only when every query in a slice is omitted does the slice have
+status `skipped_high_frequency`. Count and bounded-locate measurements remain
+complete.
 
 ## User references
 
@@ -168,28 +132,20 @@ methods continue.
 
 ## Isolation, timing, and correctness
 
-Each method runs in a separate worker process, so peak RSS from an earlier
-method cannot contaminate a later one. Timed query loops exclude TSV formatting
-and output. Per-logical-pass wall time and user/system CPU time are retained
-for every raw repetition; summary tables use medians and also report min/max
-wall time.
+Build, save, load, count, and each locate limit run in separate phase workers,
+so peak RSS from an earlier phase or method cannot contaminate a later one.
+These workers are created with `fork()` after the controller has generated the
+current dataset. Their RSS therefore includes inherited controller dataset
+pages in addition to the phase-specific reference/index/query allocations.
+The exact raw output names this boundary in `peak_rss_scope`; it is a
+whole-worker high-water mark for that declared scope, not the incremental RSS
+of the index alone. Comparisons are meaningful only between rows produced by
+the same worker protocol and dataset scope.
 
-`peak_rss_mb` is the operating system's high-water mark for the complete
-method worker lifetime, which includes build, save, load, and query phases. It
-is not query-only RSS. `run_metadata.tsv` records this boundary explicitly as
-`peak_rss_scope=method_process_lifetime`. MUMmer4 is the documented external
-exception: each reported process measurement covers the corresponding
-external build or load-plus-query invocation rather than an in-process sufkit
-worker.
-
-Very short query groups repeat the same deterministic logical pass inside one
-timed interval. Smoke does not repeat a pass for calibration. Quick targets at
-least 10 ms per measured interval; standard, full, and user-reference runs
-target at least 100 ms. Output `seconds`, CPU time, query counts, query bases,
-hits, checksums, and search statistics are normalized back to one logical pass,
-so methods remain directly comparable even when their internal calibration
-iteration counts differ. Search statistics come from a separate untimed
-single-pass execution whose checksum and hit totals must match the timed pass.
+Timed query loops exclude TSV formatting and output. Wall time and user/system
+CPU time are retained for every raw repetition; summary tables use medians and
+also report min/max wall time. Query warm-ups execute in the same phase worker
+before its measured repetitions.
 
 Before the command reports success, it checks:
 
@@ -210,21 +166,22 @@ files and does not print the successful-completion message.
 - `run_metadata.tsv`: dataset, generator, toolchain, OS, CPU, and composition;
 - `build_results.tsv`: build/save/load medians, RSS, size, and bits per base;
 - `query_results.tsv`: group/length/strand/operation summaries;
-- `raw_repetitions.tsv`: every normalized logical-pass wall/CPU time, hit count,
-  and checksum, plus ordered query-definition rows containing the query ID and
-  synthetic source coordinate/template offset when available.
+- `raw_repetitions.tsv`: every measured wall/CPU time, hit count, checksum, and
+  declared RSS scope, plus ordered query-definition rows containing the query
+  ID and synthetic source coordinate/template offset when available.
+
+Exact raw rows also carry backend provenance (`backend`,
+`backend_signature`, `sdsl_version`, coordinate width, SA sampling rate, and
+builder `threads`), a deterministic post-build/load query canary
+(`canary_total_hits`, `canary_reported_hits`, and `canary_checksum`), and the
+phase-local number of query threads (`query_threads`: zero for non-query rows,
+one for the current scalar/batch query workers). These fields let the packager
+reject a headline assembled from a mislabeled backend, incompatible index, or
+different query-execution contract.
 
 Metadata deliberately omits the hostname and user-specific input/output paths.
 Existing result files are not overwritten. Use a new or empty result directory
 for every run.
-
-For reproducibility, the metadata schema appends the configured Git commit and
-dirty state, complete configured compiler flags for the library and benchmark
-CLI, CPU flags, executable SHA-256, actual process CPU affinity, compiled and
-runtime SSE4.2/POPCNT state, a command line with path-valued arguments redacted,
-and the peak-RSS scope. Absolute path-bearing compiler flag values are also
-redacted. The command remains sufficient to reproduce option choices without
-recording private filesystem locations.
 
 Learned exact rows additionally record SA/ISA/LCP/CHILD/model construction
 times, model bytes, suffix and character comparisons, gallop probes, local
@@ -232,10 +189,27 @@ window sizes, prediction counts/errors, and full binary fallbacks. Prediction
 statistics describe performance only; cross-method range, hit, coordinate,
 and checksum equality remains mandatory.
 
-The `standard` and `full` profiles are intended for explicit local runs and are
-not part of the normal release acceptance commands.
+The `standard` and `full` profiles are opt-in for ordinary developer builds and
+are not part of the routine local CTest suite. They are nevertheless mandatory
+stages of the complete server acceptance used for this result package: the
+server runner executes and audits smoke, quick, standard, full, and the fixed
+headline sequentially.
 
-## Right-maximal exact-match workload
+For a time-bounded server run, set `SUFKIT_BENCH_SUITE_VARIANT=representative`.
+Smoke and quick remain the complete matrix; standard is reduced to the mixed
+32 MiB dataset with `sa32-binary`, `sa64-binary`, sampled K=4, and FM Huffman,
+three query repetitions, pattern lengths 50/100/200, and locate limits 1/1000.
+Full is reduced to mixed 256 MiB with SA32, CaPS32 at 64 threads, and FM
+Huffman, three query repetitions, length 100, and locate(1). The corresponding
+SA-build canaries are divsufsort32/64, sampled K=4, and CaPS32 for standard,
+and divsufsort32 plus CaPS32 for full. Right-maximal representative stages
+retain baseline, suffix-link, and (standard only) full. The runner records
+`suite_variant=representative` in `manifest/execution-scope.tsv`; the packager
+audits the declared reduced contract rather than treating omitted methods or
+scenarios as successful measurements. This variant is suitable for a concise
+scale-sensitivity check, not for claiming a complete standard/full sweep.
+
+## right-maximal exact match workload (0.1.1)
 
 ```bash
 sufkit bench \
@@ -244,40 +218,17 @@ sufkit bench \
   --scenarios mixed,repeat-rich \
   --methods right-maximal-baseline,right-maximal-lcp,right-maximal-child,right-maximal-suffix-link,right-maximal-full,mummer4 \
   --min-lengths 20,50,100 \
-  --strands forward,reverse-complement,both \
   --mummer4 /path/to/mummer \
   --output-dir results/right-maximal-quick
 ```
 
 The five internal methods build exactly the auxiliary structures their names
 require. Query timing includes no TSV formatting. One warm-up precedes three
-synthetic smoke or five quick/standard/user-reference repetitions. Synthetic
-smoke performs no timing amplification, quick targets 10 ms, and
-standard/user-reference internal rows target 100 ms before normalization to
-one logical pass. `--query-repetitions N` overrides the default measured
-repetition count for every internal and MUMmer4 row; `N` must be positive. The
-optional MUMmer4 row uses full SA
+smoke or five quick repetitions. The optional MUMmer4 row uses full SA
 (`K=1`), `skip=1`, no k-mer table, one query thread, `-save` for construction,
 and `-load` for measured queries. Its reported query time therefore includes
 external process startup and index loading and must not be interpreted as an
 in-process query-only comparison.
-
-`--strands` accepts a comma-separated subset of `forward`,
-`reverse-complement`, and `both`. Its compatibility default is `forward`.
-Internal methods build one index per method and then independently warm up,
-calibrate, measure, and instrument every selected strand. `strand` is appended
-to both `query_results.tsv` and `raw_repetitions.tsv`; existing column positions
-remain unchanged. Correctness baselines are keyed by dataset, minimum length,
-and strand, so a forward checksum is never compared with a reverse or combined
-checksum. `query_bases` continues to mean input query bases; it is not doubled
-for the `both` orientation.
-
-MUMmer4 remains the documented exception. Its timed row retains the existing
-forward-only `-load` measurement and is labeled `strand=forward`, even when
-additional internal strands are requested. The separately executed MUMmer4
-reverse-complement path remains a correctness check rather than a timed result
-row. The CLI prints a warning when a MUMmer4 run requests any non-forward
-strand, so this difference cannot be mistaken for full strand coverage.
 
 `right-maximal-suffix-link-binary` and `right-maximal-suffix-link-sapling` build the same
 SA+ISA+LCP layout and differ only in initialization/fallback lookup. Their
@@ -286,12 +237,39 @@ binary lookup counts, character/row accesses, prediction errors, search
 windows, and learned model space. `right-maximal-full` remains an explicit CHILD
 ablation and is not an automatic default.
 
-The right-maximal exact match workload also accepts `--profile standard`. It generates 32 MiB per
-scenario with 5,000 queries of 256 bp and five measured query repetitions.
-When comparing the standard profile across the same six scenarios as the main
-benchmark, pass them explicitly with
-`--scenarios mixed,balanced,gc-skewed,repeat-rich,n-islands,many-contig`.
+The right-maximal exact match workload accepts all four shared profiles. Its
+server matrix uses the same scenario selection shown above and measures four
+separate APIs: streaming callback, unbounded vector, `max_matches=0`, and
+`max_matches=1000`. Before the unbounded vector operation, the streaming result
+provides a full match count. If that count exceeds 1,000,000, the vector row is
+recorded as `skipped_high_frequency` with `vector_skipped=1`; streaming and the
+bounded operations still run. This gate prevents a high-frequency workload
+from turning a performance run into an uncontrolled result-materialization
+allocation.
 
 All internal and MUMmer4 rows are normalized to the same zero-based,
 query-first tuple checksum. A mismatch preserves diagnostic TSV files and
-returns nonzero.
+returns nonzero. See
+[the 0.1.1 right-maximal exact match report](results/v0.1.1-right-maximal.md) for the measured release run.
+
+## Headline and server execution scopes
+
+The visible full/mixed headline deliberately separates construction from
+query timing:
+
+- `headline/exact-build` constructs `sa32-binary`, `caps32`, and `fm-huff`
+  with one exact-benchmark worker protocol. It uses three build repetitions;
+  CaPS receives 64 builder threads while the other two builders use one.
+- `headline/exact-query` runs only `sa32-binary` and `fm-huff` on one pinned
+  physical CPU, after one warm-up and with five measured repetitions.
+
+The two scopes are never pooled. Their deterministic dataset/query identity is
+audited using the seed, scenario, reference fingerprint, base count, query-set
+checksum, query count, and query bases. The SA build canary additionally checks
+that divsufsort and CaPS produced query-equivalent indexes.
+
+The server runner executes stages and methods sequentially and applies CPU/NUMA
+affinity when the host provides `numactl` or `taskset`. It records the CPU
+topology, governor, memory, swap, compiler, and affinity in the manifest, but
+does not change the CPU governor, Turbo state, swap configuration, or other
+system parameters.
