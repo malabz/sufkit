@@ -1,5 +1,18 @@
 # Third-party notices
 
+## SeqPro
+
+- Source: https://github.com/malabz/seqpro
+- Submodule commit: `d593846864b151309a35edb0bf1048302c7cde59`
+- License: MIT
+- Optional source tree: `third_party/seqpro`
+
+SeqPro is disabled by default and is not used by the MEM/MAM query hot path.
+When `SUFKIT_ENABLE_SEQPRO=ON`, it is built only for coordinate/reference
+contract validation. Its original license and notices remain in the submodule.
+The submodule tracks its upstream `main` branch so maintainers can update it
+independently and record the new gitlink commit.
+
 ## CaPS-SA
 
 - Source: https://github.com/jamshed/CaPS-SA

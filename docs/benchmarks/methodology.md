@@ -1,4 +1,4 @@
-# Exact and right-maximal exact match benchmark methodology
+# Exact and maximal-match benchmark methodology
 
 The benchmark is a correctness-gated, deterministic comparison of the naive
 scanner, standalone divsufsort32/64 suffix arrays, and the fixed SDSL FM-index.
@@ -295,3 +295,22 @@ benchmark, pass them explicitly with
 All internal and MUMmer4 rows are normalized to the same zero-based,
 query-first tuple checksum. A mismatch preserves diagnostic TSV files and
 returns nonzero.
+
+## Formal MEM and reference-MAM smoke
+
+```bash
+sufkit bench --workload mem --profile smoke \
+  --methods mem-baseline,mem-lcp,mem-child,mem-suffix-link,mem-full,mummer4 \
+  --min-lengths 20,50 --mummer4 /path/to/mummer-4.0.1/mummer \
+  --output-dir results/mem-smoke
+
+sufkit bench --workload mam --profile smoke \
+  --methods mam-baseline,mam-lcp,mam-child,mam-suffix-link,mam-full,mummer4 \
+  --min-lengths 20,50 --mummer4 /path/to/mummer-4.0.1/mummer \
+  --output-dir results/mam-smoke
+```
+
+The four TSV files retain the established schema and add `workload` to run
+metadata. MUMmer4 uses `-maxmatch` for MEM and `-mumreference` for MAM. Its
+timed row is external load+query; sufkit rows are in-process query-only. Every
+method must produce the same total and checksum for each comparison group.

@@ -20,6 +20,11 @@ no-silent-fallback contract remain unchanged.
 
 ## `.sufidx` compatibility
 
+The Unreleased MEM/reference-MAM APIs add no sections or identifiers. Existing
+1.0-1.3 standalone SA files can run the baseline path; stored ISA/LCP/CHILD/PWL
+data enables the corresponding accelerations. Reference-MAM requires a
+complete SA. FM payloads and behavior are unchanged.
+
 | 0.2.0 reader | 1.0 | 1.1 | 1.2 | 1.3 |
 |---|---:|---:|---:|---:|
 | SA | Yes | Yes | Yes | Yes |

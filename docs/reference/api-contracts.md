@@ -19,7 +19,7 @@ may be called concurrently.
   sequences.
 - Reference symbols normalize to A/C/G/T/N.
 - Exact patterns must be non-empty A/C/G/T after upper-casing.
-- Right-maximal query non-ACGT symbols are hard breaks.
+- Right-maximal, MEM, and MAM query non-ACGT symbols are hard breaks.
 - `min_length=0`, `threads=0`, invalid widths, budgets, batch widths, and
   incompatible explicit algorithms are rejected.
 - `sampling_rate=0` is rejected; sampled right-maximal search also rejects
@@ -58,8 +58,8 @@ SA (`sampling_rate>1`) complete exact results span residue-specific intervals,
 so `EqualRange` explicitly returns `unsupported_backend`; use `Count` or
 `Locate` instead.
 
-`Match::position` and `RightMaximalMatch::reference_position` are zero-based,
-contig-local positions. `RightMaximalMatch::query_position` is zero-based in the
+`Match::position` and every maximal-match `reference_position` are zero-based,
+contig-local positions. Maximal-match `query_position` is zero-based in the
 original forward query. Sequence IDs follow reference input order.
 
 `SequenceInfo::global_offset` exposes the logical-text mapping for inspection,
@@ -82,14 +82,19 @@ position, length, and strand. Forward and reverse results remain distinct.
 `RightMaximalMatch` guarantees exactness and non-extendability on the right. It
 does not guarantee left maximality and is not a MEM contract.
 
+`MemMatch` guarantees exactness and non-extendability on both sides.
+`MamMatch` adds uniqueness of the matched string across all reference contigs.
+It does not require query uniqueness and therefore is reference-MAM rather
+than strict MUM.
+
 `max_hits` and `max_matches` bound retained output, not the complete count.
 `total_hits`/`total_matches` remain accurate and `truncated` reports omission.
 Right-maximal N=0 is therefore count-only but still performs full enumeration.
 
 ## Callbacks and statistics
 
-`RightMaximalCallback` executes synchronously on the caller thread. Exceptions
-propagate unchanged. Streaming order is deliberately unspecified.
+All maximal-match callbacks execute synchronously on the caller thread.
+Exceptions propagate unchanged. Streaming order is deliberately unspecified.
 
 Build and query statistics pointers are optional caller-owned mutable outputs.
 They are reset/populated by the call and are not part of index immutability.

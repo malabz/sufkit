@@ -326,22 +326,27 @@ void print_help() {
         "  --locate-limits 1,10,1000,all\n"
         "  --seed 20260822\n"
         "  --build-repetitions N --query-repetitions N --warmups N\n\n"
-        "right-maximal exact match workload:\n"
-        "  --workload right-maximal --profile smoke|quick --output-dir DIR\n"
+        "maximal exact match workloads:\n"
+        "  --workload right-maximal|mem|mam --profile smoke|quick --output-dir DIR\n"
         "  --methods right-maximal-baseline,right-maximal-lcp,right-maximal-child,right-maximal-suffix-link,right-maximal-full,\n"
         "            right-maximal-suffix-link-binary,right-maximal-suffix-link-sapling,mummer4\n"
         "  --min-lengths 20,50,100 [--mummer4 PATH]\n"
         "  --strands forward,reverse-complement,both\n"
         "  --query-repetitions N\n"
         "  --learned-k 20 --learned-memory-bp 100 [--learned-bucket-bits N]\n"
-        "  or --workload right-maximal --reference REF.fa[.gz] [--queries Q.fa[.gz]]\n";
+        "  MEM methods: mem-baseline,mem-lcp,mem-child,mem-suffix-link,mem-full,mummer4\n"
+        "  MAM methods: mam-baseline,mam-lcp,mam-child,mam-suffix-link,mam-full,mummer4\n"
+        "  or --workload right-maximal|mem|mam --reference REF.fa[.gz] [--queries Q.fa[.gz]]\n";
 }
 
 } // namespace
 
 int run_benchmark(const std::vector<std::string>& arguments) {
     for (std::size_t index = 0; index + 1 < arguments.size(); ++index) {
-        if (arguments[index] == "--workload" && arguments[index + 1] == "right-maximal") {
+        if (arguments[index] == "--workload" &&
+            (arguments[index + 1] == "right-maximal" ||
+             arguments[index + 1] == "mem" ||
+             arguments[index + 1] == "mam")) {
             return right_maximal_bench::run(arguments);
         }
     }

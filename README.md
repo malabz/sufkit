@@ -1,12 +1,13 @@
 # sufkit
 
 `sufkit` 0.2.0 is a C++17 library and CLI for genome-oriented suffix arrays,
-SDSL compressed suffix arrays (FM-indexes), exact pattern search, and
-right-maximal exact-match enumeration.
+SDSL compressed suffix arrays (FM-indexes), exact pattern search, and maximal
+exact-match enumeration.
 
-The right-maximal API is **not** MEM search: matches are exact and cannot
-extend to the right, but left maximality is not guaranteed. MEM names are
-reserved for a future two-sided implementation.
+The current source tree adds the 0.3.0 `Mem*` API for two-sided maximal exact
+matches and `Mam*` for MEMs whose matched string is unique in the combined
+reference. The existing `RightMaximal*` API remains available under its weaker
+right-only public contract.
 
 ## Capabilities
 
@@ -16,7 +17,8 @@ reserved for a future two-sided implementation.
 - complete or text-position sampled standalone suffix arrays;
 - optional ISA, LCP, CHILD, suffix-link reuse, and Sapling-style PWL lookup;
 - fixed SDSL Huffman, balanced, and DNA EPR CSA backends;
-- scalar and batched FM count, exact locate, and right-maximal streaming;
+- scalar and batched FM count, exact locate, right-maximal compatibility,
+  formal MEM, and reference-MAM streaming;
 - CRC-protected, self-contained `.sufidx` persistence and inspection; and
 - `add_subdirectory` and installed `find_package` CMake integration.
 
@@ -46,7 +48,7 @@ ctest --preset release --output-on-failure
 
 See the [five-minute quick start](docs/getting-started/quickstart.md) and
 [CLI reference](docs/user-guide/cli-reference.md) for SA construction,
-right-maximal search, batch queries, and inspection.
+right-maximal/MEM/MAM search, batch queries, and inspection.
 
 ## C++ integration
 
@@ -74,8 +76,8 @@ auto hits = loaded.Locate("ACGTACGT");
 ```
 
 Public coordinates are zero-based and contig-local. Exact patterns accept only
-A/C/G/T after case normalization; right-maximal queries treat every other
-symbol as a hard break.
+A/C/G/T after case normalization; right-maximal, MEM, and MAM queries treat
+every other symbol as a hard break.
 
 ## Compatibility and documentation
 

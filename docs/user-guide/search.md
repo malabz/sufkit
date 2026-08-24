@@ -1,9 +1,8 @@
 # Search guide
 
 sufkit provides exact pattern search on standalone suffix arrays and SDSL
-FM-indexes, plus right-maximal exact-match enumeration on standalone suffix
-arrays. The latter guarantees maximality on the right only and is not a MEM
-implementation.
+FM-indexes, plus right-maximal compatibility search, formal MEM search, and
+reference-unique MAM search on standalone suffix arrays.
 
 ## Exact search
 
@@ -146,12 +145,62 @@ Query statistics are optional caller-owned mutable outputs. Use one statistics
 object per concurrent operation. Built and loaded indexes themselves remain
 immutable and support concurrent const queries.
 
-## Boundaries and future MEM support
+## Formal MEM and reference-MAM search
+
+`MemMatch` guarantees exactness and both-sided maximality: the match cannot be
+extended jointly by one equal canonical base on either the left or the right.
+`MamMatch` adds reference uniqueness across all indexed contigs. It follows
+MUMmer4 `-mumreference` semantics, so the same reference-unique string may be
+reported at multiple query positions. Strict query-and-reference-unique MUM
+search is not implemented.
+
+```cpp
+sufkit::MemOptions mem_options;
+mem_options.min_length = 20;
+mem_options.strands = sufkit::StrandMode::kBoth;
+auto mems = index.FindMems(query, mem_options);
+
+sufkit::MamOptions mam_options;
+mam_options.min_length = 20;
+auto mams = index.FindMams(query, mam_options);
+```
+
+```bash
+sufkit mem --index reference.sufidx --query queries.fa.gz \
+  --min-length 20 --strand both
+sufkit mam --index reference.sufidx --query queries.fa.gz \
+  --min-length 20 --strand forward
+```
+
+MEM supports complete and sampled standalone SAs. For a sampled index, the
+minimum length must be at least K. `MemOptions::skip_multiplier` controls the
+MUMmer-style query-anchor spacing; omitted selects a deterministic default.
+The implementation runs all K residue classes and recovers the true start by
+at most `skip*K` bases. A fully recovered window is suppressed because the
+previous anchor owns that MEM.
+
+Reference-MAM requires a complete SA (`K=1`). It checks that the matched
+string's complete-SA interval contains exactly one reference occurrence.
+Neither operation is available on an FM index.
+
+The algorithm modes and lookup modes have the same stored-data requirements
+as right-maximal search. Auto selection is suffix-link, then LCP, then
+baseline; CHILD/full remain explicit. All choices must produce the same
+sorted tuple set.
+
+`ForEachMem()` and `ForEachMam()` are synchronous streaming APIs.
+`FindMems()` and `FindMams()` sort by query position, sequence ID, reference
+position, length, and strand. Forward and reverse-complement matches remain
+orientation-distinct, including palindromic queries. Bounded vector calls
+still compute the exact complete `total_matches`.
+
+## Boundaries
 
 Every public coordinate is validated against its contig before emission.
 Positions on N, separators, or the sentinel are never exposed. A damaged
 payload is rejected rather than converted into an invalid result.
 
-Future MEM support must add an independently tested left-maximality check. MEM
-names remain reserved until a two-sided brute-force oracle passes; current
-right-maximal APIs must not be described as MEM search.
+The legacy right-maximal API remains documented under its weaker contract and
+must not be used when a caller needs a formal left-maximality guarantee. Use
+the `Mem*` API for that guarantee and `Mam*` when reference uniqueness is also
+required.

@@ -146,6 +146,22 @@ enum class RightMaximalSearchAlgorithm : std::uint8_t {
   kFull = 5
 };
 
+/** MEM interval-discovery/reuse algorithm. @since 0.3.0 */
+enum class MemSearchAlgorithm : std::uint8_t {
+  /** Choose suffix-link, then LCP, then baseline; never auto-select CHILD. */
+  kAutoSelect = 0,
+  /** Start every canonical query anchor with an SA root lookup. */
+  kBaseline = 1,
+  /** Use LCP-assisted interval and candidate work. */
+  kLcp = 2,
+  /** Use explicit LCP+CHILD traversal for each query anchor. */
+  kChild = 3,
+  /** Reuse intervals through ISA+LCP suffix links. */
+  kSuffixLink = 4,
+  /** Combine suffix-link reuse and explicit CHILD navigation. */
+  kFull = 5
+};
+
 /** Fixed SDSL compressed-suffix-array backend. */
 enum class FmBackend : std::uint8_t {
   /** `csa_wt<wt_huff<>,32,64>`; compressed default. */
@@ -158,7 +174,7 @@ enum class FmBackend : std::uint8_t {
   kSdslCsaWtEpr = 4
 };
 
-/** Orientations searched by exact or right-maximal-match operations. */
+/** Orientations searched by exact or maximal-match operations. */
 enum class StrandMode : std::uint8_t {
   /** Search the supplied sequence only. */
   kForward = 0,
@@ -315,6 +331,85 @@ struct RightMaximalResult {
 
 /** Synchronous callback invoked by SuffixArray::ForEachRightMaximalMatch(). */
 using RightMaximalCallback = std::function<void(const RightMaximalMatch&)>;
+
+/** Two-sided maximal exact match search configuration. @since 0.3.0 */
+struct MemOptions {
+  /** Positive minimum reported match length. */
+  std::uint64_t min_length = 20;
+  /** Query orientations to enumerate. */
+  StrandMode strands = StrandMode::kForward;
+  /** Interval-discovery/reuse path. */
+  MemSearchAlgorithm algorithm = MemSearchAlgorithm::kAutoSelect;
+  /** Exact lookup used for initialization and suffix-link fallback. */
+  SaSearchAlgorithm lookup_algorithm = SaSearchAlgorithm::kAutoSelect;
+  /** Optional MUMmer-style query skip multiplier; absent selects auto. */
+  std::optional<std::uint32_t> skip_multiplier;
+};
+
+/** Reference-unique maximal match search configuration. @since 0.3.0 */
+struct MamOptions {
+  /** Positive minimum reported match length. */
+  std::uint64_t min_length = 20;
+  /** Query orientations to enumerate. */
+  StrandMode strands = StrandMode::kForward;
+  /** Interval-discovery/reuse path. */
+  MemSearchAlgorithm algorithm = MemSearchAlgorithm::kAutoSelect;
+  /** Exact lookup used for initialization and suffix-link fallback. */
+  SaSearchAlgorithm lookup_algorithm = SaSearchAlgorithm::kAutoSelect;
+};
+
+/** One directional two-sided maximal exact match. @since 0.3.0 */
+struct MemMatch {
+  /** Matched reference contig. */
+  SequenceId sequence_id = 0;
+  /** Zero-based contig-local reference start. */
+  Position reference_position = 0;
+  /** Zero-based start in the original forward query. */
+  Position query_position = 0;
+  /** Match length in canonical bases. */
+  std::uint64_t length = 0;
+  /** Directional orientation; never Strand::kBoth. */
+  Strand strand = Strand::kForward;
+};
+
+/** One MEM whose matched string is unique in the reference. @since 0.3.0 */
+struct MamMatch {
+  /** Matched reference contig. */
+  SequenceId sequence_id = 0;
+  /** Zero-based contig-local reference start. */
+  Position reference_position = 0;
+  /** Zero-based start in the original forward query. */
+  Position query_position = 0;
+  /** Match length in canonical bases. */
+  std::uint64_t length = 0;
+  /** Directional orientation; never Strand::kBoth. */
+  Strand strand = Strand::kForward;
+};
+
+/** Deterministic vector result for MEM search. @since 0.3.0 */
+struct MemResult {
+  /** Complete number of unique directional MEM tuples. */
+  std::uint64_t total_matches = 0;
+  /** Retained query-first sorted MEMs. */
+  std::vector<MemMatch> matches;
+  /** True when retained matches are fewer than total_matches. */
+  bool truncated = false;
+};
+
+/** Deterministic vector result for reference-MAM search. @since 0.3.0 */
+struct MamResult {
+  /** Complete number of unique directional reference-MAM tuples. */
+  std::uint64_t total_matches = 0;
+  /** Retained query-first sorted reference-MAMs. */
+  std::vector<MamMatch> matches;
+  /** True when retained matches are fewer than total_matches. */
+  bool truncated = false;
+};
+
+/** Synchronous callback invoked by SuffixArray::ForEachMem(). */
+using MemCallback = std::function<void(const MemMatch&)>;
+/** Synchronous callback invoked by SuffixArray::ForEachMam(). */
+using MamCallback = std::function<void(const MamMatch&)>;
 
 /** Fixed FM-index construction configuration. */
 struct FmIndexBuildOptions {
@@ -481,6 +576,8 @@ SUFKIT_API const char* ToString(SaLookupAcceleration value) noexcept;
 SUFKIT_API const char* ToString(SaSearchAlgorithm value) noexcept;
 /** @param value Right-maximal search algorithm. @return Stable name. */
 SUFKIT_API const char* ToString(RightMaximalSearchAlgorithm value) noexcept;
+/** @param value MEM search algorithm. @return Stable name. */
+SUFKIT_API const char* ToString(MemSearchAlgorithm value) noexcept;
 /** @param value FM backend. @return Stable selector name. */
 SUFKIT_API const char* ToString(FmBackend value) noexcept;
 /** @param value Result orientation. @return `+`, `-`, or `both`. */

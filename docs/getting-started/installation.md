@@ -13,7 +13,8 @@ sufkit also requires:
 - POSIX threads when the CaPS backend is enabled.
 
 SDSL 3.0.3, libdivsufsort 2.0.2, kseq, CaPS-SA, and the required ParlayLib
-snapshot are vendored. A normal build does not download dependencies.
+snapshot are vendored. SeqPro is an optional git submodule used only for local
+contract tests. A normal build does not download dependencies.
 
 Native Windows/MSVC and non-x86_64 platforms are not release-tested. The
 public interface is portable C++17, but do not treat an untested platform as a
@@ -37,6 +38,7 @@ available options are:
 | `SUFKIT_BUILD_BENCHMARKS` | ON | OFF | Build benchmark commands, SA construction benchmark, and developer microbenchmark |
 | `SUFKIT_BUILD_EXAMPLES` | ON | OFF | Compile consumer examples |
 | `SUFKIT_ENABLE_CAPS` | ON | ON | Compile the bundled CaPS-SA constructor |
+| `SUFKIT_ENABLE_SEQPRO` | OFF | OFF | Build optional SeqPro coordinate/reference contract checks |
 | `SUFKIT_BUILD_DOCS` | OFF | OFF | Build local Doxygen API HTML |
 
 `SUFKIT_BUILD_DOCS` requires a local Doxygen installation only when enabled.
@@ -74,6 +76,23 @@ Such a build cannot construct new CaPS indexes. It can still load, inspect,
 query, and re-save `.sufidx` files whose stored backend is `caps32` or
 `caps64`, because the persisted payload is the generic integer SA rather than
 private CaPS state.
+
+## Optional SeqPro contract checks
+
+Initialize the submodule and enable the option only when validating SeqPro
+interoperation:
+
+```bash
+git submodule update --init third_party/seqpro
+cmake -S . -B build/seqpro -DSUFKIT_ENABLE_SEQPRO=ON \
+  -DSUFKIT_BUILD_BENCHMARKS=OFF
+cmake --build build/seqpro -j
+ctest --test-dir build/seqpro --output-on-failure
+```
+
+This does not change public headers, install dependencies, `.sufidx`, or the
+MEM/MAM query path. SeqPro is used only to cross-check FASTA base and sequence-
+text coordinate semantics.
 
 ## `add_subdirectory`
 

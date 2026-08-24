@@ -91,6 +91,24 @@ const char* ToString(RightMaximalSearchAlgorithm value) noexcept {
   return "unknown";
 }
 
+const char* ToString(MemSearchAlgorithm value) noexcept {
+  switch (value) {
+    case MemSearchAlgorithm::kAutoSelect:
+      return "auto";
+    case MemSearchAlgorithm::kBaseline:
+      return "baseline";
+    case MemSearchAlgorithm::kLcp:
+      return "lcp";
+    case MemSearchAlgorithm::kChild:
+      return "child";
+    case MemSearchAlgorithm::kSuffixLink:
+      return "suffix-link";
+    case MemSearchAlgorithm::kFull:
+      return "full";
+  }
+  return "unknown";
+}
+
 const char* ToString(FmBackend value) noexcept {
   switch (value) {
     case FmBackend::kSdslCsaWtHuff:

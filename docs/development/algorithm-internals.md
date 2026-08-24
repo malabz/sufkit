@@ -200,9 +200,8 @@ right maximal when either side is at its right boundary or the following
 symbols differ. Reference contig bounds and query canonical-run bounds are the
 authority. No left-maximality guarantee is made by this API.
 
-Consequently, these matches are candidates for a future MEM filter, not MEMs.
-Future MEM support must add and independently test the analogous preceding-
-symbol condition.
+Consequently, callers that require the left-side guarantee must use the
+separate `Mem*` API, not infer it from the legacy contract.
 
 Reverse orientation output position is:
 
@@ -212,6 +211,52 @@ original_query_length - (rc_position + match_length)
 
 All five algorithm modes, all lookup algorithms, constructors, widths, save/
 load states, and thread counts must produce the same normalized tuple set.
+
+## Formal MEM candidate recovery
+
+The implementation is clean-room. MUMmer4 4.0.1 is used only as an external
+behavioral reference and differential executable; no MUMmer source is copied,
+linked, or modified. The audited local source snapshot had SHA-256
+`035f5ff6ce1bba67ef83b2b8538690ec81a40bff405a1b64ec6a6681200dda13`
+for `sparseSA.hpp` and
+`7488df12f9671c07e3e2767454aeba99b5240c1ddb9b02251597ff46bab81280`
+for `sparseSA.cpp`.
+
+MEM search shares the verified interval traversal and LCE machinery but has an
+independent two-sided emission policy. Let K be the SA sampling rate, s the
+skip multiplier, W=`s*K`, L the minimum length, and T=`L-W+1`. Each canonical
+query run is visited in every reference residue class, anchors advance by W,
+and the right search only needs to reach T before bounded left recovery.
+
+For K=1 and s=1, `IsLeftMaximal()` is one guarded predecessor comparison. For
+sampled search, `RecoverSampledMemStart()` compares at most W preceding bases
+without crossing a contig, N, separator, sentinel, or query hard break. If W
+bases all match, the preceding anchor owns the MEM; suppressing the current
+candidate prevents duplicate residue/anchor emission. Otherwise the recovered
+start is left maximal, and `left+right>=L` is required before emission.
+
+Suffix-link reuse shifts both interval endpoints by W in text coordinates,
+maps them with ISA, and expands through LCP while the interval depth remains
+valid. Empty intervals, invalid sampled residues, insufficient depth, hard
+breaks, and failed verification reset to a root lookup. This optimization may
+reduce work but is never a correctness precondition.
+
+The baseline path searches the T-prefix interval and computes a right LCE per
+candidate row. LCP paths reuse adjacent prefix information to obtain the same
+set; CHILD/full remain explicit. A tuple-level sort/unique is retained as a
+correctness guard. Independent brute-force tests, rather than MUMmer4 source,
+define the public result set.
+
+## Reference-MAM uniqueness
+
+Reference-MAM is supported only for a complete SA. After a two-sided MEM is
+identified, its full matched string must have a complete-SA interval of size
+one across all contigs. Query occurrence count is intentionally ignored. This
+matches MUMmer4 `-mumreference`, not strict MUM semantics.
+
+MEM/MAM do not call SeqPro and add no persisted section. They use the encoded
+reference text and contig metadata already inside `.sufidx`; old 1.0-1.3 SA
+files therefore require no conversion.
 
 ## Persistence and backend identities
 

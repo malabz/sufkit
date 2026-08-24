@@ -86,6 +86,19 @@ PWL improved five of six recorded combinations but regressed repeat-rich at
 minimum length 20 by about 4.2%. Suffix-link remains the default; PWL fallback
 and full CHILD remain explicit.
 
+## MEM and reference-MAM
+
+The Unreleased `mem` and `mam` workloads call the formal `FindMems()` and
+`FindMams()` APIs. MEM rows are checked against MUMmer4 `-maxmatch`;
+reference-MAM rows use `-mumreference`. Baseline, LCP, CHILD, suffix-link, and
+full methods must agree on total matches and sorted-result checksum before a
+run is accepted.
+
+Smoke validation uses seed 20260822, a 64 KiB synthetic reference, 100
+queries, minimum lengths 20 and 50, one warm-up, and three measured
+repetitions. MUMmer4 time is external load+query time, not an in-process
+query-kernel measurement.
+
 ## FM-index
 
 Measured 0.2.0 quick averages across four 4 MiB scenarios:

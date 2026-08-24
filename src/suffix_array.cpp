@@ -1020,6 +1020,46 @@ bool RightMaximalMatchLess(const RightMaximalMatch& left,
                   right.reference_position, right.length, right.strand);
 }
 
+bool MemMatchLess(const MemMatch& left, const MemMatch& right) {
+  return std::tie(left.query_position, left.sequence_id,
+                  left.reference_position, left.length, left.strand) <
+         std::tie(right.query_position, right.sequence_id,
+                  right.reference_position, right.length, right.strand);
+}
+
+bool MamMatchLess(const MamMatch& left, const MamMatch& right) {
+  return std::tie(left.query_position, left.sequence_id,
+                  left.reference_position, left.length, left.strand) <
+         std::tie(right.query_position, right.sequence_id,
+                  right.reference_position, right.length, right.strand);
+}
+
+RightMaximalSearchAlgorithm AsRightMaximalAlgorithm(
+    MemSearchAlgorithm algorithm) {
+  static_assert(static_cast<std::uint8_t>(MemSearchAlgorithm::kFull) ==
+                static_cast<std::uint8_t>(
+                    RightMaximalSearchAlgorithm::kFull));
+  return static_cast<RightMaximalSearchAlgorithm>(algorithm);
+}
+
+void PrepareMemSearch(const MemOptions& options) {
+  if (options.min_length == 0) {
+    throw Error(ErrorCode::kInvalidInput,
+                "MEM minimum length must be greater than zero");
+  }
+  if (options.skip_multiplier && *options.skip_multiplier == 0) {
+    throw Error(ErrorCode::kInvalidInput,
+                "MEM skip multiplier must be greater than zero");
+  }
+}
+
+void PrepareMamSearch(const MamOptions& options) {
+  if (options.min_length == 0) {
+    throw Error(ErrorCode::kInvalidInput,
+                "reference-MAM minimum length must be greater than zero");
+  }
+}
+
 void PrepareRightMaximalSearch(const RightMaximalOptions& options) {
   if (options.min_length == 0) {
     throw Error(
@@ -2154,6 +2194,253 @@ struct SuffixArray::Impl {
       enumerate(reverse, Strand::kReverseComplement);
     }
   }
+
+  std::uint32_t ResolveMemSkip(
+      const MemOptions& options,
+      RightMaximalSearchAlgorithm effective_algorithm) const {
+    if (options.min_length < sampling_rate) {
+      throw Error(ErrorCode::kInvalidInput,
+                  "sampled SA MEM search requires min_length >= "
+                  "sampling_rate");
+    }
+    const auto maximum = options.min_length / sampling_rate;
+    std::uint64_t skip = 1;
+    if (options.skip_multiplier) {
+      skip = *options.skip_multiplier;
+      if (skip > maximum) {
+        throw Error(ErrorCode::kInvalidInput,
+                    "MEM skip multiplier makes the left-recovery window "
+                    "longer than the minimum match length");
+      }
+    } else if (effective_algorithm !=
+               RightMaximalSearchAlgorithm::kSuffixLink) {
+      const auto reserve = sampling_rate >= 4 ? std::uint64_t{10}
+                                              : std::uint64_t{12};
+      const auto available =
+          options.min_length > reserve ? options.min_length - reserve : 0;
+      skip = std::max<std::uint64_t>(available / sampling_rate, 1);
+    }
+    skip = std::min(skip, maximum);
+    if (skip == 0 || skip > std::numeric_limits<std::uint32_t>::max() ||
+        skip > std::numeric_limits<std::uint64_t>::max() / sampling_rate ||
+        skip * sampling_rate > options.min_length ||
+        skip * sampling_rate > std::numeric_limits<std::uint32_t>::max()) {
+      throw Error(ErrorCode::kInvalidInput,
+                  "MEM skip multiplier is incompatible with minimum length "
+                  "and sampling rate");
+    }
+    return static_cast<std::uint32_t>(skip);
+  }
+
+  template <class Callback>
+  void EnumerateSkippedMemOneStrand(
+      const std::vector<std::uint8_t>& query,
+      std::uint64_t original_query_length, Strand strand,
+      const MemOptions& options, RightMaximalSearchAlgorithm algorithm,
+      std::uint32_t skip_multiplier, Callback& callback) const {
+    const auto window =
+        static_cast<std::uint64_t>(skip_multiplier) * sampling_rate;
+    const auto anchor_length = options.min_length - window + 1;
+    const auto lcp_values = ViewCoordinates(lcp);
+    detail::SuffixLinkScanSink* scan_sink = nullptr;
+#if defined(SUFKIT_ENABLE_SUFFIX_LINK_DIAGNOSTICS)
+    scan_sink = detail::CurrentSuffixLinkScanSink();
+#endif
+
+    std::size_t run_begin = 0;
+    while (run_begin < query.size()) {
+      while (run_begin < query.size() &&
+             query[run_begin] == detail::kSentinel) {
+        ++run_begin;
+      }
+      std::size_t run_end = run_begin;
+      while (run_end < query.size() && query[run_end] != detail::kSentinel) {
+        ++run_end;
+      }
+      for (std::uint32_t residue = 0; residue < sampling_rate; ++residue) {
+        const auto begin_mod = static_cast<std::uint64_t>(run_begin) % window;
+        const auto delta = (static_cast<std::uint64_t>(residue) + window -
+                            begin_mod) %
+                           window;
+        const auto first64 = static_cast<std::uint64_t>(run_begin) + delta;
+        if (first64 >= run_end) {
+          continue;
+        }
+        auto anchor_position = static_cast<std::size_t>(first64);
+        SuffixRange previous{};
+        while (anchor_position + anchor_length <= run_end) {
+          const EncodedView prefix(
+              query.data() + anchor_position,
+              static_cast<std::size_t>(anchor_length));
+          SuffixRange interval;
+          const bool links =
+              algorithm == RightMaximalSearchAlgorithm::kSuffixLink ||
+              algorithm == RightMaximalSearchAlgorithm::kFull;
+          if (links && anchor_position != first64 && !previous.Empty() &&
+              anchor_length > window) {
+            interval = SuffixLinkInterval(previous, anchor_length,
+                                          static_cast<std::uint32_t>(window),
+                                          scan_sink);
+            for (std::uint64_t depth = anchor_length - window;
+                 !interval.Empty() && depth < anchor_length; ++depth) {
+              interval = NarrowChar(
+                  interval, depth,
+                  prefix[static_cast<std::size_t>(depth)]);
+            }
+          }
+          if (interval.Empty()) {
+            if (algorithm == RightMaximalSearchAlgorithm::kChild ||
+                algorithm == RightMaximalSearchAlgorithm::kFull) {
+              interval = ChildRange(prefix);
+            } else {
+              const auto selected = ResolveSearchAlgorithm(
+                  options.lookup_algorithm, prefix.size());
+              interval = Range(prefix, selected, nullptr);
+            }
+          }
+          previous = interval;
+
+          std::uint64_t previous_lce = anchor_length;
+          ForEachStoredRow(
+              interval, [&](std::uint64_t row, std::uint64_t sampled) {
+                const auto mapped = detail::MapGlobalPosition(
+                    reference, sampled, anchor_length);
+                if (!mapped) {
+                  return;
+                }
+                const auto sequence_id =
+                    static_cast<std::size_t>(mapped->first);
+                const auto reference_begin =
+                    reference.contig_starts[sequence_id];
+                const auto reference_end =
+                    reference_begin + reference.contig_lengths[sequence_id];
+
+                std::uint64_t right = anchor_length;
+                if (HasLcp() &&
+                    algorithm != RightMaximalSearchAlgorithm::kBaseline &&
+                    row != interval.begin) {
+                  right = std::min(
+                      previous_lce,
+                      static_cast<std::uint64_t>(
+                          lcp_values[static_cast<std::size_t>(row)]));
+                  right = std::max(right, anchor_length);
+                }
+                if (anchor_position + right < run_end &&
+                    sampled + right < reference_end) {
+                  const auto remaining = static_cast<std::size_t>(std::min(
+                      static_cast<std::uint64_t>(run_end - anchor_position) -
+                          right,
+                      reference_end - sampled - right));
+                  right += detail::LongestCommonPrefixBytes(
+                      query.data() + anchor_position +
+                          static_cast<std::size_t>(right),
+                      text.data() + static_cast<std::size_t>(sampled + right),
+                      remaining);
+                }
+                previous_lce = right;
+
+                std::uint64_t left = 0;
+                while (left < window &&
+                       anchor_position > run_begin + left &&
+                       sampled > reference_begin + left &&
+                       query[anchor_position -
+                             static_cast<std::size_t>(left) - 1] ==
+                           text[static_cast<std::size_t>(sampled - left - 1)]) {
+                  ++left;
+                }
+                // A full window is owned by the preceding query anchor.
+                if (left == window || left + right < options.min_length) {
+                  return;
+                }
+                const auto query_start =
+                    anchor_position - static_cast<std::size_t>(left);
+                const auto reference_start = sampled - left;
+                const auto output_position =
+                    strand == Strand::kReverseComplement
+                        ? original_query_length - (query_start + left + right)
+                        : static_cast<std::uint64_t>(query_start);
+                callback(MemMatch{mapped->first,
+                                  reference_start - reference_begin,
+                                  output_position, left + right, strand});
+              });
+
+          if (window > run_end - anchor_position) {
+            break;
+          }
+          anchor_position += static_cast<std::size_t>(window);
+        }
+      }
+      run_begin = run_end;
+    }
+  }
+
+  template <class Callback>
+  void EnumerateEncodedMem(const std::vector<std::uint8_t>& encoded,
+                           const MemOptions& options,
+                           RightMaximalSearchAlgorithm algorithm,
+                           Callback& callback) const {
+    const auto skip = ResolveMemSkip(options, algorithm);
+    if (skip == 1) {
+      RightMaximalOptions legacy;
+      legacy.min_length = options.min_length;
+      legacy.strands = options.strands;
+      legacy.algorithm = algorithm;
+      legacy.lookup_algorithm = options.lookup_algorithm;
+      auto convert = [&](const RightMaximalMatch& match) {
+        callback(MemMatch{match.sequence_id, match.reference_position,
+                          match.query_position, match.length, match.strand});
+      };
+      EnumerateEncodedRightMaximal(encoded, legacy, algorithm, convert);
+      return;
+    }
+
+    const auto enumerate = [&](const std::vector<std::uint8_t>& value,
+                               Strand strand) {
+      EnumerateSkippedMemOneStrand(value, encoded.size(), strand, options,
+                                   algorithm, skip, callback);
+    };
+    if (options.strands == StrandMode::kForward ||
+        options.strands == StrandMode::kBoth) {
+      enumerate(encoded, Strand::kForward);
+    }
+    if (options.strands == StrandMode::kReverseComplement ||
+        options.strands == StrandMode::kBoth) {
+      const auto reverse = ReverseComplementRightMaximal(encoded);
+      enumerate(reverse, Strand::kReverseComplement);
+    }
+  }
+
+  template <class Callback>
+  void EnumerateEncodedMam(const std::vector<std::uint8_t>& encoded,
+                           const MamOptions& options,
+                           RightMaximalSearchAlgorithm algorithm,
+                           Callback& callback) const {
+    if (sampling_rate != 1) {
+      throw Error(ErrorCode::kUnsupportedBackend,
+                  "reference-MAM search requires a complete suffix array");
+    }
+    MemOptions mem;
+    mem.min_length = options.min_length;
+    mem.strands = options.strands;
+    mem.algorithm = static_cast<MemSearchAlgorithm>(algorithm);
+    mem.lookup_algorithm = options.lookup_algorithm;
+    mem.skip_multiplier = 1;
+    auto filter = [&](const MemMatch& match) {
+      const auto sequence_id = static_cast<std::size_t>(match.sequence_id);
+      const auto global = reference.contig_starts[sequence_id] +
+                          match.reference_position;
+      const EncodedView pattern(
+          text.data() + static_cast<std::size_t>(global),
+          static_cast<std::size_t>(match.length));
+      const auto lookup = HasLcp() ? SaSearchAlgorithm::kLcpBinary
+                                   : SaSearchAlgorithm::kBinary;
+      if (Range(pattern, lookup, nullptr).Size() == 1) {
+        callback(MamMatch{match.sequence_id, match.reference_position,
+                          match.query_position, match.length, match.strand});
+      }
+    };
+    EnumerateEncodedMem(encoded, mem, algorithm, filter);
+  }
 };
 
 SuffixArray::SuffixArray(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {}
@@ -2477,6 +2764,93 @@ RightMaximalResult SuffixArray::FindRightMaximalMatches(
   impl_->EnumerateEncodedRightMaximal(encoded, options, algorithm, collect);
   std::sort(result.matches.begin(), result.matches.end(),
             RightMaximalMatchLess);
+  result.truncated = result.matches.size() < result.total_matches;
+  return result;
+}
+
+void SuffixArray::ForEachMem(std::string_view query,
+                             const MemOptions& options,
+                             const MemCallback& callback) const {
+  PrepareMemSearch(options);
+  if (!callback) {
+    throw Error(ErrorCode::kInvalidInput, "MEM callback must not be empty");
+  }
+  const auto encoded = EncodeRightMaximalQuery(query);
+  const auto algorithm =
+      impl_->ResolveAlgorithm(AsRightMaximalAlgorithm(options.algorithm));
+  impl_->EnumerateEncodedMem(encoded, options, algorithm, callback);
+}
+
+MemResult SuffixArray::FindMems(
+    std::string_view query, const MemOptions& options,
+    std::optional<std::uint64_t> max_matches) const {
+  PrepareMemSearch(options);
+  const auto encoded = EncodeRightMaximalQuery(query);
+  const auto algorithm =
+      impl_->ResolveAlgorithm(AsRightMaximalAlgorithm(options.algorithm));
+  MemResult result;
+  auto collect = [&](const MemMatch& match) { result.matches.push_back(match); };
+  impl_->EnumerateEncodedMem(encoded, options, algorithm, collect);
+  std::sort(result.matches.begin(), result.matches.end(), MemMatchLess);
+  result.matches.erase(
+      std::unique(result.matches.begin(), result.matches.end(),
+                  [](const MemMatch& left, const MemMatch& right) {
+                    return std::tie(left.query_position, left.sequence_id,
+                                    left.reference_position, left.length,
+                                    left.strand) ==
+                           std::tie(right.query_position, right.sequence_id,
+                                    right.reference_position, right.length,
+                                    right.strand);
+                  }),
+      result.matches.end());
+  result.total_matches = result.matches.size();
+  if (max_matches && result.matches.size() > *max_matches) {
+    result.matches.resize(static_cast<std::size_t>(*max_matches));
+  }
+  result.truncated = result.matches.size() < result.total_matches;
+  return result;
+}
+
+void SuffixArray::ForEachMam(std::string_view query,
+                             const MamOptions& options,
+                             const MamCallback& callback) const {
+  PrepareMamSearch(options);
+  if (!callback) {
+    throw Error(ErrorCode::kInvalidInput,
+                "reference-MAM callback must not be empty");
+  }
+  const auto encoded = EncodeRightMaximalQuery(query);
+  const auto algorithm =
+      impl_->ResolveAlgorithm(AsRightMaximalAlgorithm(options.algorithm));
+  impl_->EnumerateEncodedMam(encoded, options, algorithm, callback);
+}
+
+MamResult SuffixArray::FindMams(
+    std::string_view query, const MamOptions& options,
+    std::optional<std::uint64_t> max_matches) const {
+  PrepareMamSearch(options);
+  const auto encoded = EncodeRightMaximalQuery(query);
+  const auto algorithm =
+      impl_->ResolveAlgorithm(AsRightMaximalAlgorithm(options.algorithm));
+  MamResult result;
+  auto collect = [&](const MamMatch& match) { result.matches.push_back(match); };
+  impl_->EnumerateEncodedMam(encoded, options, algorithm, collect);
+  std::sort(result.matches.begin(), result.matches.end(), MamMatchLess);
+  result.matches.erase(
+      std::unique(result.matches.begin(), result.matches.end(),
+                  [](const MamMatch& left, const MamMatch& right) {
+                    return std::tie(left.query_position, left.sequence_id,
+                                    left.reference_position, left.length,
+                                    left.strand) ==
+                           std::tie(right.query_position, right.sequence_id,
+                                    right.reference_position, right.length,
+                                    right.strand);
+                  }),
+      result.matches.end());
+  result.total_matches = result.matches.size();
+  if (max_matches && result.matches.size() > *max_matches) {
+    result.matches.resize(static_cast<std::size_t>(*max_matches));
+  }
   result.truncated = result.matches.size() < result.total_matches;
   return result;
 }

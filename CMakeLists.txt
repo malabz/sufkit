@@ -19,9 +19,13 @@ option(SUFKIT_BUILD_BENCHMARKS
     ${_sufkit_top_level_default})
 option(SUFKIT_BUILD_EXAMPLES "Build consumer examples" ${_sufkit_top_level_default})
 option(SUFKIT_ENABLE_CAPS "Build the bundled CaPS-SA parallel suffix-array backend" ON)
+option(SUFKIT_ENABLE_SEQPRO
+    "Build optional SeqPro coordinate/reference contract checks" OFF)
 option(SUFKIT_BUILD_DOCS "Build local Doxygen API documentation" OFF)
 option(SUFKIT_ENABLE_DEVELOPER_TOOLS
     "Enable local clang-format and clang-tidy targets" OFF)
+set(SUFKIT_MUMMER4_EXECUTABLE "" CACHE FILEPATH
+    "Optional MUMmer4 executable for local MEM/MAM differential tests")
 option(SUFKIT_ENABLE_INTERNAL_BENCH_DIAGNOSTICS
     "Instrument suffix-link scans in a developer-only static benchmark build"
     OFF)
@@ -34,6 +38,31 @@ if(NOT SUFKIT_IO_BUFFER_KIB MATCHES "^(64|256|1024)$")
         "SUFKIT_IO_BUFFER_KIB must be one of: 64, 256, 1024")
 endif()
 mark_as_advanced(SUFKIT_IO_BUFFER_KIB)
+
+if(SUFKIT_ENABLE_SEQPRO)
+    if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/seqpro/CMakeLists.txt")
+        message(FATAL_ERROR
+            "SUFKIT_ENABLE_SEQPRO requires the third_party/seqpro submodule")
+    endif()
+    set(_sufkit_had_build_testing FALSE)
+    if(DEFINED BUILD_TESTING)
+        set(_sufkit_had_build_testing TRUE)
+        set(_sufkit_saved_build_testing "${BUILD_TESTING}")
+    endif()
+    set(BUILD_TESTING OFF)
+    set(SEQPRO_BUILD_TOOLS OFF)
+    set(SEQPRO_BUILD_EXAMPLES OFF)
+    set(SEQPRO_BUILD_BENCHMARKS OFF)
+    set(SEQPRO_BUILD_SEQUENCE_TEXT ON)
+    set(SEQPRO_BUILD_DOCUMENTATION OFF)
+    add_subdirectory(third_party/seqpro third_party/seqpro-build
+                     EXCLUDE_FROM_ALL)
+    if(_sufkit_had_build_testing)
+        set(BUILD_TESTING "${_sufkit_saved_build_testing}")
+    else()
+        unset(BUILD_TESTING)
+    endif()
+endif()
 
 if(SUFKIT_ENABLE_DEVELOPER_TOOLS)
     include(cmake/SufkitDeveloperTools.cmake)
@@ -265,6 +294,38 @@ if(SUFKIT_BUILD_TESTS)
     target_link_libraries(sufkit_sampled_sa_tests PRIVATE sufkit::sufkit)
     target_compile_features(sufkit_sampled_sa_tests PRIVATE cxx_std_17)
     add_test(NAME sufkit_sampled_sa_tests COMMAND sufkit_sampled_sa_tests)
+    add_executable(sufkit_mem_mam_tests tests/test_mem_mam.cpp)
+    target_link_libraries(sufkit_mem_mam_tests PRIVATE sufkit::sufkit)
+    target_compile_features(sufkit_mem_mam_tests PRIVATE cxx_std_17)
+    add_test(NAME sufkit_mem_mam_tests COMMAND sufkit_mem_mam_tests)
+    if(SUFKIT_ENABLE_SEQPRO)
+        add_executable(sufkit_seqpro_contract_tests
+            tests/test_seqpro_contract.cpp)
+        target_link_libraries(sufkit_seqpro_contract_tests PRIVATE
+            sufkit::sufkit SeqPro::sequence_text)
+        target_compile_features(sufkit_seqpro_contract_tests PRIVATE cxx_std_17)
+        add_test(NAME sufkit_seqpro_contract_tests
+            COMMAND sufkit_seqpro_contract_tests)
+    endif()
+    if(SUFKIT_BUILD_CLI)
+        add_test(NAME sufkit_mem_mam_cli_tests
+            COMMAND ${CMAKE_COMMAND}
+                -DSUFKIT_EXECUTABLE=$<TARGET_FILE:sufkit_cli>
+                -DOUTPUT_ROOT=${CMAKE_CURRENT_BINARY_DIR}/test-mem-mam-cli
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_mem_mam_cli.cmake)
+    endif()
+    if(SUFKIT_MUMMER4_EXECUTABLE AND EXISTS "${SUFKIT_MUMMER4_EXECUTABLE}")
+        add_executable(sufkit_mummer4_differential_tests
+            tests/test_mummer4_differential.cpp)
+        target_link_libraries(sufkit_mummer4_differential_tests
+            PRIVATE sufkit::sufkit)
+        target_compile_features(sufkit_mummer4_differential_tests
+            PRIVATE cxx_std_17)
+        target_compile_definitions(sufkit_mummer4_differential_tests PRIVATE
+            "SUFKIT_TEST_MUMMER4=\"${SUFKIT_MUMMER4_EXECUTABLE}\"")
+        add_test(NAME sufkit_mummer4_differential_tests
+            COMMAND sufkit_mummer4_differential_tests)
+    endif()
     if(SUFKIT_BUILD_CLI AND SUFKIT_BUILD_BENCHMARKS)
         add_test(NAME sufkit_benchmark_smoke
             COMMAND ${CMAKE_COMMAND}

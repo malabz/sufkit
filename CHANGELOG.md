@@ -4,6 +4,21 @@ All notable changes to sufkit are documented in this file.
 
 ## Unreleased
 
+### Planned for 0.3.0
+
+- Added formal two-sided `Mem*` APIs and the `sufkit mem` command. MEM search
+  uses SA interval traversal, LCP-assisted candidate recovery, ISA+LCP
+  suffix-link reuse, and bounded left recovery for sampled suffix arrays.
+- Added reference-unique `Mam*` APIs and `sufkit mam`, matching MUMmer4
+  `-mumreference` semantics: uniqueness is required across the combined
+  reference, but repeated occurrences in the query remain valid.
+- Kept the existing `RightMaximal*` interface and output behavior unchanged.
+  CHILD remains explicit and is never selected automatically.
+- Added independent MEM/MAM oracles, MUMmer4 4.0.1 black-box differential
+  tests, and correctness-gated `mem`/`mam` smoke benchmark workloads.
+- Kept `.sufidx` formats 1.0-1.3 unchanged; MEM/MAM use the normalized text
+  and existing SA/ISA/LCP/CHILD/PWL sections and do not depend on SeqPro.
+
 ## 0.2.0 - 2026-08-24
 
 ### Source interface and terminology
@@ -91,5 +106,6 @@ implementation does not guarantee left maximality.
   correctness-gated count/locate workloads.
 
 The project uses pinned vendored SDSL, libdivsufsort, CaPS-SA, ParlayLib, and
-kseq snapshots. Disk-backed construction, MUM/MAM, direct
-sparse-SA construction, r-index/RLBWT, and BigBWT/PFP remain future work.
+kseq snapshots. Disk-backed construction, strict query-and-reference-unique
+MUM, direct sparse-SA construction, r-index/RLBWT, and BigBWT/PFP remain
+future work.

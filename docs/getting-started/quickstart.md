@@ -110,6 +110,19 @@ query_id	sequence_id	sequence_name	reference_start	query_start	length	strand
 The N characters in `query2` are hard breaks. right-maximal exact match positions on the reverse
 strand are still reported in the original forward query coordinate system.
 
+For formal two-sided MEMs, use `mem`. For MEMs unique across the combined
+reference (but allowed to repeat in the query), use `mam`:
+
+```bash
+./build/release/sufkit mem --index reference.sa.sufidx \
+  --query queries.fa --min-length 20
+./build/release/sufkit mam --index reference.sa.sufidx \
+  --query queries.fa --min-length 20
+```
+
+MEM supports complete and sampled standalone SAs. Reference-MAM requires a
+complete SA.
+
 ## C++ equivalent
 
 ```cpp

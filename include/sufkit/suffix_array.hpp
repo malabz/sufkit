@@ -11,7 +11,7 @@
 #include <sufkit/types.hpp>
 
 /** @file
- *  @brief Standalone suffix-array exact and right-maximal-match search API.
+ *  @brief Standalone suffix-array exact and maximal-match search API.
  */
 
 namespace sufkit {
@@ -165,6 +165,50 @@ class SUFKIT_API SuffixArray {
    */
   RightMaximalResult FindRightMaximalMatches(
       std::string_view query, const RightMaximalOptions& options = {},
+      std::optional<std::uint64_t> max_matches = {}) const;
+
+  /**
+   * Stream every directional two-sided maximal exact match.
+   * @param query Query whose non-ACGT symbols are hard breaks.
+   * @param options MEM threshold, strand, interval, lookup, and skip policy.
+   * @param callback Synchronous callback; enumeration order is unspecified.
+   * @since 0.3.0
+   */
+  void ForEachMem(std::string_view query, const MemOptions& options,
+                  const MemCallback& callback) const;
+
+  /**
+   * Return deterministic query-first MEMs.
+   * @param query Query whose non-ACGT symbols are hard breaks.
+   * @param options MEM threshold, strand, interval, lookup, and skip policy.
+   * @param max_matches Number of sorted matches retained; absent means all.
+   * @return Complete count plus retained sorted vector.
+   * @since 0.3.0
+   */
+  MemResult FindMems(
+      std::string_view query, const MemOptions& options = {},
+      std::optional<std::uint64_t> max_matches = {}) const;
+
+  /**
+   * Stream reference-unique directional maximal matches.
+   * @param query Query whose non-ACGT symbols are hard breaks.
+   * @param options MAM threshold, strand, interval, and lookup policy.
+   * @param callback Synchronous callback; enumeration order is unspecified.
+   * @since 0.3.0
+   */
+  void ForEachMam(std::string_view query, const MamOptions& options,
+                  const MamCallback& callback) const;
+
+  /**
+   * Return deterministic query-first reference-MAMs.
+   * @param query Query whose non-ACGT symbols are hard breaks.
+   * @param options MAM threshold, strand, interval, and lookup policy.
+   * @param max_matches Number of sorted matches retained; absent means all.
+   * @return Complete count plus retained sorted vector.
+   * @since 0.3.0
+   */
+  MamResult FindMams(
+      std::string_view query, const MamOptions& options = {},
       std::optional<std::uint64_t> max_matches = {}) const;
 
   /** @return Persisted ESA auxiliary layout. */

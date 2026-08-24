@@ -7,6 +7,7 @@
 - SDSL Huffman、balanced 和 DNA EPR compressed suffix array；
 - exact count、equal range 和 locate；
 - ISA、LCP、CHILD 与 suffix-link 右极大精确匹配搜索；
+- 正式的双侧极大 MEM 与 reference-MAM（参考中唯一、query 可重复）搜索；
 - 可选的文本位置采样 SA，保持完整 exact count/locate 和右极大匹配结果；
 - 可选的 Sapling 风格分段线性 learned index；
 - FASTA/FASTA.gz、多 contig、正向、反向互补和双链查询；
@@ -15,9 +16,9 @@
 
 英文文档是详细接口与实现契约的权威版本。中文文档提供快速上手、索引选择和性能结论概览。
 
-术语纠正：当前匹配只保证精确性和右极大性，尚不保证左极大性，因此
-不再称为 MEM。公共 API 使用 `RightMaximalMatch`；MEM 名称保留给后续真正
-同时验证左右极大的实现。文档中可将当前结果称为“右极大 MEM 候选”。
+`RightMaximal*` 保留历史兼容的较弱契约；需要正式左、右双侧极大保证时使用
+0.3.0 开发中的 `Mem*` API。`Mam*` 进一步要求匹配串在全部 reference contig
+中只出现一次，但允许它在 query 中重复；严格 MUM 尚未实现。
 
 [中文文档导航](docs/zh-CN/README.md) · [英文完整文档](docs/README.md) ·
 [贡献指南](CONTRIBUTING.md)
@@ -71,10 +72,16 @@ ctest --preset release --output-on-failure
 
 ./build/release/sufkit right-maximal --index reference.sa.sufidx \
   --query queries.fa.gz --min-length 20 --strand both
+
+./build/release/sufkit mem --index reference.sa.sufidx \
+  --query queries.fa.gz --min-length 20 --strand both
+
+./build/release/sufkit mam --index reference.sa.sufidx \
+  --query queries.fa.gz --min-length 20
 ```
 
 所有公开坐标都是 0-based、contig-local。exact pattern 只接受 A/C/G/T；
-右极大匹配 query 中的其他字符会成为 hard break。
+右极大、MEM 和 MAM query 中的其他字符会成为 hard break。
 
 下一步建议阅读：
 

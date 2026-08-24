@@ -53,10 +53,10 @@ divisible by K. The stored order is a subsequence of the complete SA and has
 approximately n/K rows. ISA, LCP, CHILD, and PWL are defined over this sampled
 row domain.
 
-Exact matches are recovered over all K residue classes. right-maximal exact matches are anchored on
-sampled reference positions and extended to their true maximal boundaries.
-The trade-off is additional query work and `min_length>=K` for right-maximal
-search. Because one exact result becomes a union of intervals, sampled SA
+Exact matches are recovered over all K residue classes. Right-maximal and MEM
+matches are anchored on sampled reference positions and recovered to their
+true boundaries. The trade-off is additional query work and `min_length>=K`
+for maximal-match search. Because one exact result becomes a union of intervals, sampled SA
 cannot expose a
 single `EqualRange`.
 
@@ -90,7 +90,7 @@ navigation without storing pointer-heavy tree nodes.
 
 CHILD is a capability rather than the default. Current exact and right-maximal exact match paths
 include verification/narrowing work that can make CHILD slower. It is retained
-for explicit interval navigation, future MUM/MAM and maximal-repeat work, and
+for explicit interval navigation, MAM and maximal-repeat research, and
 algorithm research.
 
 ## Right-maximal exact matches and suffix-link reuse
@@ -115,6 +115,27 @@ query[i+1 ...] reused interval → extend → verify right maximality
 Invalid, empty, or hard-boundary states return to a correct root lookup. The
 optimization changes how an interval is found, not which right-maximal exact
 matches are emitted.
+
+## MEM and reference-MAM
+
+A MEM is exact and cannot be extended jointly on either side. From a query
+anchor, sufkit first finds a right-side SA interval. LCP information exposes
+shorter outer intervals so different reference occurrences with different
+right-maximal lengths are not lost. ISA+LCP suffix links reuse the previous
+anchor interval; failed reuse returns to a verified root lookup.
+
+For a complete SA, one predecessor comparison proves left maximality. For a
+sampled SA with rate K and skip multiplier s, the query is searched in all K
+residue classes and each candidate is recovered left by at most `s*K` bases.
+If the full window still matches, the preceding anchor owns the same MEM and
+the current anchor is suppressed. This is the sparseMEM/essaMEM ownership
+principle used by MUMmer4, implemented independently in sufkit.
+
+A reference-MAM is a MEM whose matched string has exactly one occurrence in
+the union of all reference contigs. Query uniqueness is deliberately not
+required. sufkit therefore checks a complete-SA interval of size one and only
+supports MAM with K=1. Strict MUM would additionally require query uniqueness
+and is outside the current API.
 
 ## Sapling-style PWL lookup
 

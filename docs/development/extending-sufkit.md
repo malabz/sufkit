@@ -83,17 +83,18 @@ compatible edit.
 8. Benchmark query bases/s, matches/s, lookup/reuse counters, index size, and
    construction phases separately.
 
-## Add true MEM support
+## Extend MEM, MAM, or add strict MUM
 
-1. Introduce MEM-specific types and methods only after both maximality sides
-   are formally defined and tested.
-2. Add a brute-force oracle that independently rejects left- and
-   right-extendable candidates.
-3. Differentially compare the future MEM set with the right-maximal candidate
-   set and explain every filtered candidate.
-4. Re-run MUMmer4-compatible-subset comparisons under the true MEM contract.
-5. Do not silently change `RightMaximalMatch` semantics; retain it as the
-   broader candidate API.
+1. Preserve the formal two-sided MEM oracle and the weaker legacy
+   `RightMaximalMatch` contract independently.
+2. Keep complete and sampled MEM equivalent across K, skip, constructors,
+   lookup modes, strands, hard breaks, and persistence.
+3. Keep reference-MAM uniqueness global across contigs and independent of
+   query occurrence count.
+4. A future strict MUM API must add an independently tested query-uniqueness
+   filter; it must not silently change `MamMatch`.
+5. Use MUMmer4 only as a black-box ACGT single-contig differential tool and
+   report the first tuple difference on failure.
 
 ## Add a `.sufidx` section or format version
 

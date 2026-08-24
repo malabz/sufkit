@@ -102,6 +102,28 @@ Both reference and query positions are zero-based. Reverse matches use the
 original forward-query coordinate system. Unlike exact both-strand search,
 forward and reverse right-maximal exact matches remain orientation-distinct.
 
+## `sufkit mem` and `sufkit mam`
+
+```text
+sufkit mem --index PATH --query Q.fa[.gz]
+  [--min-length N] [--strand forward|reverse|both]
+  [--algorithm auto|baseline|lcp|child|suffix-link|full]
+  [--lookup-algorithm auto|binary|lcp-binary|sapling-pwl|child]
+  [--skip N] [--max-matches N]
+
+sufkit mam --index PATH --query Q.fa[.gz]
+  [--min-length N] [--strand forward|reverse|both]
+  [--algorithm auto|baseline|lcp|child|suffix-link|full]
+  [--lookup-algorithm auto|binary|lcp-binary|sapling-pwl|child]
+  [--max-matches N]
+```
+
+`mem` reports two-sided maximal exact matches. `mam` additionally requires
+the matched string to occur exactly once across the combined reference; query
+uniqueness is not required. `--skip` is MEM-only. MAM requires a complete SA,
+and both commands reject FM indexes. Output columns and coordinate conventions
+are identical to `right-maximal`.
+
 ## `sufkit inspect`
 
 ```text
@@ -127,7 +149,7 @@ Main controls include `--scenarios`, `--methods`, `--pattern-lengths`,
 `--locate-limits`, `--seed`, repetitions, warmups, learned-model parameters,
 `--fm-query-modes`, and `--fm-batch-widths`.
 
-right-maximal exact match workload:
+maximal-match workloads:
 
 ```text
 sufkit bench --workload right-maximal --profile smoke|quick|standard \
@@ -138,6 +160,10 @@ sufkit bench --workload right-maximal --profile smoke|quick|standard \
 The right-maximal compatibility default is `--strands forward`. Internal
 methods emit an independent summary/raw row for every explicitly selected
 orientation. MUMmer4 timed rows retain their historical forward-only scope.
+
+Formal workloads use `--workload mem` or `--workload mam` and method prefixes
+`mem-*` or `mam-*`. MUMmer4 uses `-maxmatch` for MEM and `-mumreference` for
+reference-MAM; all measured methods must pass the same checksum gate.
 
 See [benchmark methodology](../benchmarks/methodology.md) for profiles,
 methods, schemas, correctness gates, and timing boundaries.
