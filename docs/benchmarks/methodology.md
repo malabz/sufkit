@@ -28,6 +28,38 @@ The build table appends `sa_sampling_rate`, which is 2, 4, or 8 for these
 methods. Sampled lookup still participates in the same complete range, hit,
 coordinate, and checksum correctness gate as every other selected method.
 
+## Standalone-SA construction workload
+
+The dedicated constructor driver isolates divsufsort/CaPS, coordinate width,
+thread count, sampling rate, and auxiliary layout:
+
+```bash
+./build/release/sufkit_sa_build_bench \
+  --profile quick \
+  --methods div32,div64,caps32,caps64 \
+  --threads 1,2,4,8 \
+  --sampling-rates 1,2,4,8 \
+  --acceleration none \
+  --output-dir results/sa-build
+```
+
+Synthetic construction profiles contain 1 MiB (`smoke`), 64 MiB (`quick`),
+or 1 GiB (`standard`) of deterministic mixed sequence; `--reference` accepts a
+user FASTA. Every repetition uses a child process. Core timing excludes FASTA
+parsing, checksumming, persistence, and TSV formatting, while peak RSS covers
+the complete child lifetime.
+
+`acceleration=none` isolates the SA constructor. Other layouts include their
+ISA/LCP/CHILD work; divsufsort timing includes its fused sampled ISA/Kasai
+adapter and CaPS retains merge-built LCP. Sampling compacts only after the
+complete suffix order exists, so it must not be described as sparse-SA
+construction memory.
+
+The driver compares two independent SA hashes at the same K and exact plus
+right-maximal checksums across every K before success. It writes metadata, raw
+repetitions, build summaries, and the generated synthetic FASTA. Diagnostic
+files remain available if the correctness gate fails.
+
 ## Profiles
 
 | Profile | Total reference | Queries | Default scenarios | Default methods | Build/query repetitions |
@@ -203,7 +235,7 @@ and checksum equality remains mandatory.
 The `standard` and `full` profiles are intended for explicit local runs and are
 not part of the normal release acceptance commands.
 
-## right-maximal exact match workload (0.1.1)
+## Right-maximal exact-match workload
 
 ```bash
 sufkit bench \
@@ -262,5 +294,4 @@ benchmark, pass them explicitly with
 
 All internal and MUMmer4 rows are normalized to the same zero-based,
 query-first tuple checksum. A mismatch preserves diagnostic TSV files and
-returns nonzero. See
-[the 0.1.1 right-maximal exact match report](results/v0.1.1-right-maximal.md) for the measured release run.
+returns nonzero.

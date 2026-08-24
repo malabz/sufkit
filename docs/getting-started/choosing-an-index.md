@@ -56,7 +56,7 @@ Use sampling when loaded memory or serialized size matters more than the extra
 residue recovery work. It does not reduce the complete-SA construction peak.
 Exact count/locate remain complete; patterns shorter than K use a direct
 contig scan, `EqualRange` is unavailable, and right-maximal exact match requires `min_length>=K`.
-See [sampled suffix arrays](../concepts/sampled-suffix-arrays.md).
+See the [search guide](../user-guide/search.md) for sampled query behavior.
 
 ## SA acceleration layout
 
@@ -97,6 +97,27 @@ All use fixed SDSL SA/ISA sampling densities 32/64. A backend name maps to one
 permanent template signature. SDSL-native payloads require the exact recorded
 SDSL 3.0.3 version when loaded.
 
-See the [benchmark summary](../benchmarks/README.md) for measured evidence and
-[performance tuning](../user-guide/performance-tuning.md) for workload-level
-guidance.
+## Workload-level tuning
+
+- Use `Count()` when coordinates are not needed; high-hit `Locate()` is often
+  dominated by recovery, mapping, sorting, and output.
+- LCP-aware binary can reduce repeated comparisons. PWL is relevant only when
+  patterns reach model k and its root/fallback lookups are frequent enough.
+- Suffix-link reuse is the default right-maximal path. Use the streaming API
+  when matches can be consumed online, or `max_matches` to bound retained
+  vector memory.
+- FM Huffman is the space-oriented default. EPR can improve DNA rank/query
+  throughput at substantially greater serialized size and load time. Batch
+  count should be measured at several widths rather than assumed faster.
+- Sampling rate K reduces final SA-based structures by roughly K but adds
+  residue recovery and does not reduce complete-SA construction peak memory.
+
+The validated x86_64 build requires SSE4.2 and POPCNT; private compiler flags
+do not propagate to consumers. Use Release builds and representative reference
+and query distributions. Compare complete counts and stable result checksums
+before timing, keep build/load/count/locate/right-maximal measurements
+separate, and treat synthetic quick results as hypotheses rather than
+deployment thresholds.
+
+See the [benchmark summary](../benchmarks/README.md) for current measurements
+and the [methodology](../benchmarks/methodology.md) for reproducible runs.

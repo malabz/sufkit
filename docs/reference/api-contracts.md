@@ -25,6 +25,29 @@ may be called concurrently.
 - `sampling_rate=0` is rejected; sampled right-maximal search also rejects
   `min_length < K`.
 
+### Reference normalization
+
+Plain and gzip FASTA are parsed with kseq/zlib. Record order defines
+zero-based `SequenceId`. The first header token is the unique name and the
+remaining header text is the description. Zero records, empty or duplicate
+names, and empty sequences are invalid. `GenomeReference::FromRecords()` uses
+the same validation.
+
+Reference A/C/G/T is upper-cased. N, U, other IUPAC symbols, and every other
+byte normalize to N. Ambiguous counts are recorded per contig and globally.
+The normalized encoded buffer, not the original ASCII, is authoritative.
+
+The logical alphabet is:
+
+```text
+0 sentinel, 1 separator, 2 A, 3 C, 4 G, 5 T, 6 N
+```
+
+One separator follows every contig. SDSL input contains no zero and
+`construct_im(...,1)` appends the unique sentinel; standalone SA constructors
+receive the same logical text with that zero appended explicitly. N,
+separator, and sentinel are unmatchable boundaries.
+
 ## Ranges and coordinates
 
 `SuffixRange` is half-open and `Size()` is `end-begin`. Empty searches return
@@ -38,6 +61,15 @@ so `EqualRange` explicitly returns `unsupported_backend`; use `Count` or
 `Match::position` and `RightMaximalMatch::reference_position` are zero-based,
 contig-local positions. `RightMaximalMatch::query_position` is zero-based in the
 original forward query. Sequence IDs follow reference input order.
+
+`SequenceInfo::global_offset` exposes the logical-text mapping for inspection,
+but ordinary applications should use contig-local result positions. Every
+located extent is checked against its contig before it becomes public. CLI
+exact-search end coordinates are exclusive.
+
+The normalized-content FNV-1a-64 fingerprint supports deterministic dataset
+identity and learned-model consistency. It is not a cryptographic integrity
+digest.
 
 ## Ordering and truncation
 

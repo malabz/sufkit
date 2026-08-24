@@ -9,4 +9,5 @@
 - FM-index：Huffman 空间最优且为默认；EPR 查询更快但约使用 3 倍 Huffman 序列化空间并增加加载成本；balanced 当前是负向对照。
 - MUMmer4：用于可比子集的结果正确性对照；其外部 `load+query` 时间不能与 sufkit 进程内 query-only 时间直接比较。
 
-详细命令、环境、fingerprint、checksum 和限制见[英文 benchmark 总结](../benchmarks/README.md)及其版本化结果报告。
+详细方法、测量边界和历史证据入口见
+[英文 benchmark 总结](../benchmarks/README.md)。

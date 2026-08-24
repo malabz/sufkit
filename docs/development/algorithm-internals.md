@@ -1,8 +1,29 @@
-# Detailed algorithm contracts
+# Algorithm internals and invariants
 
-This page defines the internal behavior an alternative implementation must
-preserve. Pseudocode uses half-open intervals even when a third-party API does
-not.
+This page is the contributor contract for index construction and query
+implementation. It combines algorithm behavior with the invariants that every
+backend and optimization must preserve. Pseudocode uses half-open intervals
+even when a third-party API does not.
+
+## Global invariants
+
+- Stored biological symbols are A/C/G/T/N encoded as 2–6. Separator is 1;
+  construction input contains no zero; the logical indexed text ends with
+  exactly one zero sentinel.
+- N, separator, sentinel, query hard breaks, and contig boundaries cannot be
+  crossed by a public match.
+- Constructor, coordinate width, sampling, lookup algorithm, batching, and
+  acceleration may change work and layout, never normalized results.
+- Explicit unavailable capabilities fail with `unsupported_backend`; damaged
+  persisted data is not silently ignored.
+- Built or loaded indexes are immutable. Const queries need no shared mutable
+  cache, lock, atomic counter, or memory fence.
+
+For K=1, SA is a complete permutation of `[0,n)`. For K>1, it is the sorted
+permutation of positions divisible by K and has `ceil(n/K)` rows. ISA is the
+inverse of the stored SA domain, `LCP[0]=0`, and CHILD/PWL row references must
+stay within that domain. CaPS and divsufsort must produce the same stored
+suffix order and public results.
 
 ## Suffix comparison and binary range
 
@@ -191,3 +212,42 @@ original_query_length - (rc_position + match_length)
 
 All five algorithm modes, all lookup algorithms, constructors, widths, save/
 load states, and thread counts must produce the same normalized tuple set.
+
+## Persistence and backend identities
+
+- Backend and section IDs are permanent and are never reused for a different
+  payload interpretation.
+- The outer container is little-endian, bounds every section, validates CRCs
+  and legal combinations, and publishes only a self-validated temporary file.
+- Format 1.3 sampling metadata must agree with row counts, stored suffixes,
+  auxiliaries, and learned anchors. Older supported formats imply their
+  documented defaults.
+- FM payload loading requires the recorded SDSL 3.0.3 type and version. sufkit
+  does not implement alternative C/Occ/LF/rank/select structures.
+- Loading is self-contained and never depends on the original FASTA path.
+
+## Current low-level design
+
+The private x86_64 implementation is compiled for SSE4.2 and POPCNT without
+exporting that flag to consumers. Its comparison/LCE kernel uses a short
+scalar prefix, bounded 16-byte unaligned loads, movemask/first-mismatch
+selection, and scalar tails. The scalar and SIMD paths must agree on order,
+logical matched length, and every boundary case; no load may cross a validated
+buffer extent.
+
+SA, ISA, CHILD, learned rows, and LCP use private 32/64-bit storage selected by
+their representable domain. Values are promoted to public `uint64_t` only at
+the boundary. Variant dispatch belongs outside typed hot loops. This layout is
+private: serialized widths and bytes remain governed by the format contract.
+
+Query workspaces are call-owned. FM batch uses structure-of-arrays state and
+an active-lane list; SA/right-maximal queries use non-owning encoded views and
+compact global coordinates until final mapping. No workspace or statistics
+object is stored in the immutable index, and no large thread-local buffer or
+library-global thread pool is allowed.
+
+Performance changes are accepted only after scalar/optimized, constructor,
+width, sampling, strand, and save/load checksums agree. A target workload must
+improve materially without a stable regression in primary non-target paths.
+Benchmark instrumentation is run separately from timed passes and cannot
+steer query behavior.

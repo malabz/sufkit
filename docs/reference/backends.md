@@ -44,8 +44,7 @@ Both backends still form the complete suffix order before compaction. Sampling
 therefore reduces loaded/serialized size, not the fundamental full-SA
 constructor peak. Exact `Count`/`Locate` and right-maximal exact match recover
 complete results; direct `EqualRange` is unavailable because the result is not
-one row
-interval. See [sampled suffix arrays](../concepts/sampled-suffix-arrays.md).
+one row interval. See the [search guide](../user-guide/search.md).
 
 ## FM-index backends
 

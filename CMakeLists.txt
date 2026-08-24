@@ -390,6 +390,7 @@ install(DIRECTORY docs/
     DESTINATION ${CMAKE_INSTALL_DATADIR}/sufkit/docs
     FILES_MATCHING
     PATTERN "*.md"
+    PATTERN "archive" EXCLUDE
     PATTERN "benchmarks/results/artifacts" EXCLUDE)
 
 configure_package_config_file(

@@ -1,7 +1,7 @@
 # Algorithm overview
 
 This page explains what each algorithm contributes and how the pieces fit. The
-[algorithm contracts](../development/algorithm-contracts.md) define the exact
+[algorithm internals](../development/algorithm-internals.md) define the exact
 implementation invariants used by contributors.
 
 Let `n` be logical reference symbols, `m` pattern length, `z` reported hits,
@@ -55,13 +55,14 @@ row domain.
 
 Exact matches are recovered over all K residue classes. right-maximal exact matches are anchored on
 sampled reference positions and extended to their true maximal boundaries.
-The trade-off is additional query work and `min_length>=K` for right-maximal exact match. Because
-one exact result becomes a union of intervals, sampled SA cannot expose a
+The trade-off is additional query work and `min_length>=K` for right-maximal
+search. Because one exact result becomes a union of intervals, sampled SA
+cannot expose a
 single `EqualRange`.
 
 Both backends still create a complete SA before compaction. Sampling reduces
-the loaded and serialized index, not full-SA constructor peak memory. See
-[sampled suffix arrays](sampled-suffix-arrays.md) for the full contract.
+the loaded and serialized index, not full-SA constructor peak memory. See the
+[search guide](../user-guide/search.md) for its public behavior.
 
 ## ISA and LCP
 

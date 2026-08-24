@@ -30,7 +30,8 @@ When benchmarks are enabled, build `sufkit_low_level_bench` and run
 `--verify-only` as a correctness gate. Timed scalar/SSE comparisons use seven
 repetitions pinned to one logical CPU and retain raw TSV rows. Confirm the
 expected SSE and POPCNT instructions with `objdump`; a compiler flag alone is
-not instruction evidence. See [low-level performance work](low-level-performance.md).
+not instruction evidence. Current performance invariants are in
+[algorithm internals](algorithm-internals.md).
 
 ### Static/shared and consumers
 
@@ -74,8 +75,8 @@ vendored or benchmark source. See the [C++ style guide](cpp-style.md).
 
 1. Set CMake and public macro version intentionally.
 2. Move completed items from `Unreleased` to the exact release section.
-3. Verify README feature status, backend matrix, CLI help, Doxygen `since`
-   labels, and compatibility table agree.
+3. Verify the README capability summary, backend matrix, CLI help, Doxygen
+   `since` labels, and compatibility table agree.
 4. Verify `.sufidx` output minor for every legal index layout and old-reader
    expectations.
 5. Run Release, sanitizer, static/shared, install, and consumer validation.
@@ -98,8 +99,8 @@ vendored or benchmark source. See the [C++ style guide](cpp-style.md).
 | CLI flag/default | CLI parser and `--help` | CLI reference, relevant tutorial |
 | Backend identity/status | Stored enum/signature + discovery API | Backend reference, README, changelog |
 | File layout | Serialization reader/writer | Format and compatibility references |
-| Algorithm semantics | Tests + algorithm contract | User guide and Doxygen |
-| Performance claim | Versioned benchmark report | Concise benchmark summary |
+| Algorithm semantics | Tests + algorithm internals | Search guide and Doxygen |
+| Performance claim | Archived versioned evidence | Concise benchmark summary |
 | Release status | Project version + CHANGELOG | README and compatibility page |
 
 ## Documentation review rules
@@ -108,7 +109,7 @@ vendored or benchmark source. See the [C++ style guide](cpp-style.md).
   focused page and link it.
 - English is authoritative. Chinese pages explain stable workflows and link to
   English parameter/reference detail rather than duplicating long tables.
-- Use consistent terminology from the glossary.
+- Define core terminology in the algorithm overview and use it consistently.
 - Every diagram needs adjacent prose so the document remains understandable
   without Mermaid rendering.
 - Code blocks must identify language or use `text` for output.

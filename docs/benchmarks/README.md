@@ -18,7 +18,7 @@ machine. Standard/full and large real-genome experiments remain user-triggered.
 
 ## SA construction: divsufsort and CaPS
 
-0.2.0 development evidence for CaPS on the 64 MiB quick profile:
+Measured 0.2.0 evidence for CaPS on the 64 MiB quick profile:
 
 | Builder | Threads | Build median | Peak RSS | Relative to div32 |
 |---|---:|---:|---:|---:|
@@ -32,12 +32,12 @@ peak RSS. At 1 MiB it was much slower because setup dominated. This supports a
 conservative automatic policy—large text and explicit parallel resources—not
 a 64 MiB global threshold. The current auto threshold remains 1 GiB.
 
-See [CaPS construction results](results/unreleased-caps.md) and
-[methodology](sa-construction-methodology.md).
+See the [benchmark methodology](methodology.md) for the construction timing
+scope and correctness gates.
 
 ## Sampled standalone SA
 
-0.2.0 development evidence from the 1 MiB smoke profile with
+Measured 0.2.0 evidence from the 1 MiB smoke profile with
 `acceleration=full`:
 
 | Builder | K | Stored rows | Peak RSS | Serialized size |
@@ -52,12 +52,11 @@ fell 77.8% because sampled auxiliaries are built after compaction; CaPS still
 must own complete SA/LCP and working data first. This one-repetition smoke run
 is correctness and memory-shape evidence, not a stable build-time claim.
 
-See [sampled-SA results](results/unreleased-sampled-sa.md) and the
-[algorithm contract](../concepts/sampled-suffix-arrays.md).
+See the [search contract](../user-guide/search.md).
 
 ## Exact suffix-array lookup
 
-0.2.0 development results from the 4 MiB quick profile; QPS aggregates
+Measured 0.2.0 results from the 4 MiB quick profile; QPS aggregates
 selected pattern lengths and strands:
 
 | Scenario | Operation | Binary | LCP-aware | PWL | CHILD |
@@ -71,12 +70,10 @@ LCP-aware binary is the stronger mixed baseline; PWL is competitive and helps
 repeat-rich lookup, but remains opt-in until real-reference evidence exists.
 CHILD is an explicit research capability and a negative optimization here.
 
-See [Sapling results](results/unreleased-sapling.md).
-
 ## right-maximal exact match
 
-Released 0.1.1 established suffix-link reuse as the main acceleration. The
-subsequent isolated-worker PWL comparison measured:
+Suffix-link reuse is the default right-maximal acceleration. The isolated
+worker PWL comparison measured:
 
 | Scenario | Min length | Suffix-link binary | Suffix-link PWL | PWL speed |
 |---|---:|---:|---:|---:|
@@ -89,12 +86,9 @@ PWL improved five of six recorded combinations but regressed repeat-rich at
 minimum length 20 by about 4.2%. Suffix-link remains the default; PWL fallback
 and full CHILD remain explicit.
 
-See [released right-maximal exact match results](results/v0.1.1-right-maximal.md) and
-[updated Sapling/right-maximal exact match results](results/unreleased-sapling.md).
-
 ## FM-index
 
-0.2.0 development quick averages across four 4 MiB scenarios:
+Measured 0.2.0 quick averages across four 4 MiB scenarios:
 
 | Backend | Build | Load | Serialized | Count throughput | locate(1000) QPS |
 |---|---:|---:|---:|---:|---:|
@@ -106,8 +100,6 @@ EPR scalar count was 1.31x and locate(1000) 1.25x Huffman in aggregate, but
 used about 3.04x serialized space and 3.03x load time. EPR batch count gained
 another 1.13x over its scalar path at its best tested width. Huffman remains
 the default; balanced is retained as an explicit comparison backend.
-
-See [FM backend results](results/unreleased-fm.md).
 
 ## Interpretation rules
 
@@ -121,3 +113,7 @@ See [FM backend results](results/unreleased-fm.md).
   `load+query+output+parse` time is not a query-kernel comparison.
 - This repository retains Markdown reports, not raw TSV result directories.
   Each report carries enough provenance for an equivalent rerun.
+
+Versioned commands, checksums, fingerprints, and complete measurement tables
+are retained as [historical evidence](../archive/README.md). They are
+non-normative and are not installed with the library.
