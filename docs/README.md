@@ -57,11 +57,13 @@ under [`zh-CN/`](zh-CN/README.md).
 - [C++ style guide](development/cpp-style.md)
 - [0.2.0 C++ API naming migration](development/api-naming-migration-0.2.0.md)
 - [Testing, releases, and documentation maintenance](development/testing-release-and-docs.md)
+- [Low-level performance work](development/low-level-performance.md)
 
 ### Benchmarks
 
 - [Concise benchmark summary](benchmarks/README.md)
 - [Benchmark methodology](benchmarks/methodology.md)
+- [0.2.0 low-level performance results](benchmarks/results/v0.2.0-low-level-performance.md)
 - [CaPS construction results](benchmarks/results/unreleased-caps.md)
 - [Sampled-SA development results](benchmarks/results/unreleased-sampled-sa.md)
 - [right-maximal exact match 0.1.1 results](benchmarks/results/v0.1.1-right-maximal.md)

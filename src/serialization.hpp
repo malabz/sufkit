@@ -89,7 +89,8 @@ class SectionIStream : public std::istream {
  private:
   class LimitedBuffer : public std::streambuf {
    public:
-    LimitedBuffer(std::ifstream& source, std::uint64_t limit);
+    LimitedBuffer(std::ifstream& source, std::uint64_t limit,
+                  std::size_t buffer_size);
 
    protected:
     int_type underflow() override;
@@ -97,7 +98,8 @@ class SectionIStream : public std::istream {
    private:
     std::ifstream& source_;
     std::uint64_t remaining_;
-    char buffer_[8192];
+    std::size_t buffer_size_;
+    std::unique_ptr<char[]> buffer_;
   };
 
   std::ifstream file_;

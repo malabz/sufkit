@@ -1,6 +1,8 @@
 # 中文快速入门
 
-环境要求：Linux/WSL、GCC 或 Clang、CMake 3.20+、C++17 和 ZLIB。SDSL、libdivsufsort、CaPS、ParlayLib 与 kseq 已经随仓库固定，不需要联网下载。
+环境要求：支持 SSE4.2 和 POPCNT 的 x86_64 Linux/WSL、GCC 或 Clang、CMake
+3.20+、C++17 和 ZLIB；不要求 AVX2 或 AVX-512。SDSL、libdivsufsort、CaPS、
+ParlayLib 与 kseq 已经随仓库固定，不需要联网下载。
 
 ```bash
 cmake --preset release

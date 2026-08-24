@@ -2,12 +2,14 @@
 
 #include "serialization.hpp"
 
+#include <fcntl.h>
 #include <unistd.h>
 #include <zlib.h>
 
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cerrno>
 #include <chrono>
 #include <cstring>
 #include <limits>
@@ -29,8 +31,110 @@ constexpr std::size_t kHeaderCrcOffset = 72;
 constexpr std::uint32_t kRequiredSection = 1;
 constexpr std::uint32_t kMaxSections = 16;
 constexpr std::uint32_t kMaxStringBytes = 1U << 30;
+#ifndef SUFKIT_IO_BUFFER_KIB
+#define SUFKIT_IO_BUFFER_KIB 1024
+#endif
+constexpr std::size_t kStreamBufferSize =
+    static_cast<std::size_t>(SUFKIT_IO_BUFFER_KIB) << 10U;
 
 std::atomic<std::uint64_t> g_temp_counter{0};
+
+void UpdateCrc(uLong& crc, const unsigned char* data, std::size_t size) {
+  std::size_t offset = 0;
+  while (offset < size) {
+    const auto amount = static_cast<uInt>(
+        std::min<std::size_t>(size - offset,
+                              std::numeric_limits<uInt>::max()));
+    crc = crc32(crc, data + offset, amount);
+    offset += amount;
+  }
+}
+
+// This stream buffer observes bytes as a section writer emits them. It avoids
+// rereading every genome-scale payload solely to populate the section table.
+class ChecksummingBuffer : public std::streambuf {
+ public:
+  explicit ChecksummingBuffer(std::streambuf* destination)
+      : destination_(destination),
+        crc_(crc32(0L, Z_NULL, 0)),
+        buffer_(new char[kStreamBufferSize]) {
+    setp(buffer_.get(), buffer_.get() + kStreamBufferSize);
+  }
+
+  bool Finish() { return FlushBuffer(); }
+
+  std::uint32_t Crc32() const noexcept {
+    return static_cast<std::uint32_t>(crc_);
+  }
+
+ protected:
+  std::streamsize xsputn(const char* data, std::streamsize size) override {
+    std::streamsize consumed = 0;
+    while (consumed < size) {
+      const auto remaining = size - consumed;
+      const auto available = static_cast<std::streamsize>(epptr() - pptr());
+      if (available == 0 && !FlushBuffer()) {
+        break;
+      }
+      const auto buffer_size =
+          static_cast<std::streamsize>(kStreamBufferSize);
+      if (pptr() == pbase() && remaining >= buffer_size) {
+        const auto written = destination_->sputn(data + consumed, remaining);
+        if (written > 0) {
+          UpdateCrc(crc_,
+                    reinterpret_cast<const unsigned char*>(data + consumed),
+                    static_cast<std::size_t>(written));
+          consumed += written;
+        }
+        if (written != remaining) {
+          break;
+        }
+        continue;
+      }
+      const auto copied = std::min(
+          remaining, static_cast<std::streamsize>(epptr() - pptr()));
+      std::memcpy(pptr(), data + consumed, static_cast<std::size_t>(copied));
+      pbump(static_cast<int>(copied));
+      consumed += copied;
+    }
+    return consumed;
+  }
+
+  int_type overflow(int_type character) override {
+    if (traits_type::eq_int_type(character, traits_type::eof())) {
+      return traits_type::not_eof(character);
+    }
+    if (!FlushBuffer()) {
+      return traits_type::eof();
+    }
+    *pptr() = traits_type::to_char_type(character);
+    pbump(1);
+    return traits_type::not_eof(character);
+  }
+
+  int sync() override {
+    return FlushBuffer() && destination_->pubsync() == 0 ? 0 : -1;
+  }
+
+ private:
+  bool FlushBuffer() {
+    const auto size = static_cast<std::streamsize>(pptr() - pbase());
+    if (size == 0) {
+      return true;
+    }
+    const auto written = destination_->sputn(pbase(), size);
+    if (written > 0) {
+      UpdateCrc(crc_, reinterpret_cast<const unsigned char*>(pbase()),
+                static_cast<std::size_t>(written));
+    }
+    setp(buffer_.get(), buffer_.get() + kStreamBufferSize);
+    return written == size;
+  }
+
+  std::streambuf* destination_;
+  uLong crc_;
+  std::unique_ptr<char[]> buffer_;
+};
 
 // Multi-byte integers in the container are encoded explicitly so the on-disk
 // representation remains little-endian on every host architecture.
@@ -99,13 +203,7 @@ void PatchU32(std::vector<std::uint8_t>& output, std::size_t offset,
 
 std::uint32_t CrcBytes(const std::vector<std::uint8_t>& bytes) {
   uLong value = crc32(0L, Z_NULL, 0);
-  std::size_t offset = 0;
-  while (offset < bytes.size()) {
-    const auto amount = static_cast<uInt>(
-        std::min<std::size_t>(bytes.size() - offset, 1U << 20));
-    value = crc32(value, bytes.data() + offset, amount);
-    offset += amount;
-  }
+  UpdateCrc(value, bytes.data(), bytes.size());
   return static_cast<std::uint32_t>(value);
 }
 
@@ -121,32 +219,82 @@ std::uint32_t CrcFileRange(const std::filesystem::path& path,
     throw Error(ErrorCode::kIoError,
                 "cannot seek index while calculating CRC: " + path.string());
   }
-  std::array<unsigned char, 1U << 16> buffer{};
+  std::unique_ptr<unsigned char[]> buffer(
+      new unsigned char[kStreamBufferSize]);
   // Stream large payloads through a fixed buffer instead of duplicating an
   // SDSL index or suffix array solely to calculate its checksum.
   uLong value = crc32(0L, Z_NULL, 0);
   std::uint64_t remaining = size;
   while (remaining != 0) {
     const auto amount = static_cast<std::streamsize>(
-        std::min<std::uint64_t>(remaining, buffer.size()));
-    input.read(reinterpret_cast<char*>(buffer.data()), amount);
+        std::min<std::uint64_t>(remaining, kStreamBufferSize));
+    input.read(reinterpret_cast<char*>(buffer.get()), amount);
     if (input.gcount() != amount) {
       throw Error(ErrorCode::kCorruptIndex, "index section is truncated");
     }
-    value = crc32(value, buffer.data(), static_cast<uInt>(amount));
+    UpdateCrc(value, buffer.get(), static_cast<std::size_t>(amount));
     remaining -= static_cast<std::uint64_t>(amount);
   }
   return static_cast<std::uint32_t>(value);
 }
 
-std::filesystem::path TemporaryPathFor(const std::filesystem::path& target) {
-  const auto counter = g_temp_counter.fetch_add(1, std::memory_order_relaxed);
-  const auto ticks = static_cast<std::uint64_t>(
-      std::chrono::steady_clock::now().time_since_epoch().count());
-  return std::filesystem::path(
-      target.string() + ".partial." +
-      std::to_string(static_cast<long long>(getpid())) + "." +
-      std::to_string(ticks ^ counter));
+std::filesystem::path CreateTemporaryPathFor(
+    const std::filesystem::path& target) {
+  for (unsigned attempt = 0; attempt < 100; ++attempt) {
+    const auto counter =
+        g_temp_counter.fetch_add(1, std::memory_order_relaxed);
+    const auto ticks = static_cast<std::uint64_t>(
+        std::chrono::steady_clock::now().time_since_epoch().count());
+    const auto temporary = std::filesystem::path(
+        target.string() + ".partial." +
+        std::to_string(static_cast<long long>(getpid())) + "." +
+        std::to_string(ticks ^ counter));
+    const int descriptor =
+        open(temporary.c_str(), O_CREAT | O_EXCL | O_RDWR | O_CLOEXEC, 0666);
+    if (descriptor >= 0) {
+      if (close(descriptor) != 0) {
+        const auto close_error = errno;
+        std::error_code ignored;
+        std::filesystem::remove(temporary, ignored);
+        throw Error(ErrorCode::kIoError,
+                    "cannot close temporary index: " +
+                        std::error_code(close_error, std::generic_category())
+                            .message());
+      }
+      return temporary;
+    }
+    if (errno != EEXIST) {
+      throw Error(ErrorCode::kIoError,
+                  "cannot create temporary index: " +
+                      std::error_code(errno, std::generic_category())
+                          .message());
+    }
+  }
+  throw Error(ErrorCode::kIoError,
+              "cannot allocate a unique temporary index path");
+}
+
+void PublishTemporary(const std::filesystem::path& temporary,
+                      const std::filesystem::path& target, bool overwrite) {
+  if (overwrite) {
+    std::filesystem::rename(temporary, target);
+    return;
+  }
+
+  // A same-directory hard link is an atomic no-replace publication on the
+  // supported Linux/WSL platform. Unlike exists()+rename(), it cannot overwrite
+  // a target created by another process after the initial validation.
+  if (link(temporary.c_str(), target.c_str()) != 0) {
+    if (errno == EEXIST) {
+      throw Error(ErrorCode::kIoError,
+                  "index already exists: " + target.string());
+    }
+    throw Error(ErrorCode::kIoError,
+                "cannot publish index: " +
+                    std::error_code(errno, std::generic_category()).message());
+  }
+  std::error_code ignored;
+  std::filesystem::remove(temporary, ignored);
 }
 
 std::vector<std::uint8_t> BuildHeader(
@@ -242,9 +390,13 @@ void WriteString(std::ostream& output, const std::string& value) {
 }  // namespace
 
 SectionIStream::LimitedBuffer::LimitedBuffer(std::ifstream& source,
-                                             std::uint64_t limit)
-    : source_(source), remaining_(limit) {
-  setg(buffer_, buffer_, buffer_);
+                                             std::uint64_t limit,
+                                             std::size_t buffer_size)
+    : source_(source),
+      remaining_(limit),
+      buffer_size_(buffer_size),
+      buffer_(new char[buffer_size_]) {
+  setg(buffer_.get(), buffer_.get(), buffer_.get());
 }
 
 SectionIStream::LimitedBuffer::int_type
@@ -258,14 +410,14 @@ SectionIStream::LimitedBuffer::underflow() {
   // EOF at the declared section boundary prevents a payload decoder from
   // reading bytes owned by a later section.
   const auto amount = static_cast<std::streamsize>(
-      std::min<std::uint64_t>(remaining_, sizeof(buffer_)));
-  source_.read(buffer_, amount);
+      std::min<std::uint64_t>(remaining_, buffer_size_));
+  source_.read(buffer_.get(), amount);
   const auto read = source_.gcount();
   if (read <= 0) {
     return traits_type::eof();
   }
   remaining_ -= static_cast<std::uint64_t>(read);
-  setg(buffer_, buffer_, buffer_ + read);
+  setg(buffer_.get(), buffer_.get(), buffer_.get() + read);
   return traits_type::to_int_type(*gptr());
 }
 
@@ -273,7 +425,7 @@ SectionIStream::SectionIStream(const std::filesystem::path& path,
                                const SectionDescriptor& section)
     : std::istream(nullptr),
       file_(path, std::ios::binary),
-      buffer_(file_, section.size) {
+      buffer_(file_, section.size, kStreamBufferSize) {
   if (!file_) {
     throw Error(ErrorCode::kIoError,
                 "cannot open index section: " + path.string());
@@ -351,12 +503,16 @@ void WriteContainer(const std::filesystem::path& path,
     throw Error(ErrorCode::kIoError, "index already exists: " + path.string());
   }
 
-  const auto temporary = TemporaryPathFor(path);
+  const auto temporary = CreateTemporaryPathFor(path);
   try {
     const std::size_t header_size =
         kBaseHeaderSize + writers.size() * kSectionEntrySize;
-    std::fstream output(temporary, std::ios::binary | std::ios::in |
-                                       std::ios::out | std::ios::trunc);
+    std::unique_ptr<char[]> output_buffer(new char[kStreamBufferSize]);
+    std::fstream output;
+    output.rdbuf()->pubsetbuf(
+        output_buffer.get(), static_cast<std::streamsize>(kStreamBufferSize));
+    output.open(temporary, std::ios::binary | std::ios::in | std::ios::out |
+                               std::ios::trunc);
     if (!output) {
       throw Error(ErrorCode::kIoError,
                   "cannot create temporary index: " + temporary.string());
@@ -379,8 +535,10 @@ void WriteContainer(const std::filesystem::path& path,
         throw Error(ErrorCode::kIoError,
                     "cannot determine index section offset");
       }
-      writer.write(output);
-      if (!output) {
+      ChecksummingBuffer checksumming_buffer(output.rdbuf());
+      std::ostream section_output(&checksumming_buffer);
+      writer.write(section_output);
+      if (!section_output || !checksumming_buffer.Finish() || !output) {
         throw Error(ErrorCode::kIoError, "failed while writing index section");
       }
       const auto end = output.tellp();
@@ -392,17 +550,16 @@ void WriteContainer(const std::filesystem::path& path,
       section.flags = kRequiredSection;
       section.offset = static_cast<std::uint64_t>(begin);
       section.size = static_cast<std::uint64_t>(end - begin);
+      section.crc32 = checksumming_buffer.Crc32();
       sections.push_back(section);
     }
     output.flush();
     if (!output) {
       throw Error(ErrorCode::kIoError, "failed to flush temporary index");
     }
-    // CRCs are computed only after every payload byte is visible through the
-    // filesystem, then the final header replaces the placeholder.
-    for (auto& section : sections) {
-      section.crc32 = CrcFileRange(temporary, section.offset, section.size);
-    }
+    // CRCs were accumulated while each payload was streamed. The completed
+    // header can therefore replace the placeholder without a first full-file
+    // payload reread; final self-validation below remains unchanged.
     const auto header = BuildHeader(spec, sections);
     output.seekp(0);
     output.write(reinterpret_cast<const char*>(header.data()),
@@ -413,14 +570,10 @@ void WriteContainer(const std::filesystem::path& path,
       throw Error(ErrorCode::kIoError, "failed to finalize temporary index");
     }
 
-    // Validate the complete temporary container before publishing it. Rename
-    // keeps readers from observing a partially written target.
+    // Validate the complete temporary container before publication so readers
+    // can never observe a partially written target.
     (void)ReadContainer(temporary);
-    if (!options.overwrite && std::filesystem::exists(path)) {
-      throw Error(ErrorCode::kIoError,
-                  "index appeared during save: " + path.string());
-    }
-    std::filesystem::rename(temporary, path);
+    PublishTemporary(temporary, path, options.overwrite);
   } catch (...) {
     std::error_code ignored;
     std::filesystem::remove(temporary, ignored);
@@ -595,6 +748,8 @@ ReferenceData ReadMetadata(const ParsedContainer& container) {
     throw Error(ErrorCode::kCorruptIndex, "metadata sequence count mismatch");
   }
   data.sequences.reserve(count);
+  data.contig_starts.reserve(count);
+  data.contig_lengths.reserve(count);
   std::set<std::string> names;
   std::uint64_t expected_offset = 0;
   for (std::uint32_t index = 0; index < count; ++index) {
@@ -619,6 +774,8 @@ ReferenceData ReadMetadata(const ParsedContainer& container) {
     expected_offset += sequence.length + 1;
     data.total_bases += sequence.length;
     data.ambiguous_bases += sequence.ambiguous_bases;
+    data.contig_starts.push_back(sequence.global_offset);
+    data.contig_lengths.push_back(sequence.length);
     data.sequences.push_back(std::move(sequence));
   }
   if (input->peek() != std::char_traits<char>::eof()) {

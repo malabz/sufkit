@@ -130,9 +130,14 @@ Main controls include `--scenarios`, `--methods`, `--pattern-lengths`,
 right-maximal exact match workload:
 
 ```text
-sufkit bench --workload right-maximal --profile smoke|quick|standard|full \
+sufkit bench --workload right-maximal --profile smoke|quick|standard \
+  --strands forward,reverse-complement,both \
   --output-dir DIR [options]
 ```
+
+The right-maximal compatibility default is `--strands forward`. Internal
+methods emit an independent summary/raw row for every explicitly selected
+orientation. MUMmer4 timed rows retain their historical forward-only scope.
 
 See [benchmark methodology](../benchmarks/methodology.md) for profiles,
 methods, schemas, correctness gates, and timing boundaries.

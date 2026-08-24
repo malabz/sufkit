@@ -4,6 +4,15 @@ All notable changes to sufkit are documented in this file.
 
 ## Unreleased
 
+- Optimized existing SA, FM, sampled-SA, Sapling, and right-maximal query
+  paths with no public API or index-format change: complete-SA count and
+  zero-retention locate fast paths, lazy bounded heaps, encoded views/LUTs,
+  compact auxiliary arrays, delayed coordinate mapping, SSE4.2 comparison,
+  active-lane FM batch workspaces, and lower-copy construction/persistence.
+- Added developer-only low-level, allocation, phase-RSS, sampled-query,
+  mixed-length FM batch, and suffix-link-scan measurements with correctness
+  checks, source/toolchain provenance, explicit RSS scopes, and a documented
+  WSL evidence boundary.
 - Standardized the planned 0.2.0 C++ source interface on Google-style
   `PascalCase` functions and `kPascalCase` enumerators. This is intentionally
   source-incompatible: no old-name forwarding aliases are provided. Public

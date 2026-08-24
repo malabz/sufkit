@@ -3,6 +3,8 @@
 #include <unistd.h>
 #include <zlib.h>
 
+#include <sys/wait.h>
+
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -104,6 +106,36 @@ void TestReferenceAndFasta(const std::filesystem::path& directory) {
   auto compressed = sufkit::GenomeReference::FromFasta(gzip);
   CHECK(compressed.Fingerprint() == reference.Fingerprint());
 
+  std::vector<sufkit::SequenceRecord> many_records;
+  many_records.reserve(257);
+  const auto many_fasta = directory / "many-contigs.fa";
+  {
+    std::ofstream output(many_fasta, std::ios::binary);
+    static constexpr std::array<char, 7> kInputBases{
+        {'a', 'C', 'g', 'T', 'N', 'u', 'R'}};
+    for (std::size_t index = 0; index < 257; ++index) {
+      std::string bases;
+      bases.reserve(1 + index % 97);
+      for (std::size_t position = 0; position < 1 + index % 97; ++position) {
+        bases.push_back(kInputBases[(index + position) % kInputBases.size()]);
+      }
+      const std::string name = "contig-" + std::to_string(index);
+      const std::string description = "record " + std::to_string(index);
+      output << '>' << name << ' ' << description << '\n' << bases << '\n';
+      many_records.push_back({name, description, std::move(bases)});
+    }
+  }
+  const auto many_from_records =
+      sufkit::GenomeReference::FromRecords(many_records);
+  const auto many_from_fasta = sufkit::GenomeReference::FromFasta(many_fasta);
+  CHECK(many_from_fasta.SequenceCount() == many_from_records.SequenceCount());
+  CHECK(many_from_fasta.TotalBases() == many_from_records.TotalBases());
+  CHECK(many_from_fasta.AmbiguousBases() ==
+        many_from_records.AmbiguousBases());
+  CHECK(many_from_fasta.Fingerprint() == many_from_records.Fingerprint());
+  CHECK(many_from_fasta.GetSequenceInfo(256).name == "contig-256");
+  CHECK(many_from_fasta.GetSequenceInfo(256).description == "record 256");
+
   auto ambiguous =
       sufkit::GenomeReference::FromRecords({{"mixed", "", "aCuR-"}});
   CHECK(ambiguous.TotalBases() == 5);
@@ -150,6 +182,12 @@ void TestSuffixArray(const std::filesystem::path& directory) {
   CHECK(sa64.GetInfo().coordinate_width == 64);
   CHECK(sa32.GetInfo().text_symbols ==
         reference.TotalBases() + reference.SequenceCount() + 1);
+  // ISA follows the SA coordinate width, while this small reference keeps a
+  // 32-bit LCP array in both index variants.
+  CHECK(sa32.GetInfo().auxiliary_bytes ==
+        sa32.GetInfo().suffix_count * (4ULL + 4ULL));
+  CHECK(sa64.GetInfo().auxiliary_bytes ==
+        sa64.GetInfo().suffix_count * (8ULL + 4ULL));
 
   const std::vector<std::uint8_t> logical_text{2, 3, 4, 5, 6, 2, 3, 4, 5,
                                                1, 5, 5, 5, 2, 3, 4, 5, 2,
@@ -205,6 +243,39 @@ void TestSuffixArray(const std::filesystem::path& directory) {
       palindrome.hits.begin(), palindrome.hits.end(),
       [](const auto& match) { return match.strand == sufkit::Strand::kBoth; }));
 
+  const auto directional = sa32.Locate("AAA", both);
+  CHECK(directional.total_hits == 3);
+  CHECK(directional.hits.size() == 3);
+  CHECK(!directional.truncated);
+  CHECK(directional.hits[0].sequence_id == 1 &&
+        directional.hits[0].position == 0 &&
+        directional.hits[0].strand == sufkit::Strand::kReverseComplement);
+  CHECK(directional.hits[1].sequence_id == 1 &&
+        directional.hits[1].position == 7 &&
+        directional.hits[1].strand == sufkit::Strand::kForward);
+  CHECK(directional.hits[2].sequence_id == 2 &&
+        directional.hits[2].position == 0 &&
+        directional.hits[2].strand == sufkit::Strand::kForward);
+  both.max_hits = 2;
+  const auto directional_limited = sa32.Locate("AAA", both);
+  CHECK(directional_limited.total_hits == 3);
+  CHECK(directional_limited.hits.size() == 2);
+  CHECK(directional_limited.truncated);
+  CHECK(directional_limited.hits[0].sequence_id == 1 &&
+        directional_limited.hits[0].position == 0);
+  CHECK(directional_limited.hits[1].sequence_id == 1 &&
+        directional_limited.hits[1].position == 7);
+  both.max_hits = 3;
+  const auto directional_exact_limit = sa32.Locate("AAA", both);
+  CHECK(directional_exact_limit.hits.size() == 3);
+  CHECK(!directional_exact_limit.truncated);
+  sufkit::LocateOptions huge_limit;
+  huge_limit.max_hits = std::numeric_limits<std::uint64_t>::max();
+  const auto absent_with_huge_limit = sa32.Locate("GTTT", huge_limit);
+  CHECK(absent_with_huge_limit.total_hits == 0);
+  CHECK(absent_with_huge_limit.hits.empty());
+  CHECK(!absent_with_huge_limit.truncated);
+
   CheckError(sufkit::ErrorCode::kInvalidInput, [&] { (void)sa32.Count(""); });
   CheckError(sufkit::ErrorCode::kInvalidInput,
              [&] { (void)sa32.Count("ACNT"); });
@@ -217,6 +288,118 @@ void TestSuffixArray(const std::filesystem::path& directory) {
   CHECK(inspected.backend == "divsufsort32");
   auto loaded = sufkit::SuffixArray::Load(path);
   CheckMatchResults(loaded.Locate("ACGT"));
+
+  // Loading a 64-bit SA with 64-bit ISA and 32-bit LCP exercises mixed-width
+  // auxiliary sections without changing their on-disk representation.
+  const auto path64 = directory / "reference.sa64.sufidx";
+  sa64.Save(path64);
+  auto loaded64 = sufkit::SuffixArray::Load(path64);
+  CHECK(loaded64.GetInfo().coordinate_width == 64);
+  CHECK(loaded64.GetInfo().auxiliary_bytes ==
+        sa64.GetInfo().auxiliary_bytes);
+  CheckMatchResults(loaded64.Locate("ACGT"));
+
+  // A 32-bit SA block at this size crosses the 256 KiB container-buffer
+  // boundary, covering both buffered and direct checksummed writes.
+  std::string buffered_sequence(65535, 'A');
+  static constexpr std::array<char, 4> kBases{{'A', 'C', 'G', 'T'}};
+  for (std::size_t index = 0; index < buffered_sequence.size(); ++index) {
+    buffered_sequence[index] =
+        kBases[(index * 17 + index / 11) % kBases.size()];
+  }
+  const auto buffered_reference = sufkit::GenomeReference::FromRecords(
+      {{"buffered", "", std::move(buffered_sequence)}});
+  sufkit::SuffixArrayBuildOptions buffered_options;
+  buffered_options.coordinate_width = sufkit::CoordinateWidth::kBits32;
+  buffered_options.acceleration = sufkit::SaAcceleration::kNone;
+  auto buffered_index =
+      sufkit::SuffixArray::Build(buffered_reference, buffered_options);
+  const auto buffered_path = directory / "buffered-boundary.sufidx";
+  buffered_index.Save(buffered_path);
+  CHECK(std::filesystem::file_size(buffered_path) > 256U * 1024U);
+  auto buffered_loaded = sufkit::SuffixArray::Load(buffered_path);
+  CHECK(buffered_loaded.Count("ACGTACGT") ==
+        buffered_index.Count("ACGTACGT"));
+
+  // Two writers racing without overwrite permission must not both publish.
+  const auto concurrent_path = directory / "concurrent-save.sufidx";
+  int gate[2]{};
+  CHECK(pipe(gate) == 0);
+  std::array<pid_t, 2> children{};
+  for (auto& child : children) {
+    child = fork();
+    CHECK(child >= 0);
+    if (child == 0) {
+      close(gate[1]);
+      char token = 0;
+      if (read(gate[0], &token, 1) != 1) {
+        _exit(20);
+      }
+      try {
+        buffered_index.Save(concurrent_path);
+        _exit(0);
+      } catch (const sufkit::Error& error) {
+        _exit(error.Code() == sufkit::ErrorCode::kIoError ? 10 : 11);
+      } catch (...) {
+        _exit(12);
+      }
+    }
+  }
+  close(gate[0]);
+  CHECK(write(gate[1], "xx", 2) == 2);
+  close(gate[1]);
+  unsigned successes = 0;
+  unsigned conflicts = 0;
+  for (const auto child : children) {
+    int status = 0;
+    CHECK(waitpid(child, &status, 0) == child);
+    if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
+      ++successes;
+    } else if (WIFEXITED(status) && WEXITSTATUS(status) == 10) {
+      ++conflicts;
+    }
+  }
+  CHECK(successes == 1);
+  CHECK(conflicts == 1);
+  auto concurrent_loaded = sufkit::SuffixArray::Load(concurrent_path);
+  CHECK(concurrent_loaded.Count("ACGTACGT") ==
+        buffered_index.Count("ACGTACGT"));
+}
+
+void TestManyContigCoordinateMapping(
+    const std::filesystem::path& directory) {
+  std::vector<sufkit::SequenceRecord> records;
+  records.reserve(1024);
+  for (std::size_t index = 0; index < 1023; ++index) {
+    records.push_back(
+        {"many-" + std::to_string(index), "", "AAAAAAAA"});
+  }
+  records.push_back({"many-1023", "", "CCCGGGTT"});
+  const auto reference =
+      sufkit::GenomeReference::FromRecords(std::move(records));
+
+  auto check = [](const auto& index) {
+    const auto result = index.Locate("CCCGGGTT");
+    CHECK(result.total_hits == 1);
+    CHECK(result.hits.size() == 1);
+    CHECK(result.hits[0].sequence_id == 1023);
+    CHECK(result.hits[0].position == 0);
+    CHECK(index.Count("AAC") == 0);  // cannot cross a contig separator
+  };
+
+  auto sa = sufkit::SuffixArray::Build(reference);
+  auto fm = sufkit::FmIndex::Build(reference);
+  check(sa);
+  check(fm);
+
+  const auto sa_path = directory / "many-contigs.sa.sufidx";
+  const auto fm_path = directory / "many-contigs.fm.sufidx";
+  sa.Save(sa_path);
+  fm.Save(fm_path);
+  auto loaded_sa = sufkit::SuffixArray::Load(sa_path);
+  auto loaded_fm = sufkit::FmIndex::Load(fm_path);
+  check(loaded_sa);
+  check(loaded_fm);
 }
 
 void TestFmIndex(const std::filesystem::path& directory) {
@@ -258,8 +441,15 @@ void TestFmIndex(const std::filesystem::path& directory) {
   CHECK(first.hits.size() == 1);
   CHECK(first.hits[0].sequence_id == 0 && first.hits[0].position == 0);
   CHECK(first.truncated);
+  limited.max_hits = 3;
+  CheckMatchResults(fm.Locate("ACGT", limited));
   limited.max_hits = 10;
   CheckMatchResults(fm.Locate("ACGT", limited));
+  limited.max_hits = 0;
+  const auto omitted_no_hit = fm.Locate("GTTT", limited);
+  CHECK(omitted_no_hit.total_hits == 0);
+  CHECK(omitted_no_hit.hits.empty());
+  CHECK(!omitted_no_hit.truncated);
 
   sufkit::LocateOptions both;
   both.strands = sufkit::StrandMode::kBoth;
@@ -271,10 +461,31 @@ void TestFmIndex(const std::filesystem::path& directory) {
         aaa.hits[1].strand == sufkit::Strand::kForward);
   CHECK(aaa.hits[2].sequence_id == 2 && aaa.hits[2].position == 0 &&
         aaa.hits[2].strand == sufkit::Strand::kForward);
+  both.max_hits = 1;
+  const auto aaa_first = fm.Locate("AAA", both);
+  CHECK(aaa_first.total_hits == 3 && aaa_first.hits.size() == 1);
+  CHECK(aaa_first.hits[0].sequence_id == 1 &&
+        aaa_first.hits[0].position == 0 &&
+        aaa_first.hits[0].strand == sufkit::Strand::kReverseComplement);
+  const auto palindrome_first = fm.Locate("ACGT", both);
+  CHECK(palindrome_first.total_hits == 3 &&
+        palindrome_first.hits.size() == 1);
+  CHECK(palindrome_first.hits[0].sequence_id == 0 &&
+        palindrome_first.hits[0].position == 0 &&
+        palindrome_first.hits[0].strand == sufkit::Strand::kBoth);
+  both.max_hits = 0;
+  const auto both_omitted = fm.Locate("AAA", both);
+  CHECK(both_omitted.total_hits == 3);
+  CHECK(both_omitted.hits.empty());
+  CHECK(both_omitted.truncated);
+  both.max_hits.reset();
 
-  const std::vector<std::string_view> batch_patterns{"ACGT", "AAA", "GTTT",
-                                                     "TTT",  "CGT", "TACGT"};
-  const std::array<std::uint32_t, 4> batch_widths{{1, 4, 16, 256}};
+  // Mixed pattern lengths exercise active-lane compaction, while more patterns
+  // than the smaller widths cover workspace reuse across multiple chunks.
+  const std::vector<std::string_view> batch_patterns{
+      "ACGT", "A",   "AC", "ACG", "AAA",   "GTTT",
+      "TTT",  "CGT", "C",  "TACGT", "ACGTACGTACGT"};
+  const std::array<std::uint32_t, 6> batch_widths{{1, 2, 3, 4, 16, 256}};
   struct FmCase {
     sufkit::FmBackend backend;
     const char* name;
@@ -297,8 +508,9 @@ void TestFmIndex(const std::filesystem::path& directory) {
       const auto ranges = candidate.EqualRangeBatch(batch_patterns, width);
       CHECK(ranges.size() == batch_patterns.size());
       for (std::size_t index = 0; index < batch_patterns.size(); ++index) {
-        CHECK(ranges[index].Size() ==
-              candidate.EqualRange(batch_patterns[index]).Size());
+        const auto scalar = candidate.EqualRange(batch_patterns[index]);
+        CHECK(ranges[index].begin == scalar.begin);
+        CHECK(ranges[index].end == scalar.end);
       }
       for (const auto strands : {sufkit::StrandMode::kForward,
                                  sufkit::StrandMode::kReverseComplement,
@@ -325,6 +537,19 @@ void TestFmIndex(const std::filesystem::path& directory) {
     CheckError(sufkit::ErrorCode::kInvalidInput, [&] {
       const std::vector<std::string_view> invalid{"ACGT", "ACNT", "TTT"};
       (void)candidate.CountBatch(invalid);
+    });
+    const auto invalid_strand = static_cast<sufkit::StrandMode>(255);
+    CheckError(sufkit::ErrorCode::kInvalidInput,
+               [&] { (void)candidate.Count("ACGT", invalid_strand); });
+    CheckError(sufkit::ErrorCode::kInvalidInput, [&] {
+      sufkit::LocateOptions invalid;
+      invalid.strands = invalid_strand;
+      (void)candidate.Locate("ACGT", invalid);
+    });
+    CheckError(sufkit::ErrorCode::kInvalidInput, [&] {
+      sufkit::FmBatchOptions invalid;
+      invalid.strands = invalid_strand;
+      (void)candidate.CountBatch({}, invalid);
     });
 
     const auto backend_path =
@@ -851,6 +1076,12 @@ void TestRightMaximalSearch(const std::filesystem::path& directory) {
   CHECK(limited.total_matches >= limited.matches.size());
   CHECK(limited.matches.size() == 1);
   CHECK(limited.truncated);
+  const auto unlimited =
+      index.FindRightMaximalMatches("CCGATTACAT", options);
+  const auto exact_limit = index.FindRightMaximalMatches(
+      "CCGATTACAT", options, unlimited.total_matches);
+  CHECK(RightMaximalTuples(exact_limit) == RightMaximalTuples(unlimited));
+  CHECK(!exact_limit.truncated);
   const auto count_only =
       index.FindRightMaximalMatches("CCGATTACAT", options, 0);
   CHECK(count_only.matches.empty());
@@ -979,6 +1210,7 @@ int main() {
   try {
     TestReferenceAndFasta(directory);
     TestSuffixArray(directory);
+    TestManyContigCoordinateMapping(directory);
     TestLearnedSa(directory);
     TestFmIndex(directory);
     TestRandomizedDifferential();

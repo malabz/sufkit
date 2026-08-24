@@ -109,6 +109,11 @@ void CheckExact(const sufkit::SuffixArray& full,
       options.strands = strands;
       CHECK(SameQueryResult(full.Locate(pattern, options),
                             sampled.Locate(pattern, options)));
+      for (const std::uint64_t limit : {0ULL, 1ULL, 1000ULL}) {
+        options.max_hits = limit;
+        CHECK(SameQueryResult(full.Locate(pattern, options),
+                              sampled.Locate(pattern, options)));
+      }
     }
   }
 }

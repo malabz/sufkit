@@ -29,6 +29,11 @@ constexpr std::uint8_t kNormalizationId = 1;
 struct ReferenceData {
   std::vector<std::uint8_t> encoded;
   std::vector<SequenceInfo> sequences;
+  // Queries touch only these dense numeric arrays. Keeping them separate from
+  // names and descriptions avoids pulling SequenceInfo strings into the cache
+  // while mapping a suffix-array coordinate back to its contig.
+  std::vector<Position> contig_starts;
+  std::vector<Position> contig_lengths;
   std::uint64_t total_bases = 0;
   std::uint64_t ambiguous_bases = 0;
   std::uint64_t fingerprint = 0;
@@ -59,30 +64,25 @@ inline std::string FingerprintHex(std::uint64_t value) {
 }
 
 inline std::optional<std::pair<SequenceId, Position>> MapGlobalPosition(
-    const std::vector<SequenceInfo>& sequences, Position global,
+    const ReferenceData& reference, Position global,
     std::uint64_t pattern_length) {
-  if (sequences.empty()) {
+  const auto& starts = reference.contig_starts;
+  const auto& lengths = reference.contig_lengths;
+  if (starts.empty() || starts.size() != lengths.size()) {
     return std::nullopt;
   }
-  const auto it =
-      std::upper_bound(sequences.begin(), sequences.end(), global,
-                       [](Position value, const SequenceInfo& sequence) {
-                         return value < sequence.global_offset;
-                       });
-  if (it == sequences.begin()) {
+  const auto upper = std::upper_bound(starts.begin(), starts.end(), global);
+  if (upper == starts.begin()) {
     return std::nullopt;
   }
-  const auto& sequence = *std::prev(it);
-  if (global < sequence.global_offset) {
-    return std::nullopt;
-  }
-  const Position local = global - sequence.global_offset;
+  const auto index = static_cast<std::size_t>(upper - starts.begin() - 1);
+  const Position local = global - starts[index];
   // This final containment check prevents hits from crossing a contig
   // separator, the terminal sentinel, or malformed persisted coordinates.
-  if (local > sequence.length || pattern_length > sequence.length - local) {
+  if (local > lengths[index] || pattern_length > lengths[index] - local) {
     return std::nullopt;
   }
-  return std::make_pair(sequence.id, local);
+  return std::make_pair(static_cast<SequenceId>(index), local);
 }
 
 }  // namespace sufkit::detail

@@ -24,6 +24,14 @@ ctest --preset asan --output-on-failure
 
 Do not use sanitizer timings for performance conclusions.
 
+### Low-level kernels
+
+When benchmarks are enabled, build `sufkit_low_level_bench` and run
+`--verify-only` as a correctness gate. Timed scalar/SSE comparisons use seven
+repetitions pinned to one logical CPU and retain raw TSV rows. Confirm the
+expected SSE and POPCNT instructions with `objdump`; a compiler flag alone is
+not instruction evidence. See [low-level performance work](low-level-performance.md).
+
 ### Static/shared and consumers
 
 Validate `BUILD_SHARED_LIBS=OFF/ON`, `add_subdirectory`, install to a temporary

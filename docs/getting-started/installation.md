@@ -3,7 +3,8 @@
 ## Supported environment
 
 The validated development platform is Linux or WSL on x86_64 with GCC or
-Clang. sufkit requires:
+Clang. The x86_64 build requires an SSE4.2- and POPCNT-capable processor.
+sufkit also requires:
 
 - CMake 3.20 or newer;
 - a C++17 compiler;
@@ -33,12 +34,17 @@ available options are:
 |---|---:|---:|---|
 | `SUFKIT_BUILD_CLI` | ON | OFF | Build the `sufkit` executable |
 | `SUFKIT_BUILD_TESTS` | ON | OFF | Build CTest targets |
-| `SUFKIT_BUILD_BENCHMARKS` | ON | OFF | Build benchmark commands and the SA construction benchmark |
+| `SUFKIT_BUILD_BENCHMARKS` | ON | OFF | Build benchmark commands, SA construction benchmark, and developer microbenchmark |
 | `SUFKIT_BUILD_EXAMPLES` | ON | OFF | Compile consumer examples |
 | `SUFKIT_ENABLE_CAPS` | ON | ON | Compile the bundled CaPS-SA constructor |
 | `SUFKIT_BUILD_DOCS` | OFF | OFF | Build local Doxygen API HTML |
 
 `SUFKIT_BUILD_DOCS` requires a local Doxygen installation only when enabled.
+The low-level benchmark is developer-only and is not installed.
+
+On x86_64 GCC/Clang builds, CMake verifies `-msse4.2` support and applies it
+privately to the library implementation. Consumers linking
+`sufkit::sufkit` do not inherit this compiler option.
 
 To build only a static library:
 

@@ -43,6 +43,9 @@ SA、balanced/EPR FM-index、FM batch count 和 Sapling PWL 等能力，因此�
 
 ## 快速构建
 
+当前验证环境是支持 SSE4.2 和 POPCNT 的 x86_64 Linux/WSL；不要求 AVX2 或
+AVX-512。该编译选项仅用于 sufkit 私有实现，不会传播给 CMake 使用者。
+
 ```bash
 cmake --preset release
 cmake --build --preset release -j

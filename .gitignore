@@ -30,3 +30,7 @@ Thumbs.db
 
 # Keep the detailed development plan locally; do not publish it in Git.
 /plan/
+
+# Keep the large low-level benchmark evidence bundle local; the summarized
+# benchmark report remains publishable without these generated artifacts.
+/docs/benchmarks/results/artifacts/v0.2.0-low-level/

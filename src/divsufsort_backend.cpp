@@ -15,6 +15,8 @@ extern "C" {
 
 #include <sufkit/types.hpp>
 
+#include "sequence_compare.hpp"
+
 namespace sufkit::detail {
 namespace {
 
@@ -113,11 +115,15 @@ DivSufsortBuildResult<Index> BuildDivsufsort(
       if (row != 0) {
         const auto previous = static_cast<std::uint64_t>(
             result.suffix_array[static_cast<std::size_t>(row - 1)]);
-        while (suffix + common < text.size() &&
-               previous + common < text.size() &&
-               text[static_cast<std::size_t>(suffix + common)] ==
-                   text[static_cast<std::size_t>(previous + common)]) {
-          ++common;
+        if (suffix + common < text.size() &&
+            previous + common < text.size()) {
+          const auto remaining = static_cast<std::size_t>(std::min(
+              text.size() - static_cast<std::size_t>(suffix + common),
+              text.size() - static_cast<std::size_t>(previous + common)));
+          common += LongestCommonPrefixBytes(
+              text.data() + static_cast<std::size_t>(suffix + common),
+              text.data() + static_cast<std::size_t>(previous + common),
+              remaining);
         }
         result.lcp[static_cast<std::size_t>(row)] = common;
       }

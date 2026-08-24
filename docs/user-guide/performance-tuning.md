@@ -3,6 +3,19 @@
 Always measure the operation that dominates the application. Build, load,
 count, locate, and right-maximal exact match have different bottlenecks.
 
+## CPU baseline
+
+The validated x86_64 build requires SSE4.2 and POPCNT. GCC/Clang receive
+`-msse4.2` only for sufkit's private implementation; it is not propagated to
+consumer targets. This enables SDSL's hardware popcount path without exposing
+intrinsics in public headers. The project does not enable `-march=native`,
+AVX2, or AVX-512.
+
+Use the developer-only low-level harness before changing comparison kernels or
+making instruction-level claims. Its commands, correctness matrix, assembly
+checks, and WSL evidence limits are documented in
+[low-level performance work](../development/low-level-performance.md).
+
 ## Construction
 
 - Use divsufsort for small and medium references or when peak memory matters.
@@ -84,6 +97,8 @@ The full match count still requires complete traversal.
   different K as though the stored row sets were identical.
 - Treat synthetic quick results as hypotheses for real references, not final
   deployment thresholds.
+- Under WSL without hardware counters, wall-time and disassembly evidence do
+  not establish cache-miss, TLB, branch-miss, NUMA, or coherence improvements.
 
 See [benchmark methodology](../benchmarks/methodology.md) and the
 [concise results](../benchmarks/README.md).

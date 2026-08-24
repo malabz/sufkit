@@ -3,14 +3,14 @@
 #include "sufkit/suffix_array.hpp"
 
 #include <algorithm>
-#include <cctype>
+#include <array>
 #include <chrono>
 #include <cstdint>
 #include <limits>
 #include <new>
-#include <queue>
 #include <thread>
 #include <tuple>
+#include <type_traits>
 #include <variant>
 #include <vector>
 
@@ -19,7 +19,9 @@
 #include "genome_reference_internal.hpp"
 #include "query.hpp"
 #include "reference_data.hpp"
+#include "sequence_compare.hpp"
 #include "serialization.hpp"
+#include "suffix_link_diagnostics.hpp"
 #include <sufkit/version.hpp>
 
 namespace sufkit {
@@ -31,8 +33,232 @@ using CapsSa32 = std::vector<std::uint32_t>;
 using CapsSa64 = std::vector<std::uint64_t>;
 using SaStorage = std::variant<Sa32, Sa64, CapsSa32, CapsSa64>;
 
-using ChildTable = std::vector<std::uint64_t>;
+using Coordinate32 = std::vector<std::uint32_t>;
+using Coordinate64 = std::vector<std::uint64_t>;
+using CoordinateStorage = std::variant<Coordinate32, Coordinate64>;
 using BuildClock = std::chrono::steady_clock;
+
+struct CoordinateView {
+  const void* data = nullptr;
+  std::size_t size = 0;
+  bool is_64_bit = false;
+
+  std::uint64_t operator[](std::size_t index) const noexcept {
+    return is_64_bit
+               ? static_cast<const std::uint64_t*>(data)[index]
+               : static_cast<const std::uint32_t*>(data)[index];
+  }
+};
+
+CoordinateView ViewCoordinates(const CoordinateStorage& storage) noexcept {
+  return std::visit(
+      [](const auto& values) {
+        using Value = typename std::decay_t<decltype(values)>::value_type;
+        return CoordinateView{values.data(), values.size(),
+                              sizeof(Value) == sizeof(std::uint64_t)};
+      },
+      storage);
+}
+
+std::uint64_t CoordinateSize(const CoordinateStorage& storage) noexcept {
+  return std::visit(
+      [](const auto& values) {
+        return static_cast<std::uint64_t>(values.size());
+      },
+      storage);
+}
+
+bool CoordinatesEmpty(const CoordinateStorage& storage) noexcept {
+  return std::visit([](const auto& values) { return values.empty(); }, storage);
+}
+
+std::uint64_t CoordinateBytes(const CoordinateStorage& storage) noexcept {
+  return std::visit(
+      [](const auto& values) {
+        return static_cast<std::uint64_t>(values.size()) *
+               sizeof(typename std::decay_t<decltype(values)>::value_type);
+      },
+      storage);
+}
+
+CoordinateStorage CompactCoordinates(std::vector<std::uint64_t>&& values,
+                                     std::uint8_t width,
+                                     ErrorCode error_code,
+                                     const char* label) {
+  if (width == 64) {
+    return Coordinate64(std::move(values));
+  }
+  if (width != 32) {
+    throw Error(error_code, std::string("invalid ") + label + " width");
+  }
+  Coordinate32 compact;
+  try {
+    compact.resize(values.size());
+  } catch (const std::bad_alloc&) {
+    throw Error(error_code, std::string("cannot allocate ") + label);
+  }
+  for (std::size_t index = 0; index < values.size(); ++index) {
+    if (values[index] > std::numeric_limits<std::uint32_t>::max()) {
+      throw Error(error_code, std::string(label) + " value exceeds 32 bits");
+    }
+    compact[index] = static_cast<std::uint32_t>(values[index]);
+  }
+  return CoordinateStorage(std::move(compact));
+}
+
+constexpr std::array<std::uint8_t, 256> MakeRightMaximalEncodingTable() {
+  std::array<std::uint8_t, 256> table{};
+  for (auto& value : table) {
+    value = detail::kSentinel;
+  }
+  table[static_cast<unsigned char>('A')] = detail::kA;
+  table[static_cast<unsigned char>('a')] = detail::kA;
+  table[static_cast<unsigned char>('C')] = detail::kC;
+  table[static_cast<unsigned char>('c')] = detail::kC;
+  table[static_cast<unsigned char>('G')] = detail::kG;
+  table[static_cast<unsigned char>('g')] = detail::kG;
+  table[static_cast<unsigned char>('T')] = detail::kT;
+  table[static_cast<unsigned char>('t')] = detail::kT;
+  return table;
+}
+
+constexpr std::array<std::uint8_t, 7> kRightMaximalComplement = {
+    detail::kSentinel, detail::kSentinel, detail::kT, detail::kG,
+    detail::kC,        detail::kA,        detail::kSentinel};
+constexpr auto kRightMaximalEncoding = MakeRightMaximalEncodingTable();
+
+// A non-owning encoded pattern keeps per-position right-maximal and sampled
+// lookups from allocating prefix vectors. Views never escape a synchronous
+// query call, so their backing query remains alive for every comparison.
+struct EncodedView {
+  const std::uint8_t* data = nullptr;
+  std::size_t length = 0;
+
+  EncodedView() = default;
+  EncodedView(const std::vector<std::uint8_t>& values)
+      : data(values.data()), length(values.size()) {}
+  EncodedView(const std::uint8_t* values, std::size_t size)
+      : data(values), length(size) {}
+
+  const std::uint8_t* begin() const noexcept { return data; }
+  const std::uint8_t* end() const noexcept { return data + length; }
+  std::size_t size() const noexcept { return length; }
+  bool empty() const noexcept { return length == 0; }
+  std::uint8_t operator[](std::size_t index) const noexcept {
+    return data[index];
+  }
+  std::uint8_t back() const noexcept { return data[length - 1]; }
+};
+
+// Exact locate keeps the globally ordered coordinate until after retention.
+// Reference concatenation preserves contig order, so sorting this compact
+// representation is equivalent to sorting public (sequence, local) matches.
+struct GlobalMatch {
+  Position global_position = 0;
+  Strand strand = Strand::kForward;
+};
+
+bool GlobalMatchLess(const GlobalMatch& left, const GlobalMatch& right) {
+  return std::tie(left.global_position, left.strand) <
+         std::tie(right.global_position, right.strand);
+}
+
+void RetainGlobalMatch(std::vector<GlobalMatch>& matches, GlobalMatch match,
+                       const LocateOptions& options, bool& heap_active) {
+  if (!options.max_hits) {
+    matches.push_back(match);
+    return;
+  }
+  const auto limit = *options.max_hits;
+  if (limit == 0) {
+    return;
+  }
+  if (!heap_active && matches.size() < limit) {
+    matches.push_back(match);
+    return;
+  }
+  if (!heap_active) {
+    std::make_heap(matches.begin(), matches.end(), GlobalMatchLess);
+    heap_active = true;
+  }
+  if (GlobalMatchLess(match, matches.front())) {
+    std::pop_heap(matches.begin(), matches.end(), GlobalMatchLess);
+    matches.back() = match;
+    std::push_heap(matches.begin(), matches.end(), GlobalMatchLess);
+  }
+}
+
+QueryResult FinalizeGlobalMatches(std::vector<GlobalMatch> globals,
+                                  const detail::ReferenceData& reference,
+                                  std::uint64_t pattern_length,
+                                  std::uint64_t total_hits) {
+  std::sort(globals.begin(), globals.end(), GlobalMatchLess);
+
+  QueryResult result;
+  result.total_hits = total_hits;
+  if (globals.empty()) {
+    result.truncated = total_hits != 0;
+    return result;
+  }
+
+  const auto& starts = reference.contig_starts;
+  const auto& lengths = reference.contig_lengths;
+  if (starts.empty() || starts.size() != lengths.size()) {
+    throw Error(ErrorCode::kCorruptIndex,
+                "suffix-array reference coordinates are invalid");
+  }
+
+  const auto first = std::upper_bound(starts.begin(), starts.end(),
+                                      globals.front().global_position);
+  if (first == starts.begin()) {
+    throw Error(ErrorCode::kCorruptIndex,
+                "suffix-array hit is outside a reference contig");
+  }
+  std::size_t contig = static_cast<std::size_t>(first - starts.begin() - 1);
+  result.hits.reserve(globals.size());
+  for (const auto& global : globals) {
+    while (contig + 1 < starts.size() &&
+           starts[contig + 1] <= global.global_position) {
+      ++contig;
+    }
+    if (global.global_position < starts[contig]) {
+      throw Error(ErrorCode::kCorruptIndex,
+                  "suffix-array hits are not globally ordered");
+    }
+    const Position local = global.global_position - starts[contig];
+    if (local > lengths[contig] ||
+        pattern_length > lengths[contig] - local) {
+      throw Error(ErrorCode::kCorruptIndex,
+                  "suffix-array hit is outside a reference contig");
+    }
+    result.hits.push_back(
+        {static_cast<SequenceId>(contig), local, pattern_length,
+         global.strand});
+  }
+
+  // Both-strand duplicates are adjacent after global-coordinate sorting.
+  // Merge in place so delayed mapping does not allocate a second result copy.
+  std::size_t output = 0;
+  for (auto& match : result.hits) {
+    if (output != 0 &&
+        result.hits[output - 1].sequence_id == match.sequence_id &&
+        result.hits[output - 1].position == match.position &&
+        result.hits[output - 1].length == match.length) {
+      if (result.hits[output - 1].strand != match.strand) {
+        result.hits[output - 1].strand = Strand::kBoth;
+      }
+      continue;
+    }
+    const auto input = static_cast<std::size_t>(&match - result.hits.data());
+    if (output != input) {
+      result.hits[output] = std::move(match);
+    }
+    ++output;
+  }
+  result.hits.resize(output);
+  result.truncated = result.hits.size() < result.total_hits;
+  return result;
+}
 
 #if defined(__GNUC__) || defined(__clang__)
 #pragma GCC diagnostic push
@@ -50,6 +276,8 @@ double BuildElapsed(BuildClock::time_point begin) {
 detail::ReferenceData MetadataCopy(const detail::ReferenceData& source) {
   detail::ReferenceData result;
   result.sequences = source.sequences;
+  result.contig_starts = source.contig_starts;
+  result.contig_lengths = source.contig_lengths;
   result.total_bases = source.total_bases;
   result.ambiguous_bases = source.ambiguous_bases;
   result.fingerprint = source.fingerprint;
@@ -57,23 +285,15 @@ detail::ReferenceData MetadataCopy(const detail::ReferenceData& source) {
 }
 
 int CompareSuffixPattern(const std::vector<std::uint8_t>& text,
-                         std::uint64_t suffix,
-                         const std::vector<std::uint8_t>& pattern) {
-  for (std::size_t index = 0; index < pattern.size(); ++index) {
-    if (suffix >= text.size() ||
-        index >= text.size() - static_cast<std::size_t>(suffix)) {
-      return -1;
-    }
-    const auto left = text[static_cast<std::size_t>(suffix) + index];
-    const auto right = pattern[index];
-    if (left < right) {
-      return -1;
-    }
-    if (left > right) {
-      return 1;
-    }
+                         std::uint64_t suffix, EncodedView pattern) {
+  if (suffix >= text.size()) {
+    return -1;
   }
-  return 0;
+  const auto offset = static_cast<std::size_t>(suffix);
+  return detail::ComparePatternBytes(text.data() + offset,
+                                     text.size() - offset, pattern.data,
+                                     pattern.size())
+      .order;
 }
 
 struct PatternComparison {
@@ -83,36 +303,27 @@ struct PatternComparison {
 
 PatternComparison CompareSuffixPatternLcp(
     const std::vector<std::uint8_t>& text, std::uint64_t suffix,
-    const std::vector<std::uint8_t>& pattern, std::uint64_t known_lcp,
+    EncodedView pattern, std::uint64_t known_lcp,
     SaSearchStatistics* statistics) {
   if (statistics) {
     ++statistics->suffix_comparisons;
   }
-  std::uint64_t index = std::min<std::uint64_t>(known_lcp, pattern.size());
-  while (index < pattern.size()) {
-    if (suffix + index >= text.size()) {
-      return {-1, index};
-    }
-    if (statistics) {
-      ++statistics->character_comparisons;
-    }
-    const auto left = text[static_cast<std::size_t>(suffix + index)];
-    const auto right = pattern[static_cast<std::size_t>(index)];
-    if (left < right) {
-      return {-1, index};
-    }
-    if (left > right) {
-      return {1, index};
-    }
-    ++index;
+  if (suffix >= text.size()) {
+    return {-1, 0};
   }
-  return {0, index};
+  const auto offset = static_cast<std::size_t>(suffix);
+  const auto comparison = detail::ComparePatternBytes(
+      text.data() + offset, text.size() - offset, pattern.data, pattern.size(),
+      static_cast<std::size_t>(known_lcp));
+  if (statistics) {
+    statistics->character_comparisons += comparison.comparisons;
+  }
+  return {comparison.order, comparison.lcp};
 }
 
 template <class SaVector>
 SuffixRange RangeFor(const std::vector<std::uint8_t>& text,
-                     const SaVector& suffix_array,
-                     const std::vector<std::uint8_t>& pattern,
+                     const SaVector& suffix_array, EncodedView pattern,
                      SaSearchStatistics* statistics = nullptr) {
   const auto lower = std::lower_bound(
       suffix_array.begin(), suffix_array.end(), 0, [&](const auto suffix, int) {
@@ -142,7 +353,7 @@ SuffixRange RangeFor(const std::vector<std::uint8_t>& text,
 template <class SaVector>
 std::uint64_t LcpBoundaryFor(const std::vector<std::uint8_t>& text,
                              const SaVector& suffix_array,
-                             const std::vector<std::uint8_t>& pattern,
+                             EncodedView pattern,
                              std::uint64_t begin, std::uint64_t end, bool upper,
                              SaSearchStatistics* statistics) {
   std::uint64_t left_lcp = 0;
@@ -169,8 +380,7 @@ std::uint64_t LcpBoundaryFor(const std::vector<std::uint8_t>& text,
 
 template <class SaVector>
 SuffixRange LcpRangeFor(const std::vector<std::uint8_t>& text,
-                        const SaVector& suffix_array,
-                        const std::vector<std::uint8_t>& pattern,
+                        const SaVector& suffix_array, EncodedView pattern,
                         SuffixRange search_range,
                         SaSearchStatistics* statistics) {
   const auto lower =
@@ -184,7 +394,7 @@ SuffixRange LcpRangeFor(const std::vector<std::uint8_t>& text,
 template <class SaVector>
 std::uint64_t GallopingBoundaryFor(const std::vector<std::uint8_t>& text,
                                    const SaVector& suffix_array,
-                                   const std::vector<std::uint8_t>& pattern,
+                                   EncodedView pattern,
                                    SuffixRange search_range,
                                    std::uint64_t prediction, bool upper,
                                    SaSearchStatistics* statistics) {
@@ -304,8 +514,8 @@ void SampleSaInPlace(SaVector& values, std::uint32_t sampling_rate) {
   values.shrink_to_fit();
 }
 
-template <class SaVector>
-void SampleSaLcpInPlace(SaVector& values, std::vector<std::uint64_t>& lcp,
+template <class SaVector, class LcpVector>
+void SampleSaLcpInPlace(SaVector& values, LcpVector& lcp,
                         std::uint32_t sampling_rate) {
   if (sampling_rate == 1) {
     return;
@@ -316,13 +526,15 @@ void SampleSaLcpInPlace(SaVector& values, std::vector<std::uint64_t>& lcp,
   std::uint64_t interval_min = std::numeric_limits<std::uint64_t>::max();
   for (std::size_t row = 0; row < values.size(); ++row) {
     if (row != 0) {
-      interval_min = std::min(interval_min, lcp[row]);
+      interval_min =
+          std::min(interval_min, static_cast<std::uint64_t>(lcp[row]));
     }
     if (static_cast<std::uint64_t>(values[row]) % sampling_rate != 0) {
       continue;
     }
     values[output] = values[row];
-    lcp[output] = output == 0 ? 0 : interval_min;
+    lcp[output] = static_cast<typename LcpVector::value_type>(
+        output == 0 ? 0 : interval_min);
     ++output;
     interval_min = std::numeric_limits<std::uint64_t>::max();
   }
@@ -337,31 +549,35 @@ void SampleSa(SaStorage& storage, std::uint32_t sampling_rate) {
              storage);
 }
 
-void SampleSaLcp(SaStorage& storage, std::vector<std::uint64_t>& lcp,
+void SampleSaLcp(SaStorage& storage, CoordinateStorage& lcp,
                  std::uint32_t sampling_rate) {
   std::visit(
-      [&](auto& values) { SampleSaLcpInPlace(values, lcp, sampling_rate); },
-      storage);
+      [&](auto& values, auto& lcp_values) {
+        SampleSaLcpInPlace(values, lcp_values, sampling_rate);
+      },
+      storage, lcp);
 }
 
-std::vector<std::uint64_t> BuildIsa(const SaStorage& sa,
+template <class Coordinate, class SaVector>
+std::vector<Coordinate> BuildIsaFor(const SaVector& sa,
                                     std::uint64_t text_size,
                                     std::uint32_t sampling_rate,
                                     std::uint32_t requested_threads) {
   // ISA is the exact inverse of the stored SA. For a sampled index its dense
   // domain is position / sampling_rate, not every logical-text position.
-  const auto count =
-      std::visit([](const auto& values) { return values.size(); }, sa);
-  std::vector<std::uint64_t> isa(count);
+  const auto count = static_cast<std::uint64_t>(sa.size());
+  std::vector<Coordinate> isa(static_cast<std::size_t>(count));
   const auto thread_count = std::min<std::uint64_t>(requested_threads, count);
   if (thread_count <= 1 || count < 1U << 20) {
     for (std::uint64_t row = 0; row < count; ++row) {
-      const auto suffix = SaValue(sa, row);
+      const auto suffix = static_cast<std::uint64_t>(
+          sa[static_cast<std::size_t>(row)]);
       if (suffix >= text_size || suffix % sampling_rate != 0) {
         throw Error(ErrorCode::kBuildFailure,
                     "sampled suffix array contains an invalid position");
       }
-      isa[static_cast<std::size_t>(suffix / sampling_rate)] = row;
+      isa[static_cast<std::size_t>(suffix / sampling_rate)] =
+          static_cast<Coordinate>(row);
     }
     return isa;
   }
@@ -372,8 +588,10 @@ std::vector<std::uint64_t> BuildIsa(const SaStorage& sa,
     const auto end = count * (worker + 1) / thread_count;
     workers.emplace_back([&, begin, end] {
       for (auto row = begin; row < end; ++row) {
-        const auto suffix = SaValue(sa, row);
-        isa[static_cast<std::size_t>(suffix / sampling_rate)] = row;
+        const auto suffix = static_cast<std::uint64_t>(
+            sa[static_cast<std::size_t>(row)]);
+        isa[static_cast<std::size_t>(suffix / sampling_rate)] =
+            static_cast<Coordinate>(row);
       }
     });
   }
@@ -383,30 +601,77 @@ std::vector<std::uint64_t> BuildIsa(const SaStorage& sa,
   return isa;
 }
 
-std::vector<std::uint64_t> BuildLcp(const std::vector<std::uint8_t>& text,
-                                    const SaStorage& sa,
-                                    const std::vector<std::uint64_t>& isa,
-                                    std::uint32_t sampling_rate) {
-  std::vector<std::uint64_t> lcp(SaSize(sa), 0);
+CoordinateStorage BuildIsa(const SaStorage& sa, std::uint64_t text_size,
+                           std::uint32_t sampling_rate,
+                           std::uint32_t requested_threads,
+                           std::uint8_t coordinate_width) {
+  return std::visit(
+      [&](const auto& values) -> CoordinateStorage {
+        if (coordinate_width == 32) {
+          return BuildIsaFor<std::uint32_t>(values, text_size, sampling_rate,
+                                            requested_threads);
+        }
+        if (coordinate_width == 64) {
+          return BuildIsaFor<std::uint64_t>(values, text_size, sampling_rate,
+                                            requested_threads);
+        }
+        throw Error(ErrorCode::kBuildFailure,
+                    "invalid inverse suffix-array width");
+      },
+      sa);
+}
+
+template <class LcpCoordinate, class SaVector, class IsaVector>
+std::vector<LcpCoordinate> BuildLcpFor(
+    const std::vector<std::uint8_t>& text, const SaVector& sa,
+    const IsaVector& isa, std::uint32_t sampling_rate) {
+  std::vector<LcpCoordinate> lcp(sa.size(), 0);
   std::uint64_t common = 0;
   // Generalized Kasai visits sampled text positions K apart. Removing those K
   // leading symbols preserves at least max(common-K, 0) matched symbols.
   for (std::uint64_t sample = 0; sample < isa.size(); ++sample) {
     const auto suffix = sample * sampling_rate;
-    const auto row = isa[static_cast<std::size_t>(sample)];
+    const auto row =
+        static_cast<std::uint64_t>(isa[static_cast<std::size_t>(sample)]);
     if (row == 0) {
       continue;
     }
-    const auto previous = SaValue(sa, row - 1);
-    while (suffix + common < text.size() && previous + common < text.size() &&
-           text[static_cast<std::size_t>(suffix + common)] ==
-               text[static_cast<std::size_t>(previous + common)]) {
-      ++common;
+    const auto previous = static_cast<std::uint64_t>(
+        sa[static_cast<std::size_t>(row - 1)]);
+    if (suffix + common < text.size() && previous + common < text.size()) {
+      const auto remaining = static_cast<std::size_t>(std::min(
+          text.size() - static_cast<std::size_t>(suffix + common),
+          text.size() - static_cast<std::size_t>(previous + common)));
+      common += detail::LongestCommonPrefixBytes(
+          text.data() + static_cast<std::size_t>(suffix + common),
+          text.data() + static_cast<std::size_t>(previous + common),
+          remaining);
     }
-    lcp[static_cast<std::size_t>(row)] = common;
+    lcp[static_cast<std::size_t>(row)] =
+        static_cast<LcpCoordinate>(common);
     common = common > sampling_rate ? common - sampling_rate : 0;
   }
   return lcp;
+}
+
+CoordinateStorage BuildLcp(const std::vector<std::uint8_t>& text,
+                           const SaStorage& sa,
+                           const CoordinateStorage& isa,
+                           std::uint32_t sampling_rate,
+                           std::uint8_t lcp_width) {
+  return std::visit(
+      [&](const auto& sa_values, const auto& isa_values) -> CoordinateStorage {
+        if (lcp_width == 32) {
+          return BuildLcpFor<std::uint32_t>(text, sa_values, isa_values,
+                                            sampling_rate);
+        }
+        if (lcp_width == 64) {
+          return BuildLcpFor<std::uint64_t>(text, sa_values, isa_values,
+                                            sampling_rate);
+        }
+        throw Error(ErrorCode::kBuildFailure, "invalid LCP width");
+      },
+      sa, isa);
 }
 
 struct LearnedSaIndex {
@@ -416,7 +681,7 @@ struct LearnedSaIndex {
   std::uint32_t bucket_bits = 0;
   std::uint32_t memory_overhead_basis_points = 0;
   std::vector<std::uint64_t> anchor_x;
-  std::vector<std::uint64_t> anchor_y;
+  CoordinateStorage anchor_y;
 
   bool Empty() const noexcept { return anchor_x.empty(); }
 
@@ -426,7 +691,7 @@ struct LearnedSaIndex {
            static_cast<std::uint64_t>(anchor_x.size()) * (8ULL + row_bytes);
   }
 
-  std::uint64_t KeyFor(const std::vector<std::uint8_t>& pattern) const {
+  std::uint64_t KeyFor(EncodedView pattern) const {
     std::uint64_t key = 0;
     for (std::uint32_t index = 0; index < k; ++index) {
       const auto symbol = pattern[static_cast<std::size_t>(index)];
@@ -444,6 +709,7 @@ struct LearnedSaIndex {
     if (anchor_x.size() < 2 || sa_size == 0) {
       return 0;
     }
+    const auto rows = ViewCoordinates(anchor_y);
     const auto key_bits = 2U * k;
     const auto shift = key_bits - bucket_bits;
     const auto bucket = bucket_bits == 0 ? 0ULL : key >> shift;
@@ -451,8 +717,8 @@ struct LearnedSaIndex {
         std::min<std::uint64_t>(bucket, anchor_x.size() - 2));
     const auto x_lo = anchor_x[index];
     const auto x_hi = anchor_x[index + 1];
-    const auto y_lo = anchor_y[index];
-    const auto y_hi = anchor_y[index + 1];
+    const auto y_lo = rows[index];
+    const auto y_hi = rows[index + 1];
     if (x_hi <= x_lo || y_hi <= y_lo || key <= x_lo) {
       return std::min(y_lo, sa_size - 1);
     }
@@ -514,6 +780,8 @@ std::uint32_t ChooseBucketBits(std::uint64_t suffix_count,
 LearnedSaIndex BuildLearnedIndex(const detail::ReferenceData& reference,
                                  const std::vector<std::uint8_t>& text,
                                  const SaStorage& suffix_array,
+                                 const CoordinateStorage& isa,
+                                 std::uint32_t sampling_rate,
                                  std::uint8_t coordinate_width,
                                  const LearnedSaOptions& options) {
   LearnedSaIndex model;
@@ -522,94 +790,135 @@ LearnedSaIndex BuildLearnedIndex(const detail::ReferenceData& reference,
   model.bucket_bits = ChooseBucketBits(suffix_count, coordinate_width, options);
   model.memory_overhead_basis_points = options.memory_overhead_basis_points;
   const auto bucket_count = 1ULL << model.bucket_bits;
-  if (bucket_count > std::vector<std::uint64_t>().max_size() - 1) {
+  const auto coordinate_max_size =
+      coordinate_width == 32 ? Coordinate32().max_size()
+                             : Coordinate64().max_size();
+  if (bucket_count > coordinate_max_size - 1) {
     throw Error(ErrorCode::kInvalidInput,
                 "learned SA bucket count is too large");
   }
   try {
     model.anchor_x.assign(static_cast<std::size_t>(bucket_count + 1),
                           std::numeric_limits<std::uint64_t>::max());
-    model.anchor_y.assign(static_cast<std::size_t>(bucket_count + 1),
-                          suffix_count);
+    if (coordinate_width == 32) {
+      model.anchor_y = Coordinate32(
+          static_cast<std::size_t>(bucket_count + 1),
+          static_cast<std::uint32_t>(suffix_count));
+    } else {
+      model.anchor_y = Coordinate64(
+          static_cast<std::size_t>(bucket_count + 1), suffix_count);
+    }
   } catch (const std::bad_alloc&) {
     throw Error(ErrorCode::kBuildFailure,
                 "cannot allocate learned SA anchor arrays");
   }
   const auto key_bits = 2U * model.k;
   const auto bucket_shift = key_bits - model.bucket_bits;
+  const auto key_mask = (1ULL << key_bits) - 1;
+  const auto isa_rows = ViewCoordinates(isa);
   bool found = false;
 
-  for (std::uint64_t row = 0; row < suffix_count; ++row) {
-    const auto start = SaValue(suffix_array, row);
-    // Require the full model k-mer to remain inside one contig; the canonical
-    // check below additionally excludes N, separators, and the sentinel.
-    if (!detail::MapGlobalPosition(reference.sequences, start, model.k)) {
-      continue;
-    }
-    std::uint64_t key = 0;
-    bool canonical = true;
-    for (std::uint32_t offset = 0; offset < model.k; ++offset) {
-      const auto symbol = text[static_cast<std::size_t>(start + offset)];
-      if (symbol < detail::kA || symbol > detail::kT) {
-        canonical = false;
-        break;
-      }
-      key = (key << 2U) | static_cast<std::uint64_t>(symbol - detail::kA);
-    }
-    if (!canonical) {
-      continue;
-    }
-    const auto bucket = model.bucket_bits == 0 ? 0ULL : key >> bucket_shift;
-    const auto index = static_cast<std::size_t>(bucket);
-    if (key < model.anchor_x[index] ||
-        (key == model.anchor_x[index] && row < model.anchor_y[index])) {
-      model.anchor_x[index] = key;
-      model.anchor_y[index] = row;
-    }
-    found = true;
-  }
-  if (!found) {
-    std::fill(model.anchor_x.begin(), std::prev(model.anchor_x.end()), 0);
-    std::fill(model.anchor_y.begin(), std::prev(model.anchor_y.end()), 0);
-    model.anchor_x.back() = 1ULL << key_bits;
-    model.anchor_y.back() = suffix_count;
-    return model;
-  }
+  std::visit(
+      [&](auto& anchor_rows) {
+        using Row = typename std::decay_t<decltype(anchor_rows)>::value_type;
+        // Scan text in contig order so each k-mer reuses the previous rolling
+        // key. ISA maps the canonical text position back to the identical SA
+        // row used by the former row-order O(n*k) implementation.
+        for (std::size_t sequence_id = 0;
+             sequence_id < reference.contig_starts.size(); ++sequence_id) {
+          const auto begin = reference.contig_starts[sequence_id];
+          const auto length = reference.contig_lengths[sequence_id];
+          std::uint64_t key = 0;
+          std::uint32_t canonical_run = 0;
+          for (std::uint64_t local = 0; local < length; ++local) {
+            const auto symbol =
+                text[static_cast<std::size_t>(begin + local)];
+            if (symbol < detail::kA || symbol > detail::kT) {
+              key = 0;
+              canonical_run = 0;
+              continue;
+            }
+            key = ((key << 2U) |
+                   static_cast<std::uint64_t>(symbol - detail::kA)) &
+                  key_mask;
+            canonical_run = std::min<std::uint32_t>(canonical_run + 1,
+                                                    model.k);
+            if (canonical_run < model.k) {
+              continue;
+            }
+            const auto start = begin + local + 1 - model.k;
+            if (start % sampling_rate != 0) {
+              continue;
+            }
+            const auto sample = start / sampling_rate;
+            if (sample >= isa_rows.size) {
+              throw Error(ErrorCode::kBuildFailure,
+                          "learned SA position is outside ISA");
+            }
+            const auto row = isa_rows[static_cast<std::size_t>(sample)];
+            if (row >= suffix_count) {
+              throw Error(ErrorCode::kBuildFailure,
+                          "learned SA row is outside the suffix array");
+            }
+                const auto bucket =
+                    model.bucket_bits == 0 ? 0ULL : key >> bucket_shift;
+                const auto index = static_cast<std::size_t>(bucket);
+                if (key < model.anchor_x[index] ||
+                    (key == model.anchor_x[index] &&
+                     row < anchor_rows[index])) {
+                  model.anchor_x[index] = key;
+                  anchor_rows[index] = static_cast<Row>(row);
+                }
+                found = true;
+          }
+        }
+        if (!found) {
+          std::fill(model.anchor_x.begin(), std::prev(model.anchor_x.end()), 0);
+          std::fill(anchor_rows.begin(), std::prev(anchor_rows.end()), 0);
+          model.anchor_x.back() = 1ULL << key_bits;
+          anchor_rows.back() = static_cast<Row>(suffix_count);
+          return;
+        }
 
-  const auto first =
-      std::find_if(model.anchor_x.begin(), std::prev(model.anchor_x.end()),
-                   [](std::uint64_t value) {
-                     return value != std::numeric_limits<std::uint64_t>::max();
-                   });
-  const auto first_index =
-      static_cast<std::size_t>(std::distance(model.anchor_x.begin(), first));
-  for (std::size_t index = 0; index < first_index; ++index) {
-    model.anchor_x[index] = 0;
-    model.anchor_y[index] = model.anchor_y[first_index];
-  }
-  for (std::size_t index = first_index + 1; index < model.anchor_x.size() - 1;
-       ++index) {
-    if (model.anchor_x[index] == std::numeric_limits<std::uint64_t>::max()) {
-      model.anchor_x[index] = model.anchor_x[index - 1];
-      model.anchor_y[index] = model.anchor_y[index - 1];
-    }
-  }
-  model.anchor_x.back() = 1ULL << key_bits;
-  model.anchor_y.back() = suffix_count;
-  for (std::size_t index = 1; index < model.anchor_x.size(); ++index) {
-    if (model.anchor_x[index] < model.anchor_x[index - 1] ||
-        model.anchor_y[index] < model.anchor_y[index - 1]) {
-      throw Error(ErrorCode::kBuildFailure,
-                  "learned SA anchors are not monotonic");
-    }
-  }
+        const auto first = std::find_if(
+            model.anchor_x.begin(), std::prev(model.anchor_x.end()),
+            [](std::uint64_t value) {
+              return value != std::numeric_limits<std::uint64_t>::max();
+            });
+        const auto first_index = static_cast<std::size_t>(
+            std::distance(model.anchor_x.begin(), first));
+        for (std::size_t index = 0; index < first_index; ++index) {
+          model.anchor_x[index] = 0;
+          anchor_rows[index] = anchor_rows[first_index];
+        }
+        for (std::size_t index = first_index + 1;
+             index < model.anchor_x.size() - 1; ++index) {
+          if (model.anchor_x[index] ==
+              std::numeric_limits<std::uint64_t>::max()) {
+            model.anchor_x[index] = model.anchor_x[index - 1];
+            anchor_rows[index] = anchor_rows[index - 1];
+          }
+        }
+        model.anchor_x.back() = 1ULL << key_bits;
+        anchor_rows.back() = static_cast<Row>(suffix_count);
+        for (std::size_t index = 1; index < model.anchor_x.size(); ++index) {
+          if (model.anchor_x[index] < model.anchor_x[index - 1] ||
+              anchor_rows[index] < anchor_rows[index - 1]) {
+            throw Error(ErrorCode::kBuildFailure,
+                        "learned SA anchors are not monotonic");
+          }
+        }
+      },
+      model.anchor_y);
   return model;
 }
 
-ChildTable BuildChild(const std::vector<std::uint64_t>& lcp) {
+template <class ChildCoordinate, class LcpVector>
+std::vector<ChildCoordinate> BuildChildFor(const LcpVector& lcp) {
   const std::uint64_t count = lcp.size();
   const std::uint64_t none = count;
-  ChildTable child(static_cast<std::size_t>(count), none);
+  std::vector<ChildCoordinate> child(static_cast<std::size_t>(count),
+                                     static_cast<ChildCoordinate>(none));
   // The first monotone-stack pass records up/down links for nested LCP
   // intervals. `none` is a one-past-end sentinel, never a valid SA row.
   std::vector<std::uint64_t> stack{0};
@@ -624,11 +933,13 @@ ChildTable BuildChild(const std::vector<std::uint64_t>& lcp) {
           current <= lcp[static_cast<std::size_t>(stack.back())] &&
           lcp[static_cast<std::size_t>(stack.back())] !=
               lcp[static_cast<std::size_t>(last)]) {
-        child[static_cast<std::size_t>(stack.back())] = last;
+        child[static_cast<std::size_t>(stack.back())] =
+            static_cast<ChildCoordinate>(last);
       }
     }
     if (last != none) {
-      child[static_cast<std::size_t>(index - 1)] = last;
+      child[static_cast<std::size_t>(index - 1)] =
+          static_cast<ChildCoordinate>(last);
     }
     stack.push_back(index);
   }
@@ -637,7 +948,8 @@ ChildTable BuildChild(const std::vector<std::uint64_t>& lcp) {
     stack.pop_back();
     if (!stack.empty() && lcp[static_cast<std::size_t>(stack.back())] !=
                               lcp[static_cast<std::size_t>(last)]) {
-      child[static_cast<std::size_t>(stack.back())] = last;
+      child[static_cast<std::size_t>(stack.back())] =
+          static_cast<ChildCoordinate>(last);
     }
   }
   stack.clear();
@@ -653,36 +965,36 @@ ChildTable BuildChild(const std::vector<std::uint64_t>& lcp) {
                               lcp[static_cast<std::size_t>(stack.back())]) {
       const auto last = stack.back();
       stack.pop_back();
-      child[static_cast<std::size_t>(last)] = index;
+      child[static_cast<std::size_t>(last)] =
+          static_cast<ChildCoordinate>(index);
     }
     stack.push_back(index);
   }
   return child;
 }
 
+CoordinateStorage BuildChild(const CoordinateStorage& lcp,
+                             std::uint8_t coordinate_width) {
+  return std::visit(
+      [&](const auto& lcp_values) -> CoordinateStorage {
+        if (coordinate_width == 32) {
+          return BuildChildFor<std::uint32_t>(lcp_values);
+        }
+        if (coordinate_width == 64) {
+          return BuildChildFor<std::uint64_t>(lcp_values);
+        }
+        throw Error(ErrorCode::kBuildFailure, "invalid CHILD width");
+      },
+      lcp);
+}
+
 std::vector<std::uint8_t> EncodeRightMaximalQuery(std::string_view query) {
   std::vector<std::uint8_t> encoded;
-  encoded.reserve(query.size());
-  for (const char raw : query) {
-    switch (static_cast<char>(std::toupper(static_cast<unsigned char>(raw)))) {
-      case 'A':
-        encoded.push_back(detail::kA);
-        break;
-      case 'C':
-        encoded.push_back(detail::kC);
-        break;
-      case 'G':
-        encoded.push_back(detail::kG);
-        break;
-      case 'T':
-        encoded.push_back(detail::kT);
-        break;
-      default:
-        // Reusing the impossible query sentinel makes every non-ACGT symbol a
-        // hard break; enumeration below splits the query at these positions.
-        encoded.push_back(detail::kSentinel);
-        break;
-    }
+  encoded.resize(query.size());
+  for (std::size_t index = 0; index < query.size(); ++index) {
+    // The impossible query sentinel makes every non-ACGT byte a hard break.
+    encoded[index] =
+        kRightMaximalEncoding[static_cast<unsigned char>(query[index])];
   }
   return encoded;
 }
@@ -690,25 +1002,12 @@ std::vector<std::uint8_t> EncodeRightMaximalQuery(std::string_view query) {
 std::vector<std::uint8_t> ReverseComplementRightMaximal(
     const std::vector<std::uint8_t>& query) {
   std::vector<std::uint8_t> result;
-  result.reserve(query.size());
-  for (auto it = query.rbegin(); it != query.rend(); ++it) {
-    switch (*it) {
-      case detail::kA:
-        result.push_back(detail::kT);
-        break;
-      case detail::kC:
-        result.push_back(detail::kG);
-        break;
-      case detail::kG:
-        result.push_back(detail::kC);
-        break;
-      case detail::kT:
-        result.push_back(detail::kA);
-        break;
-      default:
-        result.push_back(detail::kSentinel);
-        break;
-    }
+  result.resize(query.size());
+  for (std::size_t index = 0; index < query.size(); ++index) {
+    const auto symbol = query[query.size() - index - 1];
+    result[index] = symbol < kRightMaximalComplement.size()
+                        ? kRightMaximalComplement[symbol]
+                        : detail::kSentinel;
   }
   return result;
 }
@@ -719,6 +1018,17 @@ bool RightMaximalMatchLess(const RightMaximalMatch& left,
                   left.reference_position, left.length, left.strand) <
          std::tie(right.query_position, right.sequence_id,
                   right.reference_position, right.length, right.strand);
+}
+
+void PrepareRightMaximalSearch(const RightMaximalOptions& options) {
+  if (options.min_length == 0) {
+    throw Error(
+        ErrorCode::kInvalidInput,
+        "right-maximal exact match minimum length must be greater than zero");
+  }
+  if (options.statistics) {
+    *options.statistics = {};
+  }
 }
 
 IndexInfo BuiltInfo(const detail::ReferenceData& data,
@@ -758,6 +1068,121 @@ IndexInfo BuiltInfo(const detail::ReferenceData& data,
   return info;
 }
 
+constexpr std::size_t kIntegerIoBufferBytes = 256U * 1024U;
+
+bool NativeLittleEndian() noexcept {
+  const std::uint16_t marker = 1;
+  return *reinterpret_cast<const std::uint8_t*>(&marker) == 1;
+}
+
+template <class Values>
+void WriteIntegerPayload(std::ostream& output, const Values& values,
+                         std::uint8_t width, const char* label) {
+  if (width != 32 && width != 64) {
+    throw Error(ErrorCode::kBuildFailure,
+                std::string("invalid ") + label + " width");
+  }
+  const std::size_t bytes_per_value = width / 8;
+  const auto values_per_block = kIntegerIoBufferBytes / bytes_per_value;
+  using Value = typename Values::value_type;
+  if (NativeLittleEndian() && sizeof(Value) == bytes_per_value) {
+    for (std::size_t begin = 0; begin < values.size();
+         begin += values_per_block) {
+      const auto count = std::min(values_per_block, values.size() - begin);
+      const auto bytes = count * bytes_per_value;
+      output.write(reinterpret_cast<const char*>(values.data() + begin),
+                   static_cast<std::streamsize>(bytes));
+      if (!output) {
+        throw Error(ErrorCode::kIoError,
+                    std::string("failed to write ") + label);
+      }
+    }
+    return;
+  }
+
+  std::vector<unsigned char> buffer(values_per_block * bytes_per_value);
+  for (std::size_t begin = 0; begin < values.size();
+       begin += values_per_block) {
+    const auto count = std::min(values_per_block, values.size() - begin);
+    for (std::size_t index = 0; index < count; ++index) {
+      const auto value =
+          static_cast<std::uint64_t>(values[begin + index]);
+      for (std::size_t byte = 0; byte < bytes_per_value; ++byte) {
+        buffer[index * bytes_per_value + byte] =
+            static_cast<unsigned char>((value >> (8U * byte)) & 0xffU);
+      }
+    }
+    const auto bytes = count * bytes_per_value;
+    output.write(reinterpret_cast<const char*>(buffer.data()),
+                 static_cast<std::streamsize>(bytes));
+    if (!output) {
+      throw Error(ErrorCode::kIoError,
+                  std::string("failed to write ") + label);
+    }
+  }
+}
+
+struct AcceptAnyInteger {
+  void operator()(std::uint64_t, std::uint64_t) const noexcept {}
+};
+
+template <class Values, class Validator = AcceptAnyInteger>
+void ReadIntegerPayload(std::istream& input, Values& values,
+                        std::uint8_t width, const char* label,
+                        Validator&& validator = {}) {
+  if (width != 32 && width != 64) {
+    throw Error(ErrorCode::kCorruptIndex,
+                std::string("invalid ") + label + " width");
+  }
+  const std::size_t bytes_per_value = width / 8;
+  const auto values_per_block = kIntegerIoBufferBytes / bytes_per_value;
+  using Value = typename Values::value_type;
+  if (NativeLittleEndian() && sizeof(Value) == bytes_per_value) {
+    for (std::size_t begin = 0; begin < values.size();
+         begin += values_per_block) {
+      const auto block_count =
+          std::min(values_per_block, values.size() - begin);
+      const auto bytes = block_count * bytes_per_value;
+      input.read(reinterpret_cast<char*>(values.data() + begin),
+                 static_cast<std::streamsize>(bytes));
+      if (input.gcount() != static_cast<std::streamsize>(bytes)) {
+        throw Error(ErrorCode::kCorruptIndex,
+                    std::string(label) + " is truncated");
+      }
+      for (std::size_t index = 0; index < block_count; ++index) {
+        validator(static_cast<std::uint64_t>(begin + index),
+                  static_cast<std::uint64_t>(values[begin + index]));
+      }
+    }
+    return;
+  }
+
+  std::vector<unsigned char> buffer(values_per_block * bytes_per_value);
+  std::size_t begin = 0;
+  while (begin < values.size()) {
+    const auto block_count =
+        std::min(values_per_block, values.size() - begin);
+    const auto bytes = block_count * bytes_per_value;
+    input.read(reinterpret_cast<char*>(buffer.data()),
+               static_cast<std::streamsize>(bytes));
+    if (input.gcount() != static_cast<std::streamsize>(bytes)) {
+      throw Error(ErrorCode::kCorruptIndex,
+                  std::string(label) + " is truncated");
+    }
+    for (std::size_t index = 0; index < block_count; ++index) {
+      std::uint64_t value = 0;
+      for (std::size_t byte = 0; byte < bytes_per_value; ++byte) {
+        value |= static_cast<std::uint64_t>(
+                     buffer[index * bytes_per_value + byte])
+                 << (8U * byte);
+      }
+      validator(static_cast<std::uint64_t>(begin + index), value);
+      values[begin + index] = static_cast<Value>(value);
+    }
+    begin += block_count;
+  }
+}
+
 void WriteLearnedIndex(std::ostream& output, const LearnedSaIndex& model,
                        std::uint8_t coordinate_width,
                        std::uint64_t fingerprint) {
@@ -768,16 +1193,13 @@ void WriteLearnedIndex(std::ostream& output, const LearnedSaIndex& model,
   detail::WriteU32(output, coordinate_width);
   detail::WriteU64(output, model.anchor_x.size());
   detail::WriteU64(output, fingerprint);
-  for (const auto value : model.anchor_x) {
-    detail::WriteU64(output, value);
-  }
-  for (const auto value : model.anchor_y) {
-    if (coordinate_width == 32) {
-      detail::WriteU32(output, static_cast<std::uint32_t>(value));
-    } else {
-      detail::WriteU64(output, value);
-    }
-  }
+  WriteIntegerPayload(output, model.anchor_x, 64, "learned SA anchor keys");
+  std::visit(
+      [&](const auto& rows) {
+        WriteIntegerPayload(output, rows, coordinate_width,
+                            "learned SA anchor rows");
+      },
+      model.anchor_y);
   if (!output) {
     throw Error(ErrorCode::kIoError, "failed to write learned SA index");
   }
@@ -806,56 +1228,61 @@ LearnedSaIndex ReadLearnedIndex(const detail::ParsedContainer& container,
       coordinate_width != container.spec.coordinate_width ||
       anchor_count != (1ULL << model.bucket_bits) + 1 ||
       fingerprint != container.spec.fingerprint ||
-      anchor_count > std::vector<std::uint64_t>().max_size()) {
+      anchor_count > (coordinate_width == 32 ? Coordinate32().max_size()
+                                             : Coordinate64().max_size())) {
     throw Error(ErrorCode::kCorruptIndex, "invalid learned SA header");
   }
   model.anchor_x.resize(static_cast<std::size_t>(anchor_count));
-  model.anchor_y.resize(static_cast<std::size_t>(anchor_count));
-  for (auto& value : model.anchor_x) {
-    value = detail::ReadU64(*input, "learned SA anchor key");
+  if (coordinate_width == 32) {
+    model.anchor_y = Coordinate32(static_cast<std::size_t>(anchor_count));
+  } else {
+    model.anchor_y = Coordinate64(static_cast<std::size_t>(anchor_count));
   }
-  for (auto& value : model.anchor_y) {
-    value = coordinate_width == 32
-                ? detail::ReadU32(*input, "learned SA anchor row")
-                : detail::ReadU64(*input, "learned SA anchor row");
-  }
+  ReadIntegerPayload(*input, model.anchor_x, 64,
+                     "learned SA anchor keys");
+  std::visit(
+      [&](auto& rows) {
+        ReadIntegerPayload(*input, rows,
+                           static_cast<std::uint8_t>(coordinate_width),
+                           "learned SA anchor rows");
+      },
+      model.anchor_y);
   if (input->peek() != std::char_traits<char>::eof()) {
     throw Error(ErrorCode::kCorruptIndex,
                 "learned SA section has trailing bytes");
   }
+  const auto anchor_rows = ViewCoordinates(model.anchor_y);
   if (model.anchor_x.back() != (1ULL << (2U * model.k)) ||
-      model.anchor_y.back() != suffix_count) {
+      anchor_rows[anchor_rows.size - 1] != suffix_count) {
     throw Error(ErrorCode::kCorruptIndex,
                 "learned SA terminal anchor is invalid");
   }
   for (std::size_t index = 0; index < model.anchor_x.size(); ++index) {
-    if (model.anchor_y[index] > suffix_count ||
+    if (anchor_rows[index] > suffix_count ||
         (index != 0 && (model.anchor_x[index] < model.anchor_x[index - 1] ||
-                        model.anchor_y[index] < model.anchor_y[index - 1]))) {
+                        anchor_rows[index] < anchor_rows[index - 1]))) {
       throw Error(ErrorCode::kCorruptIndex, "learned SA anchors are invalid");
     }
   }
   return model;
 }
 
-template <class Vector>
-void WriteIntegerVector(std::ostream& output, const Vector& values,
+void WriteIntegerVector(std::ostream& output,
+                        const CoordinateStorage& storage,
                         std::uint8_t width) {
-  detail::WriteU64(output, values.size());
+  detail::WriteU64(output, CoordinateSize(storage));
   output.put(static_cast<char>(width));
-  for (const auto value : values) {
-    if (width == 32) {
-      detail::WriteU32(output, static_cast<std::uint32_t>(value));
-    } else {
-      detail::WriteU64(output, static_cast<std::uint64_t>(value));
-    }
-  }
+  std::visit(
+      [&](const auto& values) {
+        WriteIntegerPayload(output, values, width, "auxiliary index data");
+      },
+      storage);
   if (!output) {
     throw Error(ErrorCode::kIoError, "failed to write auxiliary index data");
   }
 }
 
-std::vector<std::uint64_t> ReadIntegerVector(
+CoordinateStorage ReadIntegerVector(
     const detail::ParsedContainer& container, detail::SectionType type,
     std::uint64_t expected_count, std::uint8_t expected_width,
     const char* label) {
@@ -868,16 +1295,20 @@ std::vector<std::uint64_t> ReadIntegerVector(
     throw Error(ErrorCode::kCorruptIndex,
                 std::string("invalid ") + label + " header");
   }
-  std::vector<std::uint64_t> values(static_cast<std::size_t>(count));
-  for (auto& value : values) {
-    value = expected_width == 32 ? detail::ReadU32(*input, label)
-                                 : detail::ReadU64(*input, label);
-  }
+  CoordinateStorage storage =
+      expected_width == 32
+          ? CoordinateStorage(Coordinate32(static_cast<std::size_t>(count)))
+          : CoordinateStorage(Coordinate64(static_cast<std::size_t>(count)));
+  std::visit(
+      [&](auto& values) {
+        ReadIntegerPayload(*input, values, expected_width, label);
+      },
+      storage);
   if (input->peek() != std::char_traits<char>::eof()) {
     throw Error(ErrorCode::kCorruptIndex,
                 std::string(label) + " section has trailing bytes");
   }
-  return values;
+  return storage;
 }
 
 }  // namespace
@@ -886,21 +1317,21 @@ struct SuffixArray::Impl {
   detail::ReferenceData reference;
   std::vector<std::uint8_t> text;
   SaStorage suffix_array;
-  std::vector<std::uint64_t> isa;
-  std::vector<std::uint64_t> lcp;
-  ChildTable child;
+  CoordinateStorage isa;
+  CoordinateStorage lcp;
+  CoordinateStorage child;
   LearnedSaIndex learned;
   SaAcceleration acceleration = SaAcceleration::kNone;
   std::uint32_t sampling_rate = 1;
   detail::StoredBackend backend = detail::StoredBackend::kDivsufsort32;
   IndexInfo index_info;
 
-  bool HasIsa() const noexcept { return !isa.empty(); }
-  bool HasLcp() const noexcept { return !lcp.empty(); }
-  bool HasChild() const noexcept { return !child.empty(); }
+  bool HasIsa() const noexcept { return !CoordinatesEmpty(isa); }
+  bool HasLcp() const noexcept { return !CoordinatesEmpty(lcp); }
+  bool HasChild() const noexcept { return !CoordinatesEmpty(child); }
   bool HasLearned() const noexcept { return !learned.Empty(); }
 
-  SuffixRange BinaryRange(const std::vector<std::uint8_t>& pattern,
+  SuffixRange BinaryRange(EncodedView pattern,
                           SaSearchStatistics* statistics = nullptr) const {
     return std::visit(
         [&](const auto& values) {
@@ -909,7 +1340,7 @@ struct SuffixArray::Impl {
         suffix_array);
   }
 
-  SuffixRange LcpBinaryRange(const std::vector<std::uint8_t>& pattern,
+  SuffixRange LcpBinaryRange(EncodedView pattern,
                              SaSearchStatistics* statistics = nullptr) const {
     return std::visit(
         [&](const auto& values) {
@@ -920,7 +1351,7 @@ struct SuffixArray::Impl {
         suffix_array);
   }
 
-  SuffixRange LearnedRange(const std::vector<std::uint8_t>& pattern,
+  SuffixRange LearnedRange(EncodedView pattern,
                            SaSearchStatistics* statistics = nullptr) const {
     if (!HasLearned()) {
       throw Error(ErrorCode::kUnsupportedBackend,
@@ -934,9 +1365,7 @@ struct SuffixArray::Impl {
       }
       return BinaryRange(pattern, statistics);
     }
-    const std::vector<std::uint8_t> prefix(
-        pattern.begin(),
-        pattern.begin() + static_cast<std::ptrdiff_t>(learned.k));
+    const EncodedView prefix(pattern.data, learned.k);
     const auto prediction =
         learned.Predict(learned.KeyFor(prefix), SaSize(suffix_array));
     const auto prefix_range = std::visit(
@@ -1011,14 +1440,16 @@ struct SuffixArray::Impl {
       return 0;
     }
     const auto none = rows;
-    auto boundary = child[static_cast<std::size_t>(range.end - 1)];
+    const auto child_values = ViewCoordinates(child);
+    const auto lcp_values = ViewCoordinates(lcp);
+    auto boundary = child_values[static_cast<std::size_t>(range.end - 1)];
     if (boundary == none || boundary <= range.begin || boundary >= range.end) {
-      boundary = child[static_cast<std::size_t>(range.begin)];
+      boundary = child_values[static_cast<std::size_t>(range.begin)];
     }
     if (boundary == none || boundary <= range.begin || boundary >= range.end) {
       return 0;
     }
-    return lcp[static_cast<std::size_t>(boundary)];
+    return lcp_values[static_cast<std::size_t>(boundary)];
   }
 
   SuffixRange ChildStep(SuffixRange range, std::uint64_t depth,
@@ -1031,9 +1462,10 @@ struct SuffixArray::Impl {
       return verified;
     }
     const auto none = SaSize(suffix_array);
-    auto first = child[static_cast<std::size_t>(range.end - 1)];
+    const auto child_values = ViewCoordinates(child);
+    auto first = child_values[static_cast<std::size_t>(range.end - 1)];
     if (first == none || first <= range.begin || first >= range.end) {
-      first = child[static_cast<std::size_t>(range.begin)];
+      first = child_values[static_cast<std::size_t>(range.begin)];
     }
     if (first == none || first <= range.begin || first >= range.end) {
       return verified;
@@ -1052,14 +1484,14 @@ struct SuffixArray::Impl {
       if (left >= range.end) {
         break;
       }
-      const auto next = child[static_cast<std::size_t>(left)];
+      const auto next = child_values[static_cast<std::size_t>(left)];
       right =
           next != none && next > left && next < range.end ? next : range.end;
     }
     return verified;
   }
 
-  SuffixRange ChildRange(const std::vector<std::uint8_t>& pattern) const {
+  SuffixRange ChildRange(EncodedView pattern) const {
     SuffixRange range{0, SaSize(suffix_array)};
     std::uint64_t depth = 0;
     while (depth < pattern.size() && !range.Empty()) {
@@ -1112,7 +1544,7 @@ struct SuffixArray::Impl {
   }
 
   SuffixRange Range(
-      const std::vector<std::uint8_t>& pattern,
+      EncodedView pattern,
       SaSearchAlgorithm requested = SaSearchAlgorithm::kAutoSelect,
       SaSearchStatistics* statistics = nullptr) const {
     SuffixRange result;
@@ -1141,26 +1573,46 @@ struct SuffixArray::Impl {
   }
 
   template <class Callback>
-  void ForEachExactGlobal(const std::vector<std::uint8_t>& pattern,
+  void ForEachStoredRow(SuffixRange interval, Callback&& callback) const {
+    std::visit(
+        [&](const auto& values) {
+          for (std::uint64_t row = interval.begin; row < interval.end; ++row) {
+            callback(row, static_cast<std::uint64_t>(
+                              values[static_cast<std::size_t>(row)]));
+          }
+        },
+        suffix_array);
+  }
+
+  template <class Callback>
+  void ForEachStoredPosition(SuffixRange interval,
+                             Callback&& callback) const {
+    ForEachStoredRow(interval, [&](std::uint64_t, std::uint64_t position) {
+      callback(position);
+    });
+  }
+
+  template <class Callback>
+  void ForEachExactGlobal(EncodedView pattern,
                           SaSearchAlgorithm algorithm,
                           SaSearchStatistics* statistics,
                           Callback&& callback) const {
     if (sampling_rate == 1) {
       const auto interval = Range(pattern, algorithm, statistics);
-      for (std::uint64_t row = interval.begin; row < interval.end; ++row) {
-        callback(SaValue(suffix_array, row));
-      }
+      ForEachStoredPosition(interval, callback);
       return;
     }
 
     if (pattern.size() < sampling_rate) {
-      for (const auto& sequence : reference.sequences) {
-        if (pattern.size() > sequence.length) {
+      for (std::size_t sequence_id = 0;
+           sequence_id < reference.contig_starts.size(); ++sequence_id) {
+        const auto sequence_length = reference.contig_lengths[sequence_id];
+        if (pattern.size() > sequence_length) {
           continue;
         }
-        for (std::uint64_t local = 0; local + pattern.size() <= sequence.length;
-             ++local) {
-          const auto global = sequence.global_offset + local;
+        for (std::uint64_t local = 0;
+             local + pattern.size() <= sequence_length; ++local) {
+          const auto global = reference.contig_starts[sequence_id] + local;
           if (std::equal(pattern.begin(), pattern.end(),
                          text.begin() + static_cast<std::ptrdiff_t>(global))) {
             callback(global);
@@ -1174,55 +1626,80 @@ struct SuffixArray::Impl {
     // stored. Verify the skipped prefix and contig containment before emitting
     // the recovered unsampled coordinate.
     for (std::uint32_t offset = 0; offset < sampling_rate; ++offset) {
-      const std::vector<std::uint8_t> anchor(
-          pattern.begin() + static_cast<std::ptrdiff_t>(offset), pattern.end());
+      const EncodedView anchor(pattern.data + offset, pattern.size() - offset);
       const auto interval = Range(anchor, algorithm, statistics);
-      for (std::uint64_t row = interval.begin; row < interval.end; ++row) {
-        const auto sampled = SaValue(suffix_array, row);
+      ForEachStoredPosition(interval, [&](std::uint64_t sampled) {
         if (sampled < offset) {
-          continue;
+          return;
         }
         const auto global = sampled - offset;
-        if (!detail::MapGlobalPosition(reference.sequences, global,
-                                       pattern.size())) {
-          continue;
+        if (!detail::MapGlobalPosition(reference, global, pattern.size())) {
+          return;
         }
         if (std::equal(pattern.begin(),
                        pattern.begin() + static_cast<std::ptrdiff_t>(offset),
                        text.begin() + static_cast<std::ptrdiff_t>(global))) {
           callback(global);
         }
-      }
+      });
     }
   }
 
-  std::uint64_t ExactCount(const std::vector<std::uint8_t>& pattern,
+  std::uint64_t ExactCount(EncodedView pattern,
                            SaSearchAlgorithm algorithm,
                            SaSearchStatistics* statistics) const {
+    if (sampling_rate == 1) {
+      return Range(pattern, algorithm, statistics).Size();
+    }
     std::uint64_t count = 0;
     ForEachExactGlobal(pattern, algorithm, statistics,
                        [&](std::uint64_t) { ++count; });
     return count;
   }
 
-  std::uint64_t Collect(const std::vector<std::uint8_t>& pattern, Strand strand,
+  std::uint64_t Collect(EncodedView pattern, Strand strand,
                         const LocateOptions& options,
-                        std::vector<Match>& output, SaSearchAlgorithm algorithm,
+                        std::vector<GlobalMatch>& output, bool& heap_active,
+                        SaSearchAlgorithm algorithm,
                         SaSearchStatistics* statistics) const {
+    if (sampling_rate == 1) {
+      const auto interval = Range(pattern, algorithm, statistics);
+      if (options.max_hits && *options.max_hits == 0) {
+        return interval.Size();
+      }
+      if (!options.max_hits) {
+        const auto available = output.max_size() - output.size();
+        if (interval.Size() <= available) {
+          output.reserve(output.size() +
+                         static_cast<std::size_t>(interval.Size()));
+        }
+      } else {
+        // A caller-provided limit may be much larger than the number of hits.
+        // Reserve only what this interval can contribute so an absent or
+        // sparse pattern cannot trigger an enormous speculative allocation.
+        const auto maximum = std::min<std::uint64_t>(
+            *options.max_hits,
+            static_cast<std::uint64_t>(output.max_size()));
+        const auto current = static_cast<std::uint64_t>(output.size());
+        const auto additional =
+            current < maximum
+                ? std::min(interval.Size(), maximum - current)
+                : std::uint64_t{0};
+        const auto desired = current + additional;
+        if (desired > output.capacity()) {
+          output.reserve(static_cast<std::size_t>(desired));
+        }
+      }
+      ForEachStoredPosition(interval, [&](std::uint64_t global) {
+        RetainGlobalMatch(output, {global, strand}, options, heap_active);
+      });
+      return interval.Size();
+    }
+
     std::uint64_t total = 0;
     ForEachExactGlobal(
         pattern, algorithm, statistics, [&](std::uint64_t global) {
-          const auto mapped = detail::MapGlobalPosition(reference.sequences,
-                                                        global, pattern.size());
-          if (!mapped) {
-            throw Error(ErrorCode::kCorruptIndex,
-                        "suffix-array hit is outside a reference contig");
-          }
-          detail::RetainMatch(
-              output,
-              {mapped->first, mapped->second,
-               static_cast<std::uint64_t>(pattern.size()), strand},
-              options);
+          RetainGlobalMatch(output, {global, strand}, options, heap_active);
           ++total;
         });
     return total;
@@ -1257,48 +1734,127 @@ struct SuffixArray::Impl {
     return requested;
   }
 
-  SuffixRange SuffixLinkInterval(SuffixRange previous, std::uint64_t depth,
-                                 std::uint32_t shift = 1) const {
+  template <class SaVector, class IsaVector, class LcpVector>
+  SuffixRange SuffixLinkIntervalFor(
+      const SaVector& sa_values, const IsaVector& isa_values,
+      const LcpVector& lcp_values, SuffixRange previous, std::uint64_t depth,
+      std::uint32_t shift, detail::SuffixLinkScanSink* scan_sink) const {
     // Shift both interval endpoints through ISA, then expand across LCP values
     // that still support the shortened prefix. Empty means reuse was not
     // proven; callers must restart from the root search path.
     if (previous.Empty() || depth <= shift) {
+#if defined(SUFKIT_ENABLE_SUFFIX_LINK_DIAGNOSTICS)
+      if (scan_sink) {
+        scan_sink->Record(0, 0, 0);
+      }
+#endif
       return {};
     }
-    const auto left_suffix = SaValue(suffix_array, previous.begin);
-    const auto right_suffix = SaValue(suffix_array, previous.end - 1);
+    const auto left_suffix = static_cast<std::uint64_t>(
+        sa_values[static_cast<std::size_t>(previous.begin)]);
+    const auto right_suffix = static_cast<std::uint64_t>(
+        sa_values[static_cast<std::size_t>(previous.end - 1)]);
     if (left_suffix + shift >= text.size() ||
         right_suffix + shift >= text.size()) {
+#if defined(SUFKIT_ENABLE_SUFFIX_LINK_DIAGNOSTICS)
+      if (scan_sink) {
+        scan_sink->Record(0, 0, 0);
+      }
+#endif
       return {};
     }
     const auto left_sample = (left_suffix + shift) / sampling_rate;
     const auto right_sample = (right_suffix + shift) / sampling_rate;
-    if (left_sample >= isa.size() || right_sample >= isa.size()) {
+    if (left_sample >= isa_values.size() || right_sample >= isa_values.size()) {
+#if defined(SUFKIT_ENABLE_SUFFIX_LINK_DIAGNOSTICS)
+      if (scan_sink) {
+        scan_sink->Record(0, 0, 0);
+      }
+#endif
       return {};
     }
-    auto left = std::min(isa[static_cast<std::size_t>(left_sample)],
-                         isa[static_cast<std::size_t>(right_sample)]);
-    auto right = std::max(isa[static_cast<std::size_t>(left_sample)],
-                          isa[static_cast<std::size_t>(right_sample)]) +
-                 1;
+    auto left = static_cast<std::uint64_t>(
+        std::min(isa_values[static_cast<std::size_t>(left_sample)],
+                 isa_values[static_cast<std::size_t>(right_sample)]));
+    const auto right_endpoint =
+        std::max(isa_values[static_cast<std::size_t>(left_sample)],
+                 isa_values[static_cast<std::size_t>(right_sample)]);
+    auto right = static_cast<std::uint64_t>(right_endpoint) + 1;
+    const auto sa_size = static_cast<std::uint64_t>(sa_values.size());
     const auto target = depth - shift;
-    while (left > 0 && lcp[static_cast<std::size_t>(left)] >= target) {
-      --left;
+#if defined(SUFKIT_ENABLE_SUFFIX_LINK_DIAGNOSTICS)
+    if (scan_sink) {
+      std::uint64_t left_rows = 0;
+      std::uint64_t right_rows = 0;
+      const auto scan_begin = BuildClock::now();
+      while (left > 0) {
+        ++left_rows;
+        if (static_cast<std::uint64_t>(
+                lcp_values[static_cast<std::size_t>(left)]) < target) {
+          break;
+        }
+        --left;
+      }
+      while (right < sa_size) {
+        ++right_rows;
+        if (static_cast<std::uint64_t>(
+                lcp_values[static_cast<std::size_t>(right)]) < target) {
+          break;
+        }
+        ++right;
+      }
+      const auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                               BuildClock::now() - scan_begin)
+                               .count();
+      scan_sink->Record(left_rows, right_rows,
+                        elapsed > 0 ? static_cast<std::uint64_t>(elapsed) : 0);
+    } else {
+#endif
+      while (left > 0 &&
+             static_cast<std::uint64_t>(
+                 lcp_values[static_cast<std::size_t>(left)]) >= target) {
+        --left;
+      }
+      while (right < sa_size &&
+             static_cast<std::uint64_t>(
+                 lcp_values[static_cast<std::size_t>(right)]) >= target) {
+        ++right;
+      }
+#if defined(SUFKIT_ENABLE_SUFFIX_LINK_DIAGNOSTICS)
     }
-    while (right < SaSize(suffix_array) &&
-           lcp[static_cast<std::size_t>(right)] >= target) {
-      ++right;
-    }
+#else
+    static_cast<void>(scan_sink);
+#endif
     return {left, right};
   }
 
+  SuffixRange SuffixLinkInterval(SuffixRange previous, std::uint64_t depth,
+                                 std::uint32_t shift,
+                                 detail::SuffixLinkScanSink* scan_sink) const {
+    // Coordinate width is selected once before the potentially long LCP scan,
+    // so the hot loop contains no per-row 32/64-bit branch.
+    return std::visit(
+        [&](const auto& sa_values, const auto& isa_values,
+            const auto& lcp_values) {
+          return SuffixLinkIntervalFor(sa_values, isa_values, lcp_values,
+                                       previous, depth, shift, scan_sink);
+        },
+        suffix_array, isa, lcp);
+  }
+
+  template <class Callback>
   void EnumerateOneStrand(const std::vector<std::uint8_t>& query,
                           std::uint64_t original_query_length, Strand strand,
                           std::uint64_t min_length,
                           RightMaximalSearchAlgorithm algorithm,
                           SaSearchAlgorithm lookup_algorithm,
                           RightMaximalSearchStatistics* statistics,
-                          const RightMaximalCallback& callback) const {
+                          Callback& callback) const {
+    const auto lcp_values = ViewCoordinates(lcp);
+    detail::SuffixLinkScanSink* scan_sink = nullptr;
+#if defined(SUFKIT_ENABLE_SUFFIX_LINK_DIAGNOSTICS)
+    scan_sink = detail::CurrentSuffixLinkScanSink();
+#endif
     std::size_t run_begin = 0;
     while (run_begin < query.size()) {
       while (run_begin < query.size() &&
@@ -1312,10 +1868,8 @@ struct SuffixArray::Impl {
       SuffixRange previous{};
       for (std::size_t query_position = run_begin;
            query_position + min_length <= run_end; ++query_position) {
-        std::vector<std::uint8_t> prefix(
-            query.begin() + static_cast<std::ptrdiff_t>(query_position),
-            query.begin() +
-                static_cast<std::ptrdiff_t>(query_position + min_length));
+        const EncodedView prefix(query.data() + query_position,
+                                 static_cast<std::size_t>(min_length));
         SuffixRange interval;
         const bool links =
             algorithm == RightMaximalSearchAlgorithm::kSuffixLink ||
@@ -1324,7 +1878,8 @@ struct SuffixArray::Impl {
           if (statistics) {
             ++statistics->suffix_link_attempts;
           }
-          interval = SuffixLinkInterval(previous, min_length);
+          interval =
+              SuffixLinkInterval(previous, min_length, 1, scan_sink);
           if (!interval.Empty()) {
             interval = NarrowChar(interval, min_length - 1, prefix.back());
           }
@@ -1380,29 +1935,36 @@ struct SuffixArray::Impl {
         }
 
         std::uint64_t previous_lce = min_length;
-        for (std::uint64_t row = interval.begin; row < interval.end; ++row) {
-          const auto global = SaValue(suffix_array, row);
-          const auto mapped = detail::MapGlobalPosition(reference.sequences,
-                                                        global, min_length);
+        ForEachStoredRow(interval,
+                         [&](std::uint64_t row, std::uint64_t global) {
+          const auto mapped =
+              detail::MapGlobalPosition(reference, global, min_length);
           if (!mapped) {
-            continue;
+            return;
           }
-          const auto& sequence =
-              reference.sequences[static_cast<std::size_t>(mapped->first)];
-          const auto reference_limit = sequence.global_offset + sequence.length;
+          const auto sequence_id = static_cast<std::size_t>(mapped->first);
+          const auto reference_limit = reference.contig_starts[sequence_id] +
+                                       reference.contig_lengths[sequence_id];
           std::uint64_t length = min_length;
           if (HasLcp() && algorithm != RightMaximalSearchAlgorithm::kBaseline &&
               row != interval.begin) {
-            length = std::min(previous_lce, lcp[static_cast<std::size_t>(row)]);
+            length =
+                std::min(previous_lce,
+                         lcp_values[static_cast<std::size_t>(row)]);
             if (length < min_length) {
               length = min_length;
             }
           }
-          while (query_position + length < run_end &&
-                 global + length < reference_limit &&
-                 query[query_position + static_cast<std::size_t>(length)] ==
-                     text[static_cast<std::size_t>(global + length)]) {
-            ++length;
+          if (query_position + length < run_end &&
+              global + length < reference_limit) {
+            const auto remaining = static_cast<std::size_t>(std::min(
+                static_cast<std::uint64_t>(run_end - query_position) - length,
+                reference_limit - global - length));
+            length += detail::LongestCommonPrefixBytes(
+                query.data() + query_position +
+                    static_cast<std::size_t>(length),
+                text.data() + static_cast<std::size_t>(global + length),
+                remaining);
           }
           previous_lce = length;
           const bool left_extendable =
@@ -1410,7 +1972,7 @@ struct SuffixArray::Impl {
               query[query_position - 1] ==
                   text[static_cast<std::size_t>(global - 1)];
           if (left_extendable) {
-            continue;
+            return;
           }
           const auto output_position =
               strand == Strand::kReverseComplement
@@ -1418,25 +1980,30 @@ struct SuffixArray::Impl {
                   : static_cast<std::uint64_t>(query_position);
           callback(
               {mapped->first, mapped->second, output_position, length, strand});
-        }
+        });
       }
       run_begin = run_end;
     }
   }
 
+  template <class Callback>
   void EnumerateSparseOneStrand(const std::vector<std::uint8_t>& query,
                                 std::uint64_t original_query_length,
                                 Strand strand, std::uint64_t min_length,
                                 RightMaximalSearchAlgorithm algorithm,
                                 SaSearchAlgorithm lookup_algorithm,
                                 RightMaximalSearchStatistics* statistics,
-                                const RightMaximalCallback& callback) const {
+                                Callback& callback) const {
     if (min_length < sampling_rate) {
       throw Error(ErrorCode::kInvalidInput,
                   "sampled SA right-maximal exact match search requires "
                   "min_length >= sampling_rate");
     }
     const auto anchor_length = min_length - sampling_rate + 1;
+    detail::SuffixLinkScanSink* scan_sink = nullptr;
+#if defined(SUFKIT_ENABLE_SUFFIX_LINK_DIAGNOSTICS)
+    scan_sink = detail::CurrentSuffixLinkScanSink();
+#endif
     std::size_t run_begin = 0;
     while (run_begin < query.size()) {
       while (run_begin < query.size() &&
@@ -1458,10 +2025,8 @@ struct SuffixArray::Impl {
         for (std::size_t anchor_position = first;
              anchor_position + anchor_length <= run_end;
              anchor_position += sampling_rate) {
-          const std::vector<std::uint8_t> prefix(
-              query.begin() + static_cast<std::ptrdiff_t>(anchor_position),
-              query.begin() +
-                  static_cast<std::ptrdiff_t>(anchor_position + anchor_length));
+          const EncodedView prefix(query.data() + anchor_position,
+                                   static_cast<std::size_t>(anchor_length));
           SuffixRange interval;
           const bool links =
               algorithm == RightMaximalSearchAlgorithm::kSuffixLink ||
@@ -1472,7 +2037,8 @@ struct SuffixArray::Impl {
               ++statistics->suffix_link_attempts;
             }
             interval =
-                SuffixLinkInterval(previous, anchor_length, sampling_rate);
+                SuffixLinkInterval(previous, anchor_length, sampling_rate,
+                                   scan_sink);
             for (std::uint64_t depth = anchor_length - sampling_rate;
                  !interval.Empty() && depth < anchor_length; ++depth) {
               interval = NarrowChar(interval, depth,
@@ -1507,17 +2073,16 @@ struct SuffixArray::Impl {
             }
           }
           previous = interval;
-          for (std::uint64_t row = interval.begin; row < interval.end; ++row) {
-            const auto sampled = SaValue(suffix_array, row);
-            const auto mapped = detail::MapGlobalPosition(
-                reference.sequences, sampled, anchor_length);
+          ForEachStoredPosition(interval, [&](std::uint64_t sampled) {
+            const auto mapped =
+                detail::MapGlobalPosition(reference, sampled, anchor_length);
             if (!mapped) {
-              continue;
+              return;
             }
-            const auto& sequence =
-                reference.sequences[static_cast<std::size_t>(mapped->first)];
-            const auto reference_begin = sequence.global_offset;
-            const auto reference_end = reference_begin + sequence.length;
+            const auto sequence_id = static_cast<std::size_t>(mapped->first);
+            const auto reference_begin = reference.contig_starts[sequence_id];
+            const auto reference_end =
+                reference_begin + reference.contig_lengths[sequence_id];
             std::uint64_t left = 0;
             while (
                 left < sampling_rate && anchor_position > run_begin + left &&
@@ -1527,18 +2092,24 @@ struct SuffixArray::Impl {
               ++left;
             }
             if (left == sampling_rate) {
-              continue;
+              return;
             }
             std::uint64_t right = anchor_length;
-            while (anchor_position + right < run_end &&
-                   sampled + right < reference_end &&
-                   query[anchor_position + static_cast<std::size_t>(right)] ==
-                       text[static_cast<std::size_t>(sampled + right)]) {
-              ++right;
+            if (anchor_position + right < run_end &&
+                sampled + right < reference_end) {
+              const auto remaining = static_cast<std::size_t>(std::min(
+                  static_cast<std::uint64_t>(run_end - anchor_position) -
+                      right,
+                  reference_end - sampled - right));
+              right += detail::LongestCommonPrefixBytes(
+                  query.data() + anchor_position +
+                      static_cast<std::size_t>(right),
+                  text.data() + static_cast<std::size_t>(sampled + right),
+                  remaining);
             }
             const auto length = left + right;
             if (length < min_length) {
-              continue;
+              return;
             }
             const auto query_start =
                 anchor_position - static_cast<std::size_t>(left);
@@ -1549,10 +2120,38 @@ struct SuffixArray::Impl {
                     : static_cast<std::uint64_t>(query_start);
             callback({mapped->first, reference_start - reference_begin,
                       output_position, length, strand});
-          }
+          });
         }
       }
       run_begin = run_end;
+    }
+  }
+
+  template <class Callback>
+  void EnumerateEncodedRightMaximal(
+      const std::vector<std::uint8_t>& encoded,
+      const RightMaximalOptions& options,
+      RightMaximalSearchAlgorithm algorithm, Callback& callback) const {
+    const auto enumerate = [&](const std::vector<std::uint8_t>& value,
+                               Strand strand) {
+      if (sampling_rate == 1) {
+        EnumerateOneStrand(value, encoded.size(), strand, options.min_length,
+                           algorithm, options.lookup_algorithm,
+                           options.statistics, callback);
+      } else {
+        EnumerateSparseOneStrand(
+            value, encoded.size(), strand, options.min_length, algorithm,
+            options.lookup_algorithm, options.statistics, callback);
+      }
+    };
+    if (options.strands == StrandMode::kForward ||
+        options.strands == StrandMode::kBoth) {
+      enumerate(encoded, Strand::kForward);
+    }
+    if (options.strands == StrandMode::kReverseComplement ||
+        options.strands == StrandMode::kBoth) {
+      const auto reverse = ReverseComplementRightMaximal(encoded);
+      enumerate(reverse, Strand::kReverseComplement);
     }
   }
 };
@@ -1577,7 +2176,14 @@ SuffixArray SuffixArray::Build(const GenomeReference& reference,
   }
   auto impl = std::make_unique<Impl>();
   impl->reference = MetadataCopy(reference.impl_->data);
-  impl->text = reference.impl_->data.encoded;
+  const auto& encoded = reference.impl_->data.encoded;
+  if (encoded.size() == std::numeric_limits<std::size_t>::max() ||
+      encoded.size() + 1 > impl->text.max_size()) {
+    throw Error(ErrorCode::kInvalidInput,
+                "reference text size overflows suffix-array storage");
+  }
+  impl->text.reserve(encoded.size() + 1);
+  impl->text.insert(impl->text.end(), encoded.begin(), encoded.end());
   // ReferenceData contains separators but never zero. Appending one zero here
   // gives every backend the same unique, lexicographically smallest sentinel.
   impl->text.push_back(detail::kSentinel);
@@ -1596,6 +2202,10 @@ SuffixArray SuffixArray::Build(const GenomeReference& reference,
   }
   const CoordinateWidth width = detail::ResolveSaCoordinateWidth(
       backend, options.coordinate_width, impl->text.size());
+  const auto coordinate_width = static_cast<std::uint8_t>(width);
+  const auto lcp_width = static_cast<std::uint8_t>(
+      impl->text.size() <= std::numeric_limits<std::uint32_t>::max() ? 32
+                                                                    : 64);
   const auto sa_begin = BuildClock::now();
   const bool retain_lcp = options.acceleration != SaAcceleration::kNone;
   const bool retain_isa =
@@ -1611,12 +2221,14 @@ SuffixArray SuffixArray::Build(const GenomeReference& reference,
     }
     auto built = detail::BuildCaps32(impl->text, options.threads, retain_lcp);
     impl->suffix_array = std::move(built.suffix_array);
-    impl->lcp = std::move(built.lcp);
+    impl->lcp = CompactCoordinates(std::move(built.lcp), lcp_width,
+                                   ErrorCode::kBuildFailure, "LCP");
     impl->backend = detail::StoredBackend::kCaps32;
   } else if (backend == SaBackend::kCaps && width == CoordinateWidth::kBits64) {
     auto built = detail::BuildCaps64(impl->text, options.threads, retain_lcp);
     impl->suffix_array = std::move(built.suffix_array);
-    impl->lcp = std::move(built.lcp);
+    impl->lcp = CompactCoordinates(std::move(built.lcp), lcp_width,
+                                   ErrorCode::kBuildFailure, "LCP");
     impl->backend = detail::StoredBackend::kCaps64;
   } else if (backend == SaBackend::kDivsufsort &&
              width == CoordinateWidth::kBits32) {
@@ -1630,7 +2242,8 @@ SuffixArray SuffixArray::Build(const GenomeReference& reference,
     }
     backend_reports_phases = true;
     impl->suffix_array = std::move(built.suffix_array);
-    impl->lcp = std::move(built.lcp);
+    impl->lcp = CompactCoordinates(std::move(built.lcp), lcp_width,
+                                   ErrorCode::kBuildFailure, "LCP");
     backend_isa = std::move(built.isa);
     impl->backend = detail::StoredBackend::kDivsufsort32;
   } else if (backend == SaBackend::kDivsufsort &&
@@ -1645,7 +2258,8 @@ SuffixArray SuffixArray::Build(const GenomeReference& reference,
     }
     backend_reports_phases = true;
     impl->suffix_array = std::move(built.suffix_array);
-    impl->lcp = std::move(built.lcp);
+    impl->lcp = CompactCoordinates(std::move(built.lcp), lcp_width,
+                                   ErrorCode::kBuildFailure, "LCP");
     backend_isa = std::move(built.isa);
     impl->backend = detail::StoredBackend::kDivsufsort64;
   } else {
@@ -1656,7 +2270,7 @@ SuffixArray SuffixArray::Build(const GenomeReference& reference,
   if (backend == SaBackend::kCaps && impl->sampling_rate > 1) {
     // CaPS supplies complete-SA LCP. Sampling must reduce intervening LCP
     // values by interval minimum so adjacent retained suffixes remain valid.
-    if (!impl->lcp.empty()) {
+    if (impl->HasLcp()) {
       SampleSaLcp(impl->suffix_array, impl->lcp, impl->sampling_rate);
     } else {
       SampleSa(impl->suffix_array, impl->sampling_rate);
@@ -1667,32 +2281,38 @@ SuffixArray SuffixArray::Build(const GenomeReference& reference,
   }
 
   impl->acceleration = options.acceleration;
-  std::vector<std::uint64_t> temporary_isa = std::move(backend_isa);
-  if (((retain_lcp && impl->lcp.empty()) || retain_isa) &&
-      temporary_isa.empty()) {
+  CoordinateStorage temporary_isa = CompactCoordinates(
+      std::move(backend_isa), coordinate_width, ErrorCode::kBuildFailure,
+      "inverse suffix array");
+  if (((retain_lcp && !impl->HasLcp()) || retain_isa ||
+       options.learned_index.enabled) &&
+      CoordinatesEmpty(temporary_isa)) {
     const auto begin = BuildClock::now();
     temporary_isa = BuildIsa(impl->suffix_array, impl->text.size(),
-                             impl->sampling_rate, options.threads);
+                             impl->sampling_rate, options.threads,
+                             coordinate_width);
     if (options.statistics) {
       options.statistics->isa_seconds = BuildElapsed(begin);
     }
   }
   if (retain_lcp) {
-    if (impl->lcp.empty()) {
+    if (!impl->HasLcp()) {
       const auto lcp_begin = BuildClock::now();
       impl->lcp = BuildLcp(impl->text, impl->suffix_array, temporary_isa,
-                           impl->sampling_rate);
+                           impl->sampling_rate, lcp_width);
       if (options.statistics) {
         options.statistics->lcp_seconds = BuildElapsed(lcp_begin);
       }
     }
     if (retain_isa) {
-      impl->isa = temporary_isa;
+      // LCP construction is the final temporary consumer. Move ISA into the
+      // immutable index instead of retaining a second full-size copy.
+      impl->isa = std::move(temporary_isa);
     }
     if (options.acceleration == SaAcceleration::kLcpChild ||
         options.acceleration == SaAcceleration::kFull) {
       const auto child_begin = BuildClock::now();
-      impl->child = BuildChild(impl->lcp);
+      impl->child = BuildChild(impl->lcp, coordinate_width);
       if (options.statistics) {
         options.statistics->child_seconds = BuildElapsed(child_begin);
       }
@@ -1700,21 +2320,18 @@ SuffixArray SuffixArray::Build(const GenomeReference& reference,
   }
   if (options.learned_index.enabled) {
     const auto learned_begin = BuildClock::now();
+    const auto& learned_isa = retain_isa ? impl->isa : temporary_isa;
     impl->learned = BuildLearnedIndex(
-        impl->reference, impl->text, impl->suffix_array,
+        impl->reference, impl->text, impl->suffix_array, learned_isa,
+        impl->sampling_rate,
         static_cast<std::uint8_t>(width), options.learned_index);
     if (options.statistics) {
       options.statistics->learned_index_seconds = BuildElapsed(learned_begin);
     }
   }
-  const auto width_bytes =
-      static_cast<std::uint64_t>(static_cast<std::uint8_t>(width) / 8);
-  const auto lcp_bytes =
-      impl->lcp.size() *
-      (impl->text.size() <= std::numeric_limits<std::uint32_t>::max() ? 4ULL
-                                                                      : 8ULL);
-  const auto aux_bytes = impl->isa.size() * width_bytes + lcp_bytes +
-                         impl->child.size() * width_bytes;
+  const auto aux_bytes = CoordinateBytes(impl->isa) +
+                         CoordinateBytes(impl->lcp) +
+                         CoordinateBytes(impl->child);
   impl->index_info = BuiltInfo(
       impl->reference, impl->backend, static_cast<std::uint8_t>(width),
       impl->text.size(), SaSize(impl->suffix_array), impl->sampling_rate,
@@ -1770,27 +2387,29 @@ QueryResult SuffixArray::Locate(std::string_view pattern,
                                 SaSearchAlgorithm algorithm,
                                 SaSearchStatistics* statistics) const {
   const auto encoded = detail::EncodePattern(pattern);
-  std::vector<Match> matches;
+  std::vector<GlobalMatch> matches;
+  bool heap_active = false;
   std::uint64_t total_hits = 0;
   if (options.strands == StrandMode::kForward) {
     total_hits = impl_->Collect(encoded, Strand::kForward, options, matches,
-                                algorithm, statistics);
+                                heap_active, algorithm, statistics);
   } else {
     const auto reverse = detail::ReverseComplement(encoded);
     if (options.strands == StrandMode::kReverseComplement) {
       total_hits = impl_->Collect(reverse, Strand::kReverseComplement, options,
-                                  matches, algorithm, statistics);
+                                  matches, heap_active, algorithm, statistics);
     } else if (encoded == reverse) {
       total_hits = impl_->Collect(encoded, Strand::kBoth, options, matches,
-                                  algorithm, statistics);
+                                  heap_active, algorithm, statistics);
     } else {
       total_hits = impl_->Collect(encoded, Strand::kForward, options, matches,
-                                  algorithm, statistics);
+                                  heap_active, algorithm, statistics);
       total_hits += impl_->Collect(reverse, Strand::kReverseComplement, options,
-                                   matches, algorithm, statistics);
+                                   matches, heap_active, algorithm, statistics);
     }
   }
-  return detail::FinalizeMatches(std::move(matches), total_hits);
+  return FinalizeGlobalMatches(std::move(matches), impl_->reference,
+                               encoded.size(), total_hits);
 }
 
 void SuffixArray::ForEachRightMaximalMatch(
@@ -1799,66 +2418,63 @@ void SuffixArray::ForEachRightMaximalMatch(
   // The public contract deliberately guarantees right maximality only. Some
   // paths may also reject left-extendable candidates, but callers must not
   // treat this API as a complete MEM implementation.
-  if (options.min_length == 0) {
-    throw Error(
-        ErrorCode::kInvalidInput,
-        "right-maximal exact match minimum length must be greater than zero");
-  }
+  PrepareRightMaximalSearch(options);
   if (!callback) {
     throw Error(ErrorCode::kInvalidInput,
                 "right-maximal exact match callback must not be empty");
   }
-  if (options.statistics) {
-    *options.statistics = {};
-  }
   const auto encoded = EncodeRightMaximalQuery(query);
   const auto algorithm = impl_->ResolveAlgorithm(options.algorithm);
-  const auto enumerate = [&](const std::vector<std::uint8_t>& value,
-                             Strand strand) {
-    if (impl_->sampling_rate == 1) {
-      impl_->EnumerateOneStrand(
-          value, encoded.size(), strand, options.min_length, algorithm,
-          options.lookup_algorithm, options.statistics, callback);
-    } else {
-      impl_->EnumerateSparseOneStrand(
-          value, encoded.size(), strand, options.min_length, algorithm,
-          options.lookup_algorithm, options.statistics, callback);
-    }
-  };
-  if (options.strands == StrandMode::kForward ||
-      options.strands == StrandMode::kBoth) {
-    enumerate(encoded, Strand::kForward);
-  }
-  if (options.strands == StrandMode::kReverseComplement ||
-      options.strands == StrandMode::kBoth) {
-    const auto reverse = ReverseComplementRightMaximal(encoded);
-    enumerate(reverse, Strand::kReverseComplement);
-  }
+  impl_->EnumerateEncodedRightMaximal(encoded, options, algorithm, callback);
 }
 
 RightMaximalResult SuffixArray::FindRightMaximalMatches(
     std::string_view query, const RightMaximalOptions& options,
     std::optional<std::uint64_t> max_matches) const {
+  PrepareRightMaximalSearch(options);
+  const auto encoded = EncodeRightMaximalQuery(query);
+  const auto algorithm = impl_->ResolveAlgorithm(options.algorithm);
   RightMaximalResult result;
-  const auto retain =
-      max_matches.value_or(std::numeric_limits<std::uint64_t>::max());
-  std::priority_queue<RightMaximalMatch, std::vector<RightMaximalMatch>,
-                      decltype(&RightMaximalMatchLess)>
-      kept(&RightMaximalMatchLess);
-  ForEachRightMaximalMatch(query, options, [&](const RightMaximalMatch& match) {
-    ++result.total_matches;
-    if (kept.size() < retain) {
-      kept.push(match);
-    } else if (retain != 0 && RightMaximalMatchLess(match, kept.top())) {
-      kept.pop();
-      kept.push(match);
-    }
-  });
-  result.matches.reserve(kept.size());
-  while (!kept.empty()) {
-    result.matches.push_back(kept.top());
-    kept.pop();
+  if (!max_matches) {
+    auto collect = [&](const RightMaximalMatch& match) {
+      ++result.total_matches;
+      result.matches.push_back(match);
+    };
+    impl_->EnumerateEncodedRightMaximal(encoded, options, algorithm, collect);
+    std::sort(result.matches.begin(), result.matches.end(),
+              RightMaximalMatchLess);
+    result.truncated = false;
+    return result;
   }
+
+  const auto retain = *max_matches;
+  bool heap_active = false;
+  auto collect = [&](const RightMaximalMatch& match) {
+    ++result.total_matches;
+    if (retain == 0) {
+      return;
+    }
+    if (!heap_active && result.matches.size() < retain) {
+      result.matches.push_back(match);
+      return;
+    }
+    if (!heap_active) {
+      // Do not build a heap unless an additional result proves that truncation
+      // is necessary. Common max_matches values above the true result count
+      // retain the append-and-sort behavior of the unlimited path.
+      std::make_heap(result.matches.begin(), result.matches.end(),
+                     RightMaximalMatchLess);
+      heap_active = true;
+    }
+    if (RightMaximalMatchLess(match, result.matches.front())) {
+      std::pop_heap(result.matches.begin(), result.matches.end(),
+                    RightMaximalMatchLess);
+      result.matches.back() = match;
+      std::push_heap(result.matches.begin(), result.matches.end(),
+                     RightMaximalMatchLess);
+    }
+  };
+  impl_->EnumerateEncodedRightMaximal(encoded, options, algorithm, collect);
   std::sort(result.matches.begin(), result.matches.end(),
             RightMaximalMatchLess);
   result.truncated = result.matches.size() < result.total_matches;
@@ -1922,13 +2538,13 @@ void SuffixArray::Save(const std::filesystem::path& path,
          std::visit(
              [&](const auto& values) {
                detail::WriteU64(out, values.size());
-               for (const auto value : values) {
-                 if constexpr (sizeof(value) == 4) {
-                   detail::WriteU32(out, static_cast<std::uint32_t>(value));
-                 } else {
-                   detail::WriteU64(out, static_cast<std::uint64_t>(value));
-                 }
-               }
+               WriteIntegerPayload(
+                   out, values,
+                   static_cast<std::uint8_t>(sizeof(typename std::decay_t<
+                                                      decltype(values)>::
+                                                      value_type) *
+                                             8),
+                   "suffix-array values");
              },
              impl_->suffix_array);
        }}};
@@ -2078,21 +2694,9 @@ SuffixArray SuffixArray::Load(const std::filesystem::path& path) {
                   "invalid 32-bit suffix-array coordinate width");
     }
     if (backend_is_caps) {
-      CapsSa32 values(static_cast<std::size_t>(count));
-      for (auto& value : values) {
-        const auto raw = detail::ReadU32(*sa_input, "suffix-array value");
-        accept_position(raw);
-        value = raw;
-      }
-      impl->suffix_array = std::move(values);
+      impl->suffix_array = CapsSa32(static_cast<std::size_t>(count));
     } else {
-      Sa32 values(static_cast<std::size_t>(count));
-      for (auto& value : values) {
-        const auto raw = detail::ReadU32(*sa_input, "suffix-array value");
-        accept_position(raw);
-        value = static_cast<std::int32_t>(raw);
-      }
-      impl->suffix_array = std::move(values);
+      impl->suffix_array = Sa32(static_cast<std::size_t>(count));
     }
   } else {
     if (container.spec.coordinate_width != 64) {
@@ -2100,23 +2704,22 @@ SuffixArray SuffixArray::Load(const std::filesystem::path& path) {
                   "invalid 64-bit suffix-array coordinate width");
     }
     if (backend_is_caps) {
-      CapsSa64 values(static_cast<std::size_t>(count));
-      for (auto& value : values) {
-        const auto raw = detail::ReadU64(*sa_input, "suffix-array value");
-        accept_position(raw);
-        value = raw;
-      }
-      impl->suffix_array = std::move(values);
+      impl->suffix_array = CapsSa64(static_cast<std::size_t>(count));
     } else {
-      Sa64 values(static_cast<std::size_t>(count));
-      for (auto& value : values) {
-        const auto raw = detail::ReadU64(*sa_input, "suffix-array value");
-        accept_position(raw);
-        value = static_cast<std::int64_t>(raw);
-      }
-      impl->suffix_array = std::move(values);
+      impl->suffix_array = Sa64(static_cast<std::size_t>(count));
     }
   }
+  std::visit(
+      [&](auto& values) {
+        using Value = typename std::decay_t<decltype(values)>::value_type;
+        constexpr auto width =
+            static_cast<std::uint8_t>(sizeof(Value) * 8);
+        ReadIntegerPayload(*sa_input, values, width, "suffix-array values",
+                           [&](std::uint64_t, std::uint64_t raw) {
+                             accept_position(raw);
+                           });
+      },
+      impl->suffix_array);
   if (sa_input->peek() != std::char_traits<char>::eof()) {
     throw Error(ErrorCode::kCorruptIndex,
                 "suffix-array section has trailing bytes");
@@ -2153,8 +2756,9 @@ SuffixArray SuffixArray::Load(const std::filesystem::path& path) {
     impl->isa = ReadIntegerVector(
         container, detail::SectionType::kInverseSuffixArray, count,
         container.spec.coordinate_width, "inverse suffix array");
+    const auto isa_values = ViewCoordinates(impl->isa);
     for (std::uint64_t position = 0; position < count; ++position) {
-      const auto row = impl->isa[static_cast<std::size_t>(position)];
+      const auto row = isa_values[static_cast<std::size_t>(position)];
       if (row >= count ||
           SaValue(impl->suffix_array, row) != position * impl->sampling_rate) {
         throw Error(ErrorCode::kCorruptIndex,
@@ -2164,16 +2768,20 @@ SuffixArray SuffixArray::Load(const std::filesystem::path& path) {
   }
   if (has_lcp) {
     const auto lcp_width = static_cast<std::uint8_t>(
-        count <= std::numeric_limits<std::uint32_t>::max() ? 32 : 64);
+        container.spec.text_symbols <=
+                std::numeric_limits<std::uint32_t>::max()
+            ? 32
+            : 64);
     impl->lcp = ReadIntegerVector(container, detail::SectionType::kLcp, count,
                                   lcp_width, "LCP");
-    if (impl->lcp.empty() || impl->lcp.front() != 0) {
+    const auto lcp_values = ViewCoordinates(impl->lcp);
+    if (lcp_values.size == 0 || lcp_values[0] != 0) {
       throw Error(ErrorCode::kCorruptIndex, "LCP[0] must be zero");
     }
     for (std::uint64_t row = 1; row < count; ++row) {
       const auto suffix = SaValue(impl->suffix_array, row);
       const auto previous = SaValue(impl->suffix_array, row - 1);
-      if (impl->lcp[static_cast<std::size_t>(row)] >
+      if (lcp_values[static_cast<std::size_t>(row)] >
           std::min(impl->text.size() - suffix, impl->text.size() - previous)) {
         throw Error(ErrorCode::kCorruptIndex,
                     "LCP value exceeds suffix bounds");
@@ -2184,12 +2792,14 @@ SuffixArray SuffixArray::Load(const std::filesystem::path& path) {
     impl->child =
         ReadIntegerVector(container, detail::SectionType::kChild, count,
                           container.spec.coordinate_width, "CHILD");
-    for (const auto value : impl->child) {
-      if (value > count) {
+    const auto child_values = ViewCoordinates(impl->child);
+    for (std::size_t index = 0; index < child_values.size; ++index) {
+      if (child_values[index] > count) {
         throw Error(ErrorCode::kCorruptIndex, "CHILD index is out of range");
       }
     }
-    if (impl->child != BuildChild(impl->lcp)) {
+    if (impl->child !=
+        BuildChild(impl->lcp, container.spec.coordinate_width)) {
       throw Error(ErrorCode::kCorruptIndex,
                   "CHILD table is inconsistent with LCP");
     }
@@ -2204,14 +2814,9 @@ SuffixArray SuffixArray::Load(const std::filesystem::path& path) {
                 "sampled SA metadata is inconsistent");
   }
   impl->index_info.sa_acceleration = impl->acceleration;
-  const auto width_bytes =
-      static_cast<std::uint64_t>(container.spec.coordinate_width / 8);
-  const auto lcp_bytes =
-      impl->lcp.size() *
-      (count <= std::numeric_limits<std::uint32_t>::max() ? 4ULL : 8ULL);
-  impl->index_info.auxiliary_bytes = impl->isa.size() * width_bytes +
-                                     lcp_bytes +
-                                     impl->child.size() * width_bytes;
+  impl->index_info.auxiliary_bytes = CoordinateBytes(impl->isa) +
+                                     CoordinateBytes(impl->lcp) +
+                                     CoordinateBytes(impl->child);
   if (has_learned) {
     impl->index_info.sa_lookup_acceleration = SaLookupAcceleration::kSaplingPwl;
     impl->index_info.learned_index_bytes =

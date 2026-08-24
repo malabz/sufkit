@@ -1,5 +1,7 @@
 #pragma once
 
+#include "benchmark_provenance.hpp"
+
 #include <cstdint>
 #include <filesystem>
 #include <optional>
@@ -114,6 +116,7 @@ struct QueryRaw {
     std::uint32_t repetition = 0;
     std::uint64_t query_count = 0;
     std::uint64_t query_bases = 0;
+    std::uint64_t measurement_iterations = 1;
     double seconds = 0.0;
     double user_seconds = 0.0;
     double system_seconds = 0.0;
@@ -144,6 +147,7 @@ struct MethodResult {
     std::string signature;
     std::string sdsl_version;
     std::uint8_t coordinate_width = 0;
+    std::uint32_t sa_sampling_rate = 0;
     double peak_rss_mb = 0.0;
     std::filesystem::path canonical_index;
     std::vector<BuildRaw> builds;
@@ -167,6 +171,7 @@ struct RunContext {
     std::string learned_bucket_bits;
     std::string fm_query_modes;
     std::string fm_batch_widths;
+    BenchmarkProvenance provenance;
 };
 
 const char* to_string(Profile value) noexcept;

@@ -45,8 +45,10 @@ or FM locate.
 
 ## Five-minute start
 
-Requirements are Linux or WSL, GCC or Clang, CMake 3.20 or newer, a C++17
-toolchain, and ZLIB. Other third-party sources are bundled.
+Requirements are Linux or WSL on an SSE4.2- and POPCNT-capable x86_64 CPU,
+GCC or Clang, CMake 3.20 or newer, a C++17 toolchain, and ZLIB. The target flag
+is private to sufkit and is not propagated to CMake consumers. Other
+third-party sources are bundled.
 
 ```bash
 cmake --preset release
@@ -139,6 +141,8 @@ choosing a production backend.
 ## Project boundaries
 
 - Linux/WSL x86_64 with GCC and Clang is the validated platform.
+- The current x86_64 binary requires SSE4.2 and POPCNT; AVX2 and AVX-512 are
+  not required.
 - FM construction currently uses SDSL's in-memory `construct_im` path.
 - CaPS is a shared-memory builder and can use substantially more peak memory
   than divsufsort; it is not a disk-backed constructor.

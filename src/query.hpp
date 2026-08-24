@@ -15,7 +15,7 @@ std::vector<std::uint8_t> ReverseComplement(
     const std::vector<std::uint8_t>& pattern);
 bool IsReverseComplementPalindrome(const std::vector<std::uint8_t>& pattern);
 void RetainMatch(std::vector<Match>& matches, Match match,
-                 const LocateOptions& options);
+                 const LocateOptions& options, bool& heap_active);
 QueryResult FinalizeMatches(std::vector<Match> matches,
                             std::uint64_t total_hits);
 

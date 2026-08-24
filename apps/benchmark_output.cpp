@@ -211,7 +211,10 @@ void write_result_directory(
                 "learned_k\tlearned_memory_overhead_basis_points\tlearned_bucket_bits\t"
                 "fm_query_modes\tfm_batch_widths\t"
                 "reference_seconds\tnormalization_seconds\tcompiler\tcompiler_version\t"
-                "cmake_version\tbuild_type\tos\tarchitecture\tcpu_model\tlogical_cpus\n";
+                "cmake_version\tbuild_type\tos\tarchitecture\tcpu_model\tlogical_cpus\t"
+                "git_commit\tgit_dirty\tcompile_flags\tcpu_flags\t"
+                "executable_sha256\tcpu_affinity\tsse42_compiled\t"
+                "sse42_runtime\tcommand_line_redacted\tpeak_rss_scope\n";
     for (const auto& dataset : datasets) {
         metadata << context.run_id << '\t' << context.timestamp << '\t' << to_string(context.profile) << '\t'
                  << to_string(dataset.scenario) << '\t' << context.seed << '\t' << dataset.name << '\t'
@@ -229,7 +232,17 @@ void write_result_directory(
                  << dataset.normalization_seconds << '\t' << compiler_name() << '\t'
                  << compiler_version() << '\t' << SUFKIT_BENCH_CMAKE_VERSION << '\t'
                  << SUFKIT_BENCH_BUILD_TYPE << '\t' << platform.first << '\t' << platform.second << '\t'
-                 << cpu_model() << '\t' << std::thread::hardware_concurrency() << '\n';
+                 << cpu_model() << '\t' << std::thread::hardware_concurrency() << '\t'
+                 << context.provenance.git_commit << '\t'
+                 << context.provenance.git_dirty << '\t'
+                 << context.provenance.compile_flags << '\t'
+                 << context.provenance.cpu_flags << '\t'
+                 << context.provenance.executable_sha256 << '\t'
+                 << context.provenance.cpu_affinity << '\t'
+                 << context.provenance.sse42_compiled << '\t'
+                 << context.provenance.sse42_runtime << '\t'
+                 << context.provenance.command_line_redacted << '\t'
+                 << context.provenance.peak_rss_scope << '\n';
     }
 
     builds << "run_id\tdataset\tscenario\tmethod\tbackend\tbackend_signature\tsdsl_version\t"
@@ -238,7 +251,7 @@ void write_result_directory(
               "isa_build_seconds_median\tlcp_build_seconds_median\tchild_build_seconds_median\t"
               "learned_index_build_seconds_median\tpeak_rss_mb\t"
               "save_seconds_median\tserialized_bytes\tlearned_index_bytes\tbits_per_base\t"
-              "load_seconds_median\tstatus\n";
+              "load_seconds_median\tstatus\tsa_sampling_rate\n";
     queries << "run_id\tdataset\tscenario\tmethod\tquery_group\tpattern_length\tstrand\toperation\t"
                "max_hits\tquery_count\tseconds_median\tseconds_min\tseconds_max\tqps_median\t"
                "nanoseconds_per_query_median\ttotal_hits\treported_hits\tresult_checksum\t"
@@ -275,12 +288,16 @@ void write_result_directory(
             return value.group + "\t" + value.pattern_length + "\t" + value.strand + "\t" +
                    value.operation + "\t" + value.max_hits;
         };
-        std::map<std::string, double> huffman_scalar_seconds;
+        std::map<std::string, double> huffman_scalar_qps;
         for (const auto& candidate : results[dataset_index]) {
             if (candidate.method != "fm" && candidate.method != "fm-huff") continue;
             for (const auto& value : aggregate_queries(candidate)) {
                 if (value.status == "ok" && value.fm_query_mode == "scalar") {
-                    huffman_scalar_seconds[query_identity(value)] = median(value.seconds);
+                    const auto seconds = median(value.seconds);
+                    huffman_scalar_qps[query_identity(value)] =
+                        seconds == 0.0
+                            ? 0.0
+                            : static_cast<double>(value.query_count) / seconds;
                 }
         }
         }
@@ -309,8 +326,9 @@ void write_result_directory(
                    << result.peak_rss_mb << '\t'
                     << median(save_seconds) << '\t' << serialized << '\t'
                     << (result.builds.empty() ? 0 : result.builds.front().learned_index_bytes) << '\t'
-                    << bits_per_base << '\t'
-                   << median(load_seconds) << '\t' << build_status(result) << '\n';
+                   << bits_per_base << '\t'
+                   << median(load_seconds) << '\t' << build_status(result) << '\t'
+                   << result.sa_sampling_rate << '\n';
 
             for (const auto& value : aggregate_queries(result)) {
                 const auto seconds_median = median(value.seconds);
@@ -320,9 +338,13 @@ void write_result_directory(
                     ? 0.0 : seconds_median * 1.0e9 / static_cast<double>(value.query_count);
                 const auto query_bases_per_second = seconds_median == 0.0
                     ? 0.0 : static_cast<double>(value.query_bases) / seconds_median;
-                const auto baseline = huffman_scalar_seconds.find(query_identity(value));
-                const auto speedup = baseline == huffman_scalar_seconds.end() || seconds_median == 0.0
-                    ? 0.0 : baseline->second / seconds_median;
+                const auto baseline =
+                    huffman_scalar_qps.find(query_identity(value));
+                const auto speedup =
+                    baseline == huffman_scalar_qps.end() ||
+                            baseline->second == 0.0 || qps == 0.0
+                        ? 0.0
+                        : qps / baseline->second;
                 queries << context.run_id << '\t' << dataset.name << '\t' << to_string(dataset.scenario) << '\t'
                         << result.method << '\t' << value.group << '\t' << value.pattern_length << '\t'
                         << value.strand << '\t' << value.operation << '\t' << value.max_hits << '\t'
@@ -343,7 +365,10 @@ void write_result_directory(
                         << value.full_binary_fallbacks << '\t' << value.status << '\t'
                         << value.fm_query_mode << '\t' << value.fm_batch_width << '\t'
                         << value.query_bases << '\t' << query_bases_per_second << '\t';
-                if (baseline == huffman_scalar_seconds.end()) queries << "NA\n";
+                if (baseline == huffman_scalar_qps.end() ||
+                    baseline->second == 0.0) {
+                    queries << "NA\n";
+                }
                 else queries << speedup << '\n';
             }
 
@@ -418,7 +443,8 @@ void write_legacy_output(
         std::uint64_t total_hits = 0;
         std::uint64_t reported_hits = 0;
         std::uint64_t checksum = checksum_seed();
-        std::uint64_t query_count = 0;
+        std::uint64_t count_query_count = 0;
+        std::uint64_t locate_query_count = 0;
         for (const auto& raw : result.queries) {
             if (raw.status != "ok" || raw.strand != "forward" ||
                 raw.fm_query_mode != "scalar") continue;
@@ -426,12 +452,13 @@ void write_legacy_output(
                 count_seconds[raw.repetition] += raw.seconds;
                 if (raw.repetition == 0) {
                     total_hits += raw.total_hits;
-                    query_count += raw.query_count;
+                    count_query_count += raw.query_count;
                 }
             } else if (raw.operation == "locate" && raw.max_hits == "1000") {
                 locate_seconds[raw.repetition] += raw.seconds;
                 if (raw.repetition == 0) {
                     reported_hits += raw.reported_hits;
+                    locate_query_count += raw.query_count;
                     mix_checksum(checksum, raw.checksum);
                 }
             }
@@ -448,10 +475,10 @@ void write_legacy_output(
                << result.backend << '\t' << result.signature << '\t' << result.sdsl_version << '\t'
                << static_cast<unsigned>(result.coordinate_width) << "\t1\t" << median(build_seconds) << '\t'
                << result.peak_rss_mb << '\t' << serialized << '\t' << median(load_seconds) << '\t'
-               << query_count << '\t' << (count_median == 0.0
-                   ? 0.0 : static_cast<double>(query_count) / count_median) << '\t'
+               << count_query_count << '\t' << (count_median == 0.0
+                   ? 0.0 : static_cast<double>(count_query_count) / count_median) << '\t'
                << (locate_median == 0.0
-                   ? 0.0 : static_cast<double>(query_count) / locate_median) << '\t'
+                   ? 0.0 : static_cast<double>(locate_query_count) / locate_median) << '\t'
                << total_hits << '\t' << reported_hits << '\t' << fingerprint_hex(checksum) << '\n';
     }
     output.flush();

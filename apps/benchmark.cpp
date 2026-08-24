@@ -62,7 +62,13 @@ std::vector<std::string> parse_methods(const std::string& text) {
     const std::set<std::string> supported{
         "naive", "sa32", "sa64", "sa32-none", "sa64-none",
         "fm", "fm-huff", "fm-balanced", "fm-epr",
-        "sa32-binary", "sa32-lcp-binary", "sa32-sapling", "sa32-child"};
+        "sa32-binary", "sa32-lcp-binary", "sa32-sapling", "sa32-child",
+        "sa32-sampled-k2-binary", "sa32-sampled-k2-lcp-binary",
+        "sa32-sampled-k4-binary", "sa32-sampled-k4-lcp-binary",
+        "sa32-sampled-k8-binary", "sa32-sampled-k8-lcp-binary",
+        "sa64-sampled-k2-binary", "sa64-sampled-k2-lcp-binary",
+        "sa64-sampled-k4-binary", "sa64-sampled-k4-lcp-binary",
+        "sa64-sampled-k8-binary", "sa64-sampled-k8-lcp-binary"};
     auto methods = split_csv(text, "--methods");
     for (const auto& method : methods) {
         if (supported.count(method) == 0) {
@@ -77,7 +83,7 @@ std::vector<std::string> parse_methods(const std::string& text) {
 }
 
 std::vector<std::string> parse_fm_query_modes(const std::string& text) {
-    const std::set<std::string> supported{"scalar", "batch"};
+    const std::set<std::string> supported{"scalar", "batch", "batch-mixed"};
     auto modes = split_csv(text, "--fm-query-modes");
     for (const auto& mode : modes) {
         if (supported.count(mode) == 0) {
@@ -306,8 +312,15 @@ void print_help() {
         "Options:\n"
         "  --scenarios mixed,balanced,gc-skewed,repeat-rich,n-islands,many-contig\n"
         "  --methods naive,sa32,sa64,sa32-none,sa64-none,fm,fm-huff,fm-balanced,"
-        "fm-epr,sa32-binary,sa32-lcp-binary,sa32-sapling,sa32-child\n"
-        "  --fm-query-modes scalar,batch --fm-batch-widths 1,4,8,16,32\n"
+        "fm-epr,sa32-binary,sa32-lcp-binary,sa32-sapling,sa32-child,\n"
+        "            sa32-sampled-k2-binary,sa32-sampled-k2-lcp-binary,\n"
+        "            sa32-sampled-k4-binary,sa32-sampled-k4-lcp-binary,\n"
+        "            sa32-sampled-k8-binary,sa32-sampled-k8-lcp-binary,\n"
+        "            sa64-sampled-k2-binary,sa64-sampled-k2-lcp-binary,\n"
+        "            sa64-sampled-k4-binary,sa64-sampled-k4-lcp-binary,\n"
+        "            sa64-sampled-k8-binary,sa64-sampled-k8-lcp-binary\n"
+        "  --fm-query-modes scalar,batch,batch-mixed "
+        "--fm-batch-widths 1,4,8,16,32\n"
         "  --learned-k 20 --learned-memory-bp 100 [--learned-bucket-bits N]\n"
         "  --pattern-lengths 20,50,100,200,500\n"
         "  --locate-limits 1,10,1000,all\n"
@@ -318,6 +331,8 @@ void print_help() {
         "  --methods right-maximal-baseline,right-maximal-lcp,right-maximal-child,right-maximal-suffix-link,right-maximal-full,\n"
         "            right-maximal-suffix-link-binary,right-maximal-suffix-link-sapling,mummer4\n"
         "  --min-lengths 20,50,100 [--mummer4 PATH]\n"
+        "  --strands forward,reverse-complement,both\n"
+        "  --query-repetitions N\n"
         "  --learned-k 20 --learned-memory-bp 100 [--learned-bucket-bits N]\n"
         "  or --workload right-maximal --reference REF.fa[.gz] [--queries Q.fa[.gz]]\n";
 }
@@ -409,6 +424,7 @@ int run_benchmark(const std::vector<std::string>& arguments) {
             std::to_string(options.learned_memory_overhead_basis_points);
         context.learned_bucket_bits = options.learned_bucket_bits
             ? std::to_string(*options.learned_bucket_bits) : "auto";
+        context.provenance = CollectBenchmarkProvenance(arguments);
         write_result_directory(*options.output_directory, context, datasets, all_results);
     } else {
         write_legacy_output(*options.output_path, datasets.front(), all_results.front());

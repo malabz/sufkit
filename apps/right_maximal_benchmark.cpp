@@ -1,16 +1,20 @@
 #include "right_maximal_benchmark.hpp"
 #include "app_support.hpp"
+#include "benchmark_provenance.hpp"
+#include "suffix_link_diagnostics.hpp"
 
 #include <sufkit/sufkit.hpp>
 
 #include <algorithm>
 #include <chrono>
 #include <cctype>
+#include <cmath>
 #include <cstdint>
 #include <fcntl.h>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <limits>
 #include <map>
 #include <numeric>
 #include <optional>
@@ -30,11 +34,18 @@ namespace {
 
 using Clock = std::chrono::steady_clock;
 
+#if defined(SUFKIT_ENABLE_SUFFIX_LINK_DIAGNOSTICS)
+constexpr std::uint64_t kSuffixLinkScanDiagnosticsAvailable = 1;
+#else
+constexpr std::uint64_t kSuffixLinkScanDiagnosticsAvailable = 0;
+#endif
+
 struct Options {
     std::string profile = "smoke";
     std::vector<std::string> scenarios{"mixed"};
     std::vector<std::string> methods{"right-maximal-baseline", "right-maximal-lcp", "right-maximal-child", "right-maximal-suffix-link", "right-maximal-full"};
     std::vector<std::uint64_t> min_lengths{20, 50};
+    std::vector<std::string> strands{"forward"};
     std::filesystem::path output_directory;
     std::optional<std::filesystem::path> mummer4;
     std::optional<std::filesystem::path> reference;
@@ -45,7 +56,26 @@ struct Options {
     std::uint32_t learned_k = 20;
     std::uint32_t learned_memory_overhead_basis_points = 100;
     std::optional<std::uint32_t> learned_bucket_bits;
+    std::optional<std::uint32_t> query_repetitions;
+    bench::BenchmarkProvenance provenance;
 };
+
+double minimum_measurement_seconds(const Options& options) {
+    if (options.reference.has_value()) return 0.100;
+    if (options.profile == "smoke") return 0.0;
+    if (options.profile == "quick") return 0.010;
+    return 0.100;
+}
+
+double calibration_target_seconds(double minimum_seconds) {
+    return minimum_seconds * 1.25;
+}
+
+std::uint32_t measured_repetitions(const Options& options) {
+    if (options.query_repetitions) return *options.query_repetitions;
+    return !options.reference.has_value() && options.profile == "smoke" ? 3
+                                                                        : 5;
+}
 
 struct Dataset {
     std::string name;
@@ -87,8 +117,11 @@ struct QueryResultRow {
     std::vector<double> seconds;
     std::uint64_t total_matches = 0;
     std::uint64_t checksum = 0;
+    std::uint64_t measurement_iterations = 1;
     RightMaximalSearchStatistics statistics;
+    detail::SuffixLinkScanSummary suffix_link_scan;
     std::string status = "ok";
+    std::string strand = "forward";
 };
 
 struct RawRow {
@@ -100,8 +133,11 @@ struct RawRow {
     double seconds = 0;
     std::uint64_t total_matches = 0;
     std::uint64_t checksum = 0;
+    std::uint64_t measurement_iterations = 1;
     RightMaximalSearchStatistics statistics;
+    detail::SuffixLinkScanSummary suffix_link_scan;
     std::string status = "ok";
+    std::string strand = "forward";
 };
 
 std::vector<std::string> split(const std::string& text) {
@@ -116,6 +152,24 @@ std::vector<std::string> split(const std::string& text) {
         begin = end + 1;
     }
     return result;
+}
+
+std::string join(const std::vector<std::string>& values) {
+    std::ostringstream output;
+    for (std::size_t index = 0; index < values.size(); ++index) {
+        if (index != 0) output << ',';
+        output << values[index];
+    }
+    return output.str();
+}
+
+StrandMode strand_mode(const std::string& value) {
+    if (value == "forward") return StrandMode::kForward;
+    if (value == "reverse-complement")
+        return StrandMode::kReverseComplement;
+    if (value == "both") return StrandMode::kBoth;
+    throw Error(ErrorCode::kInvalidInput,
+                "unknown right-maximal benchmark strand: " + value);
 }
 
 std::uint64_t parse_number(const std::string& value, const char* name) {
@@ -140,6 +194,7 @@ Options parse(const std::vector<std::string>& arguments) {
             if (name == "--profile") result.profile = value;
             else if (name == "--scenarios") result.scenarios = split(value);
             else if (name == "--methods") result.methods = split(value);
+            else if (name == "--strands") result.strands = split(value);
             else if (name == "--min-lengths") {
                 result.min_lengths.clear();
                 for (const auto& item : split(value)) result.min_lengths.push_back(parse_number(item, "--min-lengths"));
@@ -163,6 +218,15 @@ Options parse(const std::vector<std::string>& arguments) {
                 if (parsed > 31)
                     throw Error(ErrorCode::kInvalidInput, "--learned-bucket-bits must be at most 31");
                 result.learned_bucket_bits = static_cast<std::uint32_t>(parsed);
+            } else if (name == "--query-repetitions") {
+                const auto parsed = parse_number(value, "--query-repetitions");
+                if (parsed == 0 ||
+                    parsed > std::numeric_limits<std::uint32_t>::max()) {
+                    throw Error(ErrorCode::kInvalidInput,
+                                "--query-repetitions is out of range");
+                }
+                result.query_repetitions =
+                    static_cast<std::uint32_t>(parsed);
             }
             else throw Error(ErrorCode::kInvalidInput, "unknown right-maximal exact match benchmark option: " + name);
         }
@@ -180,6 +244,14 @@ Options parse(const std::vector<std::string>& arguments) {
     for (const auto& scenario : result.scenarios)
         if (valid_scenarios.count(scenario) == 0)
             throw Error(ErrorCode::kInvalidInput, "unknown right-maximal exact match benchmark scenario: " + scenario);
+    std::set<std::string> unique_strands;
+    for (const auto& strand : result.strands) {
+        (void)strand_mode(strand);
+        if (!unique_strands.insert(strand).second) {
+            throw Error(ErrorCode::kInvalidInput,
+                        "duplicate right-maximal benchmark strand: " + strand);
+        }
+    }
     const std::set<std::string> valid_methods{
         "right-maximal-baseline", "right-maximal-lcp", "right-maximal-child", "right-maximal-suffix-link", "right-maximal-full",
         "right-maximal-suffix-link-binary", "right-maximal-suffix-link-sapling", "mummer4"};
@@ -364,6 +436,144 @@ void mix_match(std::uint64_t& checksum, const RightMaximalMatch& match) {
     mix(checksum, static_cast<std::uint8_t>(match.strand));
 }
 
+struct RightMaximalPassResult {
+    std::uint64_t total_matches = 0;
+    std::uint64_t checksum = 0;
+    RightMaximalSearchStatistics statistics;
+    detail::SuffixLinkScanSummary suffix_link_scan;
+};
+
+void add_statistics(
+    const RightMaximalSearchStatistics& source,
+    RightMaximalSearchStatistics& destination) {
+    destination.lookup_calls += source.lookup_calls;
+    destination.binary_lookup_calls += source.binary_lookup_calls;
+    destination.learned_lookup_calls += source.learned_lookup_calls;
+    destination.suffix_link_attempts += source.suffix_link_attempts;
+    destination.suffix_link_successes += source.suffix_link_successes;
+    destination.suffix_link_fallbacks += source.suffix_link_fallbacks;
+    destination.previous_empty_lookups += source.previous_empty_lookups;
+    destination.lookup.suffix_comparisons +=
+        source.lookup.suffix_comparisons;
+    destination.lookup.character_comparisons +=
+        source.lookup.character_comparisons;
+    destination.lookup.gallop_probes += source.lookup.gallop_probes;
+    destination.lookup.local_window_rows +=
+        source.lookup.local_window_rows;
+    destination.lookup.local_window_rows_max = std::max(
+        destination.lookup.local_window_rows_max,
+        source.lookup.local_window_rows_max);
+    destination.lookup.predictions += source.lookup.predictions;
+    destination.lookup.prediction_absolute_error_sum +=
+        source.lookup.prediction_absolute_error_sum;
+    destination.lookup.prediction_absolute_error_max = std::max(
+        destination.lookup.prediction_absolute_error_max,
+        source.lookup.prediction_absolute_error_max);
+    destination.lookup.full_binary_fallbacks +=
+        source.lookup.full_binary_fallbacks;
+}
+
+RightMaximalPassResult execute_right_maximal_pass(
+    const SuffixArray& index,
+    const Dataset& dataset,
+    RightMaximalOptions options,
+    bool collect_statistics) {
+    RightMaximalPassResult pass;
+    pass.checksum = checksum_seed();
+#if defined(SUFKIT_ENABLE_SUFFIX_LINK_DIAGNOSTICS)
+    detail::SuffixLinkScanSink scan_sink;
+    std::optional<detail::ScopedSuffixLinkScanSink> scan_scope;
+    Clock::time_point instrumented_begin{};
+    if (collect_statistics) {
+        instrumented_begin = Clock::now();
+        scan_scope.emplace(scan_sink);
+    }
+#endif
+    for (std::size_t query_id = 0; query_id < dataset.queries.size();
+         ++query_id) {
+        const auto consume_result = [&](const RightMaximalResult& result) {
+            mix(pass.checksum, query_id);
+            mix(pass.checksum, result.total_matches);
+            pass.total_matches += result.total_matches;
+            for (const auto& match : result.matches) {
+                mix_match(pass.checksum, match);
+            }
+        };
+        if (collect_statistics) {
+            RightMaximalSearchStatistics query_statistics;
+            options.statistics = &query_statistics;
+            consume_result(index.FindRightMaximalMatches(
+                dataset.queries[query_id].sequence, options));
+            add_statistics(query_statistics, pass.statistics);
+        } else {
+            options.statistics = nullptr;
+            consume_result(index.FindRightMaximalMatches(
+                dataset.queries[query_id].sequence, options));
+        }
+    }
+#if defined(SUFKIT_ENABLE_SUFFIX_LINK_DIAGNOSTICS)
+    if (collect_statistics) {
+        pass.suffix_link_scan.instrumented_wall_seconds =
+            seconds_since(instrumented_begin);
+        scan_scope.reset();
+        const auto scan_summary = scan_sink.Summarize();
+        const auto instrumented_wall_seconds =
+            pass.suffix_link_scan.instrumented_wall_seconds;
+        pass.suffix_link_scan = scan_summary;
+        pass.suffix_link_scan.instrumented_wall_seconds =
+            instrumented_wall_seconds;
+        if (pass.suffix_link_scan.attempts !=
+            pass.statistics.suffix_link_attempts) {
+            throw Error(
+                ErrorCode::kBuildFailure,
+                "suffix-link scan diagnostics lost an attempted derivation");
+        }
+    }
+#endif
+    return pass;
+}
+
+std::uint64_t calibrate_right_maximal_iterations(
+    const SuffixArray& index,
+    const Dataset& dataset,
+    const RightMaximalOptions& options,
+    double minimum_measurement_seconds) {
+    if (minimum_measurement_seconds <= 0.0) {
+        return 1;
+    }
+    auto begin = Clock::now();
+    (void)execute_right_maximal_pass(index, dataset, options, false);
+    auto seconds = seconds_since(begin);
+    if (seconds >= minimum_measurement_seconds) {
+        return 1;
+    }
+    auto iterations = std::max<std::uint64_t>(
+        2, static_cast<std::uint64_t>(std::ceil(
+               calibration_target_seconds(minimum_measurement_seconds) /
+               std::max(seconds, 1.0e-9))));
+    for (;;) {
+        begin = Clock::now();
+        for (std::uint64_t iteration = 0; iteration < iterations;
+             ++iteration) {
+            (void)execute_right_maximal_pass(index, dataset, options, false);
+        }
+        seconds = seconds_since(begin);
+        if (seconds >= minimum_measurement_seconds) {
+            return iterations;
+        }
+        const auto multiplier = std::max<std::uint64_t>(
+            2, static_cast<std::uint64_t>(std::ceil(
+                   calibration_target_seconds(minimum_measurement_seconds) /
+                   std::max(seconds, 1.0e-9))));
+        if (iterations >
+            std::numeric_limits<std::uint64_t>::max() / multiplier) {
+            throw Error(ErrorCode::kBuildFailure,
+                        "right-maximal benchmark calibration overflow");
+        }
+        iterations *= multiplier;
+    }
+}
+
 SaAcceleration acceleration_for(const std::string& method) {
     if (method == "right-maximal-baseline") return SaAcceleration::kNone;
     if (method == "right-maximal-lcp") return SaAcceleration::kLcp;
@@ -429,78 +639,124 @@ void benchmark_internal(const Dataset& dataset, const Options& options, const st
     build.peak_rss_mb = peak_rss_mb_self();
     builds.push_back(build);
 
-    const std::uint32_t repetitions = options.profile == "smoke" ? 3 : 5;
+    const auto repetitions = measured_repetitions(options);
     for (const auto min_length : options.min_lengths) {
-        RightMaximalOptions right_maximal_options;
-        right_maximal_options.min_length = min_length;
-        right_maximal_options.algorithm = algorithm_for(method);
-        if (method == "right-maximal-suffix-link-binary")
-            right_maximal_options.lookup_algorithm = SaSearchAlgorithm::kBinary;
-        else if (method == "right-maximal-suffix-link-sapling")
-            right_maximal_options.lookup_algorithm = SaSearchAlgorithm::kSaplingPwl;
-        for (const auto& query : dataset.queries) (void)loaded.FindRightMaximalMatches(query.sequence, right_maximal_options);
-        QueryResultRow summary;
-        summary.dataset = dataset.name;
-        summary.method = method;
-        summary.algorithm = build.algorithm;
-        summary.acceleration = build.acceleration;
-        summary.min_length = min_length;
-        summary.query_count = dataset.queries.size();
-        summary.query_bases = dataset.query_bases;
-        for (std::uint32_t repetition = 0; repetition < repetitions; ++repetition) {
-            const auto begin = Clock::now();
-            std::uint64_t checksum = checksum_seed();
-            std::uint64_t total = 0;
-            RightMaximalSearchStatistics aggregate_statistics;
-            for (std::size_t query_id = 0; query_id < dataset.queries.size(); ++query_id) {
-                RightMaximalSearchStatistics search_statistics;
-                right_maximal_options.statistics = &search_statistics;
-                const auto result = loaded.FindRightMaximalMatches(dataset.queries[query_id].sequence, right_maximal_options);
-                mix(checksum, query_id);
-                mix(checksum, result.total_matches);
-                total += result.total_matches;
-                for (const auto& match : result.matches) mix_match(checksum, match);
-                aggregate_statistics.lookup_calls += search_statistics.lookup_calls;
-                aggregate_statistics.binary_lookup_calls += search_statistics.binary_lookup_calls;
-                aggregate_statistics.learned_lookup_calls += search_statistics.learned_lookup_calls;
-                aggregate_statistics.suffix_link_attempts += search_statistics.suffix_link_attempts;
-                aggregate_statistics.suffix_link_successes += search_statistics.suffix_link_successes;
-                aggregate_statistics.suffix_link_fallbacks += search_statistics.suffix_link_fallbacks;
-                aggregate_statistics.previous_empty_lookups += search_statistics.previous_empty_lookups;
-                aggregate_statistics.lookup.suffix_comparisons += search_statistics.lookup.suffix_comparisons;
-                aggregate_statistics.lookup.character_comparisons += search_statistics.lookup.character_comparisons;
-                aggregate_statistics.lookup.gallop_probes += search_statistics.lookup.gallop_probes;
-                aggregate_statistics.lookup.local_window_rows += search_statistics.lookup.local_window_rows;
-                aggregate_statistics.lookup.local_window_rows_max = std::max(
-                    aggregate_statistics.lookup.local_window_rows_max,
-                    search_statistics.lookup.local_window_rows_max);
-                aggregate_statistics.lookup.predictions += search_statistics.lookup.predictions;
-                aggregate_statistics.lookup.prediction_absolute_error_sum +=
-                    search_statistics.lookup.prediction_absolute_error_sum;
-                aggregate_statistics.lookup.prediction_absolute_error_max = std::max(
-                    aggregate_statistics.lookup.prediction_absolute_error_max,
-                    search_statistics.lookup.prediction_absolute_error_max);
-                aggregate_statistics.lookup.full_binary_fallbacks +=
-                    search_statistics.lookup.full_binary_fallbacks;
+        for (const auto& strand : options.strands) {
+            RightMaximalOptions right_maximal_options;
+            right_maximal_options.min_length = min_length;
+            right_maximal_options.strands = strand_mode(strand);
+            right_maximal_options.algorithm = algorithm_for(method);
+            if (method == "right-maximal-suffix-link-binary")
+                right_maximal_options.lookup_algorithm =
+                    SaSearchAlgorithm::kBinary;
+            else if (method == "right-maximal-suffix-link-sapling")
+                right_maximal_options.lookup_algorithm =
+                    SaSearchAlgorithm::kSaplingPwl;
+            for (const auto& query : dataset.queries) {
+                (void)loaded.FindRightMaximalMatches(
+                    query.sequence, right_maximal_options);
             }
-            const auto elapsed = seconds_since(begin);
-            summary.seconds.push_back(elapsed);
-            summary.total_matches = total;
-            summary.checksum = checksum;
-            summary.statistics = aggregate_statistics;
-            RawRow raw_row;
-            raw_row.dataset = dataset.name;
-            raw_row.method = method;
-            raw_row.operation = "right-maximal";
-            raw_row.min_length = min_length;
-            raw_row.repetition = repetition;
-            raw_row.seconds = elapsed;
-            raw_row.total_matches = total;
-            raw_row.checksum = checksum;
-            raw_row.statistics = aggregate_statistics;
-            raw.push_back(std::move(raw_row));
+            const double minimum_seconds =
+                minimum_measurement_seconds(options);
+            auto measurement_iterations =
+                calibrate_right_maximal_iterations(
+                    loaded, dataset, right_maximal_options,
+                    minimum_seconds);
+            QueryResultRow summary;
+            summary.dataset = dataset.name;
+            summary.method = method;
+            summary.algorithm = build.algorithm;
+            summary.acceleration = build.acceleration;
+            summary.min_length = min_length;
+            summary.query_count = dataset.queries.size();
+            summary.query_bases = dataset.query_bases;
+            summary.strand = strand;
+            const auto raw_begin = raw.size();
+            std::optional<RightMaximalPassResult> canonical_pass;
+            for (;;) {
+                summary.measurement_iterations = measurement_iterations;
+                summary.seconds.clear();
+                raw.resize(raw_begin);
+                canonical_pass.reset();
+                for (std::uint32_t repetition = 0; repetition < repetitions;
+                     ++repetition) {
+                    const auto begin = Clock::now();
+                    for (std::uint64_t iteration = 0;
+                         iteration < measurement_iterations; ++iteration) {
+                        auto pass = execute_right_maximal_pass(
+                            loaded, dataset, right_maximal_options, false);
+                        if (!canonical_pass) {
+                            canonical_pass = pass;
+                        } else if (pass.total_matches !=
+                                       canonical_pass->total_matches ||
+                                   pass.checksum != canonical_pass->checksum) {
+                            throw Error(
+                                ErrorCode::kBuildFailure,
+                                "right-maximal result changed within a measured repetition");
+                        }
+                    }
+                    const auto elapsed =
+                        seconds_since(begin) /
+                        static_cast<double>(measurement_iterations);
+                    if (!canonical_pass) {
+                        throw Error(
+                            ErrorCode::kBuildFailure,
+                            "right-maximal benchmark has no query results");
+                    }
+                    summary.seconds.push_back(elapsed);
+                    summary.total_matches = canonical_pass->total_matches;
+                    summary.checksum = canonical_pass->checksum;
+                    RawRow raw_row;
+                    raw_row.dataset = dataset.name;
+                    raw_row.method = method;
+                    raw_row.operation = "right-maximal";
+                    raw_row.min_length = min_length;
+                    raw_row.repetition = repetition;
+                    raw_row.seconds = elapsed;
+                    raw_row.total_matches = canonical_pass->total_matches;
+                    raw_row.checksum = canonical_pass->checksum;
+                    raw_row.measurement_iterations = measurement_iterations;
+                    raw_row.strand = strand;
+                    raw.push_back(std::move(raw_row));
+                }
+                const auto shortest = *std::min_element(
+                    summary.seconds.begin(), summary.seconds.end());
+                const auto shortest_actual =
+                    shortest * static_cast<double>(measurement_iterations);
+                if (shortest_actual >= minimum_seconds) {
+                    break;
+                }
+                const auto multiplier = std::max<std::uint64_t>(
+                    2, static_cast<std::uint64_t>(std::ceil(
+                           calibration_target_seconds(minimum_seconds) /
+                           std::max(shortest_actual, 1.0e-9))));
+                if (measurement_iterations >
+                    std::numeric_limits<std::uint64_t>::max() / multiplier) {
+                    throw Error(
+                        ErrorCode::kBuildFailure,
+                        "right-maximal benchmark measurement iteration overflow");
+                }
+                measurement_iterations *= multiplier;
+            }
+            const auto instrumented = execute_right_maximal_pass(
+                loaded, dataset, right_maximal_options, true);
+            if (!canonical_pass ||
+                instrumented.total_matches != canonical_pass->total_matches ||
+                instrumented.checksum != canonical_pass->checksum) {
+                throw Error(
+                    ErrorCode::kBuildFailure,
+                    "instrumented right-maximal pass checksum differs from timed pass");
+            }
+            summary.statistics = instrumented.statistics;
+            summary.suffix_link_scan = instrumented.suffix_link_scan;
+            for (auto raw_index = raw_begin; raw_index < raw.size();
+                 ++raw_index) {
+                raw[raw_index].statistics = instrumented.statistics;
+                raw[raw_index].suffix_link_scan =
+                    instrumented.suffix_link_scan;
+            }
+            queries.push_back(std::move(summary));
         }
-        queries.push_back(std::move(summary));
     }
 }
 
@@ -570,12 +826,15 @@ void write_internal_worker_file(
         write_worker_string(output, row.algorithm);
         write_worker_string(output, row.acceleration);
         write_worker_string(output, row.status);
+        write_worker_string(output, row.strand);
         write_worker_value(output, row.min_length);
         write_worker_value(output, row.query_count);
         write_worker_value(output, row.query_bases);
         write_worker_value(output, row.total_matches);
         write_worker_value(output, row.checksum);
+        write_worker_value(output, row.measurement_iterations);
         write_worker_value(output, row.statistics);
+        write_worker_value(output, row.suffix_link_scan);
         write_worker_value(output, static_cast<std::uint64_t>(row.seconds.size()));
         for (const auto seconds : row.seconds) write_worker_value(output, seconds);
     }
@@ -585,12 +844,15 @@ void write_internal_worker_file(
         write_worker_string(output, row.method);
         write_worker_string(output, row.operation);
         write_worker_string(output, row.status);
+        write_worker_string(output, row.strand);
         write_worker_value(output, row.min_length);
         write_worker_value(output, row.repetition);
         write_worker_value(output, row.seconds);
         write_worker_value(output, row.total_matches);
         write_worker_value(output, row.checksum);
+        write_worker_value(output, row.measurement_iterations);
         write_worker_value(output, row.statistics);
+        write_worker_value(output, row.suffix_link_scan);
     }
     if (!output) throw Error(ErrorCode::kIoError, "cannot finish right-maximal exact match worker result");
 }
@@ -632,12 +894,17 @@ void read_internal_worker_file(
         row.algorithm = read_worker_string(input, "query algorithm");
         row.acceleration = read_worker_string(input, "query acceleration");
         row.status = read_worker_string(input, "query status");
+        row.strand = read_worker_string(input, "query strand");
         row.min_length = read_worker_value<std::uint64_t>(input, "minimum length");
         row.query_count = read_worker_value<std::uint64_t>(input, "query cardinality");
         row.query_bases = read_worker_value<std::uint64_t>(input, "query bases");
         row.total_matches = read_worker_value<std::uint64_t>(input, "total matches");
         row.checksum = read_worker_value<std::uint64_t>(input, "query checksum");
+        row.measurement_iterations =
+            read_worker_value<std::uint64_t>(input, "measurement iterations");
         row.statistics = read_worker_value<RightMaximalSearchStatistics>(input, "query statistics");
+        row.suffix_link_scan = read_worker_value<detail::SuffixLinkScanSummary>(
+            input, "suffix-link scan diagnostics");
         const auto repetitions = read_worker_value<std::uint64_t>(input, "query repetitions");
         if (repetitions > 1000) throw Error(ErrorCode::kBuildFailure,
                                             "invalid right-maximal exact match worker repetition count");
@@ -653,12 +920,17 @@ void read_internal_worker_file(
         row.method = read_worker_string(input, "raw method");
         row.operation = read_worker_string(input, "raw operation");
         row.status = read_worker_string(input, "raw status");
+        row.strand = read_worker_string(input, "raw strand");
         row.min_length = read_worker_value<std::uint64_t>(input, "raw minimum length");
         row.repetition = read_worker_value<std::uint32_t>(input, "raw repetition");
         row.seconds = read_worker_value<double>(input, "raw seconds");
         row.total_matches = read_worker_value<std::uint64_t>(input, "raw matches");
         row.checksum = read_worker_value<std::uint64_t>(input, "raw checksum");
+        row.measurement_iterations =
+            read_worker_value<std::uint64_t>(input, "raw measurement iterations");
         row.statistics = read_worker_value<RightMaximalSearchStatistics>(input, "raw statistics");
+        row.suffix_link_scan = read_worker_value<detail::SuffixLinkScanSummary>(
+            input, "raw suffix-link scan diagnostics");
         raw.push_back(std::move(row));
     }
     if (input.peek() != std::char_traits<char>::eof())
@@ -695,7 +967,8 @@ void benchmark_internal_isolated(
         }
     }
     int status = 0;
-    if (waitpid(pid, &status, 0) < 0)
+    rusage usage{};
+    if (wait4(pid, &status, 0, &usage) < 0)
         throw Error(ErrorCode::kIoError, "cannot wait for right-maximal exact match benchmark worker");
     if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
         std::ifstream error_input(error_path);
@@ -704,7 +977,13 @@ void benchmark_internal_isolated(
         throw Error(ErrorCode::kBuildFailure,
                     message.empty() ? "right-maximal exact match benchmark worker failed" : message);
     }
+    const auto build_begin = builds.size();
     read_internal_worker_file(result_path, builds, queries, raw);
+    const auto process_peak_rss_mb =
+        static_cast<double>(usage.ru_maxrss) / 1024.0;
+    for (auto index = build_begin; index < builds.size(); ++index) {
+        builds[index].peak_rss_mb = process_peak_rss_mb;
+    }
 }
 
 struct ProcessResult {
@@ -824,7 +1103,7 @@ void benchmark_mummer(const Dataset& dataset, const Options& options,
     const auto verification_reference = GenomeReference::FromRecords(dataset.reference);
     const auto verification_index = SuffixArray::Build(verification_reference, verification_build_options);
 
-    const std::uint32_t repetitions = options.profile == "smoke" ? 3 : 5;
+    const auto repetitions = measured_repetitions(options);
     for (const auto length : options.min_lengths) {
         QueryResultRow summary;
         summary.dataset = dataset.name;
@@ -834,6 +1113,7 @@ void benchmark_mummer(const Dataset& dataset, const Options& options,
         summary.min_length = length;
         summary.query_count = dataset.queries.size();
         summary.query_bases = dataset.query_bases;
+        summary.strand = "forward";
         for (std::uint32_t repetition = 0; repetition < repetitions; ++repetition) {
             const auto output = scratch / ("mummer-" + std::to_string(length) + "-" + std::to_string(repetition) + ".out");
             const auto error = scratch / ("mummer-" + std::to_string(length) + "-" + std::to_string(repetition) + ".err");
@@ -870,6 +1150,7 @@ void benchmark_mummer(const Dataset& dataset, const Options& options,
             raw_row.seconds = measured.seconds;
             raw_row.total_matches = total;
             raw_row.checksum = checksum;
+            raw_row.strand = "forward";
             raw.push_back(std::move(raw_row));
         }
         const auto reverse_output = scratch / ("mummer-reverse-" + std::to_string(length) + ".out");
@@ -920,14 +1201,25 @@ double median(std::vector<double> values) {
 }
 
 void validate(const std::vector<QueryResultRow>& rows) {
-    std::map<std::tuple<std::string, std::uint64_t>, std::pair<std::uint64_t, std::uint64_t>> expected;
+    std::map<std::tuple<std::string, std::uint64_t, std::string>,
+             std::pair<std::uint64_t, std::uint64_t>> expected;
     for (const auto& row : rows) {
-        const auto key = std::make_tuple(row.dataset, row.min_length);
+        if (row.measurement_iterations == 0) {
+            throw Error(
+                ErrorCode::kBuildFailure,
+                "invalid right-maximal benchmark measurement iteration count for " +
+                    row.dataset + " method=" + row.method);
+        }
+        const auto key =
+            std::make_tuple(row.dataset, row.min_length, row.strand);
+        const auto normalized =
+            std::make_pair(row.total_matches, row.checksum);
         const auto it = expected.find(key);
-        if (it == expected.end()) expected.emplace(key, std::make_pair(row.total_matches, row.checksum));
-        else if (it->second != std::make_pair(row.total_matches, row.checksum))
+        if (it == expected.end()) expected.emplace(key, normalized);
+        else if (it->second != normalized)
             throw Error(ErrorCode::kBuildFailure, "right-maximal exact match benchmark correctness mismatch for " + row.dataset +
-                " min_length=" + std::to_string(row.min_length) + " method=" + row.method);
+                " min_length=" + std::to_string(row.min_length) +
+                " strand=" + row.strand + " method=" + row.method);
     }
 }
 
@@ -939,7 +1231,10 @@ void write_outputs(const Options& options, const std::vector<Dataset>& datasets,
         std::ofstream out(options.output_directory / "run_metadata.tsv");
         out << "profile\tscenario\tseed\tdataset\tdataset_fingerprint\ttotal_bases\tcontigs\tquery_count\tquery_bases"
                "\tlearned_k\tlearned_memory_overhead_basis_points\tlearned_bucket_bits"
-               "\tcompiler\tcmake_version\tbuild_type\tos\tarchitecture\tlogical_cpus\tmummer_version\tmummer_sha256\n";
+               "\tcompiler\tcmake_version\tbuild_type\tos\tarchitecture\tlogical_cpus\tmummer_version\tmummer_sha256"
+               "\tquery_repetitions\tgit_commit\tgit_dirty\tcompile_flags\tcpu_flags"
+               "\texecutable_sha256\tcpu_affinity\tsse42_compiled\tsse42_runtime"
+               "\tcommand_line_redacted\tpeak_rss_scope\tstrands\n";
         for (const auto& dataset : datasets) {
             const auto scenario = dataset.name.find("repeat-rich") != std::string::npos ? "repeat-rich" :
                 (dataset.name.find("many-contig") != std::string::npos ? "many-contig" :
@@ -952,7 +1247,19 @@ void write_outputs(const Options& options, const std::vector<Dataset>& datasets,
             << (options.learned_bucket_bits ? std::to_string(*options.learned_bucket_bits) : "auto") << '\t'
             << __VERSION__ << '\t' << SUFKIT_BENCH_CMAKE_VERSION << '\t' << SUFKIT_BENCH_BUILD_TYPE
             << "\tLinux\tx86_64\t" << sysconf(_SC_NPROCESSORS_ONLN) << '\t'
-            << options.mummer_version << '\t' << options.mummer_sha256 << '\n';
+            << options.mummer_version << '\t' << options.mummer_sha256 << '\t'
+            << measured_repetitions(options) << '\t'
+            << options.provenance.git_commit << '\t'
+            << options.provenance.git_dirty << '\t'
+            << options.provenance.compile_flags << '\t'
+            << options.provenance.cpu_flags << '\t'
+            << options.provenance.executable_sha256 << '\t'
+            << options.provenance.cpu_affinity << '\t'
+            << options.provenance.sse42_compiled << '\t'
+            << options.provenance.sse42_runtime << '\t'
+            << options.provenance.command_line_redacted << '\t'
+            << options.provenance.peak_rss_scope << '\t'
+            << join(options.strands) << '\n';
         }
     }
     {
@@ -974,7 +1281,7 @@ void write_outputs(const Options& options, const std::vector<Dataset>& datasets,
     }
     {
         std::ofstream out(options.output_directory / "query_results.tsv");
-        out << "dataset\tmethod\talgorithm\tsa_acceleration\tmin_length\tquery_count\tquery_bases\tseconds_median\tseconds_min\tseconds_max\tquery_bases_per_second\tmatches_per_second\ttotal_matches\tresult_checksum\tlookup_calls\tbinary_lookup_calls\tlearned_lookup_calls\tsuffix_link_attempts\tsuffix_link_successes\tsuffix_link_success_rate\tsuffix_link_fallbacks\tprevious_empty_lookups\tlookup_character_comparisons\tlookup_sa_row_accesses\tpredictions\tprediction_error_mean\tprediction_error_max\tlocal_window_rows_mean\tlocal_window_rows_max\tfull_binary_fallbacks\tstatus\n";
+        out << "dataset\tmethod\talgorithm\tsa_acceleration\tmin_length\tquery_count\tquery_bases\tseconds_median\tseconds_min\tseconds_max\tquery_bases_per_second\tmatches_per_second\ttotal_matches\tresult_checksum\tlookup_calls\tbinary_lookup_calls\tlearned_lookup_calls\tsuffix_link_attempts\tsuffix_link_successes\tsuffix_link_success_rate\tsuffix_link_fallbacks\tprevious_empty_lookups\tlookup_character_comparisons\tlookup_sa_row_accesses\tpredictions\tprediction_error_mean\tprediction_error_max\tlocal_window_rows_mean\tlocal_window_rows_max\tfull_binary_fallbacks\tstatus\tmeasurement_iterations\tsuffix_link_scan_attempts\tsuffix_link_left_scanned_rows\tsuffix_link_right_scanned_rows\tsuffix_link_scanned_rows_p50\tsuffix_link_scanned_rows_p95\tsuffix_link_scanned_rows_p99\tsuffix_link_scanned_rows_max\tsuffix_link_scan_seconds\tsuffix_link_instrumented_wall_seconds\tsuffix_link_scan_instrumented_wall_fraction\tsuffix_link_scan_diagnostics_available\tstrand\n";
         out << std::fixed << std::setprecision(6);
         for (const auto& row : queries) {
             const auto med = median(row.seconds);
@@ -1002,12 +1309,32 @@ void write_outputs(const Options& options, const std::vector<Dataset>& datasets,
                     static_cast<double>(row.statistics.lookup.local_window_rows) /
                     static_cast<double>(row.statistics.lookup.predictions)) << '\t'
                 << row.statistics.lookup.local_window_rows_max << '\t'
-                << row.statistics.lookup.full_binary_fallbacks << '\t' << row.status << '\n';
+                << row.statistics.lookup.full_binary_fallbacks << '\t' << row.status
+                << '\t' << row.measurement_iterations << '\t'
+                << row.suffix_link_scan.attempts << '\t'
+                << row.suffix_link_scan.left_rows << '\t'
+                << row.suffix_link_scan.right_rows << '\t'
+                << row.suffix_link_scan.rows_p50 << '\t'
+                << row.suffix_link_scan.rows_p95 << '\t'
+                << row.suffix_link_scan.rows_p99 << '\t'
+                << row.suffix_link_scan.rows_max << '\t'
+                << static_cast<double>(row.suffix_link_scan.scan_nanoseconds) /
+                       1.0e9
+                << '\t'
+                << row.suffix_link_scan.instrumented_wall_seconds << '\t'
+                << (row.suffix_link_scan.instrumented_wall_seconds <= 0.0
+                        ? 0.0
+                        : (static_cast<double>(
+                               row.suffix_link_scan.scan_nanoseconds) /
+                           1.0e9) /
+                              row.suffix_link_scan.instrumented_wall_seconds)
+                << '\t' << kSuffixLinkScanDiagnosticsAvailable << '\t'
+                << row.strand << '\n';
         }
     }
     {
         std::ofstream out(options.output_directory / "raw_repetitions.tsv");
-        out << "dataset\tmethod\toperation\tmin_length\trepetition\tseconds\ttotal_matches\tresult_checksum\tlookup_calls\tbinary_lookup_calls\tlearned_lookup_calls\tsuffix_link_attempts\tsuffix_link_successes\tsuffix_link_fallbacks\tprevious_empty_lookups\tlookup_character_comparisons\tlookup_sa_row_accesses\tpredictions\tprediction_error_sum\tprediction_error_max\tlocal_window_rows\tlocal_window_rows_max\tfull_binary_fallbacks\tstatus\n";
+        out << "dataset\tmethod\toperation\tmin_length\trepetition\tseconds\ttotal_matches\tresult_checksum\tlookup_calls\tbinary_lookup_calls\tlearned_lookup_calls\tsuffix_link_attempts\tsuffix_link_successes\tsuffix_link_fallbacks\tprevious_empty_lookups\tlookup_character_comparisons\tlookup_sa_row_accesses\tpredictions\tprediction_error_sum\tprediction_error_max\tlocal_window_rows\tlocal_window_rows_max\tfull_binary_fallbacks\tstatus\tmeasurement_iterations\tsuffix_link_scan_attempts\tsuffix_link_left_scanned_rows\tsuffix_link_right_scanned_rows\tsuffix_link_scanned_rows_p50\tsuffix_link_scanned_rows_p95\tsuffix_link_scanned_rows_p99\tsuffix_link_scanned_rows_max\tsuffix_link_scan_seconds\tsuffix_link_instrumented_wall_seconds\tsuffix_link_scan_instrumented_wall_fraction\tsuffix_link_scan_diagnostics_available\tstrand\n";
         out << std::fixed << std::setprecision(6);
         for (const auto& row : raw) out << row.dataset << '\t' << row.method << '\t' << row.operation << '\t'
             << row.min_length << '\t' << row.repetition << '\t' << row.seconds << '\t' << row.total_matches
@@ -1021,7 +1348,27 @@ void write_outputs(const Options& options, const std::vector<Dataset>& datasets,
             << row.statistics.lookup.prediction_absolute_error_max << '\t'
             << row.statistics.lookup.local_window_rows << '\t'
             << row.statistics.lookup.local_window_rows_max << '\t'
-            << row.statistics.lookup.full_binary_fallbacks << '\t' << row.status << '\n';
+            << row.statistics.lookup.full_binary_fallbacks << '\t' << row.status
+            << '\t' << row.measurement_iterations << '\t'
+            << row.suffix_link_scan.attempts << '\t'
+            << row.suffix_link_scan.left_rows << '\t'
+            << row.suffix_link_scan.right_rows << '\t'
+            << row.suffix_link_scan.rows_p50 << '\t'
+            << row.suffix_link_scan.rows_p95 << '\t'
+            << row.suffix_link_scan.rows_p99 << '\t'
+            << row.suffix_link_scan.rows_max << '\t'
+            << static_cast<double>(row.suffix_link_scan.scan_nanoseconds) /
+                   1.0e9
+            << '\t'
+            << row.suffix_link_scan.instrumented_wall_seconds << '\t'
+            << (row.suffix_link_scan.instrumented_wall_seconds <= 0.0
+                    ? 0.0
+                    : (static_cast<double>(
+                           row.suffix_link_scan.scan_nanoseconds) /
+                       1.0e9) /
+                          row.suffix_link_scan.instrumented_wall_seconds)
+            << '\t' << kSuffixLinkScanDiagnosticsAvailable << '\t'
+            << row.strand << '\n';
     }
 }
 
@@ -1029,6 +1376,15 @@ void write_outputs(const Options& options, const std::vector<Dataset>& datasets,
 
 int run(const std::vector<std::string>& arguments) {
     auto options = parse(arguments);
+    options.provenance = bench::CollectBenchmarkProvenance(arguments);
+    if (std::find(options.methods.begin(), options.methods.end(), "mummer4") !=
+            options.methods.end() &&
+        (options.strands.size() != 1 ||
+         options.strands.front() != "forward")) {
+        std::cerr
+            << "warning: MUMmer4 benchmark rows remain forward-only; "
+               "reverse-complement is still checked outside the timed row\n";
+    }
     std::filesystem::create_directories(options.output_directory);
     const auto scratch = options.output_directory / "work";
     std::filesystem::create_directories(scratch);

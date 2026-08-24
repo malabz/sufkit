@@ -52,9 +52,10 @@ interpretation changes.
 ## Platform support
 
 Linux and WSL x86_64 with GCC/Clang are tested. Shared-library symbol hiding is
-implemented for ELF GNU/Clang builds. Native Windows/MSVC, macOS, other CPU
-architectures, big-endian hosts, and unusual filesystems are not currently
-release-validated.
+implemented for ELF GNU/Clang builds. The current optimized x86_64 binary
+requires SSE4.2 and POPCNT; the private compiler option is not exported through
+the CMake package. Native Windows/MSVC, macOS, other CPU architectures,
+big-endian hosts, and unusual filesystems are not currently release-validated.
 
 The outer format is explicitly little-endian and checked on load. Atomic
 publication assumes rename semantics within the target directory.
