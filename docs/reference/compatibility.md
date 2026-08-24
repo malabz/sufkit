@@ -2,10 +2,7 @@
 
 ## Version status
 
-The released version is 0.1.1. The current `main` development binary still
-reports 0.1.1 while CaPS, sampled SA, multiple FM types, FM batch count, and
-Sapling PWL are classified as Unreleased. Documentation preserves this
-distinction until a new release changes the project version and changelog.
+The current released version is 0.2.0.
 
 ## Source and binary compatibility
 
@@ -13,14 +10,17 @@ sufkit follows semantic-version intent, but the 0.x series does not promise
 ABI compatibility across minor releases. `SOVERSION` is 0. Rebuild consumers
 when upgrading a development or minor version.
 
-Public headers are C++17 and hide third-party types. Source compatibility is a
-goal, but experimental APIs and options may change before their first release.
-Released coordinate, strand, error-category, and no-silent-fallback semantics
-should be treated as stable contracts.
+Public headers are C++17 and hide third-party types. Version 0.2.0 is source
+incompatible with 0.1.x because public functions and enumerators were renamed
+to the Google-style convention without compatibility wrappers. Consumers must
+update their source using the naming migration guide and recompile. The public
+include paths, `sufkit::sufkit` CMake target, main CLI interface, enum underlying
+values, coordinate and strand semantics, error categories, and
+no-silent-fallback contract remain unchanged.
 
 ## `.sufidx` compatibility
 
-| Reader on current `main` | 1.0 | 1.1 | 1.2 | 1.3 |
+| 0.2.0 reader | 1.0 | 1.1 | 1.2 | 1.3 |
 |---|---:|---:|---:|---:|
 | SA | Yes | Yes | Yes | Yes |
 | FM | Yes | Header minor accepted; no SA-only sections | Header minor accepted; no SA-only sections | Header minor accepted; no SA-only sections |
@@ -58,4 +58,6 @@ the CMake package. Native Windows/MSVC, macOS, other CPU architectures,
 big-endian hosts, and unusual filesystems are not currently release-validated.
 
 The outer format is explicitly little-endian and checked on load. Atomic
-publication assumes rename semantics within the target directory.
+publication stays within the target directory: overwrite publication uses an
+atomic rename, while no-replace publication uses a same-directory hard link
+followed by removal of the private temporary name.

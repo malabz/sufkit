@@ -18,7 +18,7 @@ machine. Standard/full and large real-genome experiments remain user-triggered.
 
 ## SA construction: divsufsort and CaPS
 
-Unreleased CaPS result on the 64 MiB quick profile:
+0.2.0 development evidence for CaPS on the 64 MiB quick profile:
 
 | Builder | Threads | Build median | Peak RSS | Relative to div32 |
 |---|---:|---:|---:|---:|
@@ -37,7 +37,8 @@ See [CaPS construction results](results/unreleased-caps.md) and
 
 ## Sampled standalone SA
 
-Unreleased 1 MiB smoke evidence with `acceleration=full`:
+0.2.0 development evidence from the 1 MiB smoke profile with
+`acceleration=full`:
 
 | Builder | K | Stored rows | Peak RSS | Serialized size |
 |---|---:|---:|---:|---:|
@@ -56,8 +57,8 @@ See [sampled-SA results](results/unreleased-sampled-sa.md) and the
 
 ## Exact suffix-array lookup
 
-Unreleased 4 MiB quick results; QPS aggregates selected pattern lengths and
-strands:
+0.2.0 development results from the 4 MiB quick profile; QPS aggregates
+selected pattern lengths and strands:
 
 | Scenario | Operation | Binary | LCP-aware | PWL | CHILD |
 |---|---|---:|---:|---:|---:|
@@ -93,7 +94,7 @@ See [released right-maximal exact match results](results/v0.1.1-right-maximal.md
 
 ## FM-index
 
-Unreleased quick averages across four 4 MiB scenarios:
+0.2.0 development quick averages across four 4 MiB scenarios:
 
 | Backend | Build | Load | Serialized | Count throughput | locate(1000) QPS |
 |---|---:|---:|---:|---:|---:|

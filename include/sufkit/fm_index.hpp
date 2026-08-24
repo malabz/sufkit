@@ -84,7 +84,7 @@ class SUFKIT_API FmIndex {
   SuffixRange EqualRange(std::string_view pattern) const;
 
   /**
-   * Find forward ranges for patterns in input order. @since Unreleased
+   * Find forward ranges for patterns in input order. @since 0.2.0
    * @param patterns Non-empty A/C/G/T patterns; one invalid value rejects
    *        the complete batch.
    * @param batch_width Zero for 16, otherwise 1–256.
@@ -104,7 +104,7 @@ class SUFKIT_API FmIndex {
 
   /**
    * Count patterns in input order with fixed-width interleaving.
-   * @since Unreleased
+   * @since 0.2.0
    * @param patterns Non-empty A/C/G/T patterns; one invalid value rejects
    *        the complete batch.
    * @param options Strand mode and batch width.

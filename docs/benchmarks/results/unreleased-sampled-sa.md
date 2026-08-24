@@ -1,8 +1,8 @@
-# Unreleased sampled-SA smoke benchmark
+# sufkit 0.2.0 sampled-SA smoke benchmark
 
-**Status:** Unreleased development evidence. This result validates correctness
-and the expected memory shape; it is not a release-wide or large-genome speed
-claim.
+**Status:** 0.2.0 development benchmark evidence. The historical filename is
+retained to preserve existing links. This result validates correctness and the
+expected memory shape; it is not a release-wide or large-genome speed claim.
 
 The measured implementation commit was `0162c34e9d26a364af25f1b088e61f80be0307db`
 before integration with the documentation branch. The run used GCC 13.3 on

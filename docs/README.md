@@ -13,7 +13,7 @@ under [`zh-CN/`](zh-CN/README.md).
 | Embed sufkit in C++ | [Installation](getting-started/installation.md) | [C++ workflows](user-guide/cpp-workflows.md), [API contracts](reference/api-contracts.md) |
 | Choose SA, CaPS, or an FM backend | [Choosing an index](getting-started/choosing-an-index.md) | [Backend reference](reference/backends.md), [performance tuning](user-guide/performance-tuning.md) |
 | Understand the algorithms | [Algorithm overview](concepts/algorithm-overview.md) | [Algorithm contracts](development/algorithm-contracts.md) |
-| Reduce standalone-SA resident size | [Sampled suffix arrays](concepts/sampled-suffix-arrays.md) | [Exact search](user-guide/exact-search.md), [sampled-SA results](benchmarks/results/unreleased-sampled-sa.md) |
+| Reduce standalone-SA resident size | [Sampled suffix arrays](concepts/sampled-suffix-arrays.md) | [Exact search](user-guide/exact-search.md), [0.2.0 sampled-SA development results](benchmarks/results/unreleased-sampled-sa.md) |
 | Add a backend or search algorithm | [Architecture](development/architecture.md) | [Extending sufkit](development/extending-sufkit.md) |
 | Contribute C++ or migrate a 0.1.x caller | [C++ style](development/cpp-style.md) | [0.2.0 naming migration](development/api-naming-migration-0.2.0.md) |
 | Interpret performance claims | [Benchmark summary](benchmarks/README.md) | [Methodology](benchmarks/methodology.md), versioned result reports |
@@ -64,15 +64,16 @@ under [`zh-CN/`](zh-CN/README.md).
 - [Concise benchmark summary](benchmarks/README.md)
 - [Benchmark methodology](benchmarks/methodology.md)
 - [0.2.0 low-level performance results](benchmarks/results/v0.2.0-low-level-performance.md)
-- [CaPS construction results](benchmarks/results/unreleased-caps.md)
-- [Sampled-SA development results](benchmarks/results/unreleased-sampled-sa.md)
+- [0.2.0 CaPS development results](benchmarks/results/unreleased-caps.md)
+- [0.2.0 sampled-SA development results](benchmarks/results/unreleased-sampled-sa.md)
 - [right-maximal exact match 0.1.1 results](benchmarks/results/v0.1.1-right-maximal.md)
-- [Sapling development results](benchmarks/results/unreleased-sapling.md)
-- [FM backend development results](benchmarks/results/unreleased-fm.md)
+- [0.2.0 Sapling development results](benchmarks/results/unreleased-sapling.md)
+- [0.2.0 FM backend development results](benchmarks/results/unreleased-fm.md)
 
 ## Version labels
 
-`0.1.1` refers only to the released ESA/right-maximal exact match baseline. Features merged into
-`main` afterward are labeled **Unreleased**, even though the development
-binary still reports `0.1.1`. Historical benchmark reports retain their
-original measurement scope and are not rewritten as release claims.
+The current release is `0.2.0`. The 0.1.1 right-maximal report remains a
+historical release result; the `unreleased-*.md` filenames are retained only
+to preserve existing links and now describe 0.2.0 development evidence.
+Historical reports keep their original measurement scope and are not rewritten
+as new measurements.

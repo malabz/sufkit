@@ -80,7 +80,7 @@ enum class SaBackend : std::uint8_t {
   kAutoSelect = 0,
   /** Bundled serial libdivsufsort constructor. */
   kDivsufsort = 1,
-  /** Bundled shared-memory parallel CaPS-SA constructor. @since Unreleased */
+  /** Bundled shared-memory parallel CaPS-SA constructor. @since 0.2.0 */
   kCaps = 2
 };
 
@@ -112,7 +112,7 @@ enum class SaAcceleration : std::uint8_t {
 enum class SaLookupAcceleration : std::uint8_t {
   /** Ordinary complete-SA search. */
   kBinary = 0,
-  /** Optional Sapling-style piecewise-linear predictor. @since Unreleased */
+  /** Optional Sapling-style piecewise-linear predictor. @since 0.2.0 */
   kSaplingPwl = 1
 };
 
@@ -178,7 +178,7 @@ enum class Strand : std::uint8_t {
   kBoth = 2
 };
 
-/** Optional Sapling-style PWL model construction options. @since Unreleased */
+/** Optional Sapling-style PWL model construction options. @since 0.2.0 */
 struct LearnedSaOptions {
   /** Whether to construct and persist a learned lookup model. */
   bool enabled = false;

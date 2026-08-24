@@ -1,4 +1,7 @@
-# FM-index backend and batched-count benchmark (Unreleased)
+# sufkit 0.2.0 FM-index backend and batched-count benchmark
+
+**Status:** 0.2.0 development benchmark evidence. The historical filename is
+retained to preserve existing links.
 
 ## Scope and correctness
 

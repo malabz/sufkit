@@ -1,4 +1,7 @@
-# CaPS-SA construction benchmark results (Unreleased)
+# sufkit 0.2.0 CaPS-SA construction benchmark
+
+**Status:** 0.2.0 development benchmark evidence. The historical filename is
+retained to preserve existing links.
 
 ## Environment
 

@@ -20,24 +20,22 @@ The library is designed for two audiences:
 
 ## Feature status
 
-The released library version is `0.1.1`. The current `main` branch also
-contains the following unreleased additions; they are marked explicitly so
-release behavior is not confused with development behavior.
+The released library version is `0.2.0`.
 
-| Capability | Status on `main` | Default |
+| Capability | Status in 0.2.0 | Default |
 |---|---|---|
 | divsufsort32/64 suffix-array construction | Released | Used for ordinary SA builds |
-| CaPS-SA 32/64 parallel construction | Unreleased | Auto-selected only for at least 1 GiB of symbols with more than one thread |
-| SA+ISA+LCP suffix-link right-maximal search | Released behavior; terminology corrected on `main` | Default SA acceleration |
+| CaPS-SA 32/64 parallel construction | Released in 0.2.0 | Auto-selected only for at least 1 GiB of symbols with more than one thread |
+| SA+ISA+LCP suffix-link right-maximal search | Released | Default SA acceleration |
 | ESA CHILD construction and traversal | Released, explicit | Never auto-selected |
 | SDSL Huffman CSA | Released | Default FM backend |
-| SDSL balanced and DNA EPR CSA | Unreleased | Explicit only |
-| FM batched count | Unreleased | Scalar remains the ordinary API |
-| Sapling-style piecewise-linear SA lookup | Unreleased, experimental | Disabled unless requested |
-| Text-position sampled SA | Unreleased, experimental | Disabled (`sampling_rate=1`) unless requested |
+| SDSL balanced and DNA EPR CSA | Released in 0.2.0 | Explicit only |
+| FM batched count | Released in 0.2.0 | Scalar remains the ordinary API |
+| Sapling-style piecewise-linear SA lookup | Released in 0.2.0, experimental | Disabled unless requested |
+| Text-position sampled SA | Released in 0.2.0, experimental | Disabled (`sampling_rate=1`) unless requested |
 | `.sufidx` 1.0/1.1 read support | Released | Old indexes remain readable |
-| `.sufidx` 1.2 learned section | Unreleased | Written only when PWL is present |
-| `.sufidx` 1.3 sampled-SA section | Unreleased | Written only when `sampling_rate > 1` |
+| `.sufidx` 1.2 learned section | Released in 0.2.0 | Written only when PWL is present |
+| `.sufidx` 1.3 sampled-SA section | Released in 0.2.0 | Written only when `sampling_rate > 1` |
 
 All FM data structures are provided by the bundled SDSL 3.0.3 implementation.
 `sufkit` does not reimplement BWT rank/select, C/Occ, LF mapping, SA sampling,
@@ -157,7 +155,7 @@ The [documentation hub](docs/README.md) separates short user guidance from
 API contracts, algorithm descriptions, internal architecture, contributor
 instructions, index-format details, and evidence-bounded benchmark reports.
 
-The development branch uses Google-style
-`PascalCase` functions and `kPascalCase` enumerators for the planned 0.2.0
-source interface. Existing 0.1.x callers should use the
+The 0.2.0 source interface uses Google-style `PascalCase` functions and
+`kPascalCase` enumerators. Existing 0.1.x callers must update their source
+using the
 [API naming migration guide](docs/development/api-naming-migration-0.2.0.md).

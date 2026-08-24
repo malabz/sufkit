@@ -1,4 +1,7 @@
-# Sapling-style learned-index benchmark (Unreleased)
+# sufkit 0.2.0 Sapling-style learned-index benchmark
+
+**Status:** 0.2.0 development benchmark evidence. The historical filename is
+retained to preserve existing links.
 
 > Terminology correction: the non-exact workload was originally labeled MEM.
 > It measures the current right-maximal exact match candidate API, which does

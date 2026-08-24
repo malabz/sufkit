@@ -1,8 +1,8 @@
 # C++ API naming migration for 0.2.0
 
-The development branch standardizes public C++ functions on `PascalCase` and
+Version 0.2.0 standardizes public C++ functions on `PascalCase` and
 enumerators on `kPascalCase`. This is an intentional source-level breaking
-change for the planned 0.2.0 interface. No deprecated forwarding functions,
+change from 0.1.x. No deprecated forwarding functions,
 enumerator aliases, or compatibility macros are provided.
 
 The following interfaces are unchanged:
@@ -16,7 +16,7 @@ The following interfaces are unchanged:
 
 ## Functions and methods
 
-| 0.1.x name | Planned 0.2.0 name |
+| 0.1.x name | 0.2.0 name |
 |---|---|
 | `GenomeReference::from_fasta()` | `GenomeReference::FromFasta()` |
 | `GenomeReference::from_records()` | `GenomeReference::FromRecords()` |
@@ -71,7 +71,7 @@ lower_snake_case -> kPascalCase
 
 Complete mappings are:
 
-| Enum | 0.1.x values | Planned 0.2.0 values |
+| Enum | 0.1.x values | 0.2.0 values |
 |---|---|---|
 | `IndexKind` | `suffix_array`, `fm_index` | `kSuffixArray`, `kFmIndex` |
 | `SaBackend` | `auto_select`, `divsufsort`, `caps` | `kAutoSelect`, `kDivsufsort`, `kCaps` |

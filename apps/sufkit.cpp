@@ -162,7 +162,8 @@ sufkit::SaSearchAlgorithm ParseSaSearchAlgorithm(const std::string& value) {
 }
 
 void PrintUsage(std::ostream& output) {
-  output << "sufkit 0.1.1 - genome suffix arrays, ESA right-maximal exact "
+  output << "sufkit " << SUFKIT_VERSION_STRING
+         << " - genome suffix arrays, ESA right-maximal exact "
             "match search, and SDSL FM-indexes\n\n"
             "Commands:\n"
             "  sufkit build --type sa|fm --input REF.fa[.gz] --output "
@@ -339,8 +340,9 @@ int RunRightMaximal(const std::vector<std::string>& arguments) {
   const auto info = sufkit::InspectIndex(index_path);
   if (info.kind != sufkit::IndexKind::kSuffixArray) {
     throw sufkit::Error(sufkit::ErrorCode::kUnsupportedBackend,
-                        "right-maximal exact match search requires a "
-                        "suffix-array index in sufkit 0.1.1");
+                        std::string("right-maximal exact match search requires "
+                                    "a suffix-array index in sufkit ") +
+                            SUFKIT_VERSION_STRING);
   }
   auto queries = sufkit::app::ReadFastaRecords(options.Require("--query"));
   if (queries.empty()) {

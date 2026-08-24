@@ -2,4 +2,4 @@
 
 See the [algorithm overview](concepts/algorithm-overview.md),
 [detailed contracts](development/algorithm-contracts.md), and
-[Unreleased benchmark report](benchmarks/results/unreleased-sapling.md).
+[0.2.0 development benchmark report](benchmarks/results/unreleased-sapling.md).

@@ -22,16 +22,17 @@
 [中文文档导航](docs/zh-CN/README.md) · [英文完整文档](docs/README.md) ·
 [贡献指南](CONTRIBUTING.md)
 
-当前开发分支已经为计划中的 0.2.0 统一 C++ 命名：函数使用
+0.2.0 已统一 C++ 命名：函数使用
 `PascalCase`，枚举值使用 `kPascalCase`。0.1.x 调用方请参考
 [API 命名迁移指南](docs/development/api-naming-migration-0.2.0.md)。公共头文件
 路径、CMake target、CLI 与 `.sufidx` 格式没有因此改变。
 
 ## 当前版本口径
 
-已发布版本是 `0.1.1`。当前 `main` 还包含尚未重新发布的 CaPS、采样
-SA、balanced/EPR FM-index、FM batch count 和 Sapling PWL 等能力，因此这些
-功能在文档中统一标记为 `Unreleased`，不会倒写成已经发布的 0.1.1 功能。
+当前发布版本是 `0.2.0`。CaPS、采样 SA、balanced/EPR FM-index、FM batch
+count 和 Sapling PWL 均已随 0.2.0 发布；其中采样 SA 和 Sapling PWL 仍是
+默认关闭的实验性能力。0.2.0 相对 0.1.x 是源码不兼容升级，旧调用方需要按
+命名迁移指南修改源码。
 
 默认选择保持保守：
 

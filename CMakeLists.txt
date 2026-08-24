@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 
-project(sufkit VERSION 0.1.1 LANGUAGES C CXX)
+project(sufkit VERSION 0.2.0 LANGUAGES C CXX)
 
 include(CMakePackageConfigHelpers)
 include(GNUInstallDirs)
@@ -388,7 +388,9 @@ install(FILES README.md README.zh-CN.md CHANGELOG.md CONTRIBUTING.md
     DESTINATION ${CMAKE_INSTALL_DATADIR}/sufkit)
 install(DIRECTORY docs/
     DESTINATION ${CMAKE_INSTALL_DATADIR}/sufkit/docs
-    FILES_MATCHING PATTERN "*.md")
+    FILES_MATCHING
+    PATTERN "*.md"
+    PATTERN "benchmarks/results/artifacts" EXCLUDE)
 
 configure_package_config_file(
     cmake/sufkitConfig.cmake.in
