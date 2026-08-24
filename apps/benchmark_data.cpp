@@ -1,4 +1,5 @@
 #include "benchmark_common.hpp"
+#include "benchmark_profiles.hpp"
 
 #include <algorithm>
 #include <array>
@@ -260,14 +261,10 @@ Scenario parse_scenario(const std::string& value) {
 }
 
 ProfileSpec profile_spec(Profile value) {
-    switch (value) {
-    case Profile::smoke: return {16ULL << 10U, 100, 1, 1, 3};
-    case Profile::quick: return {4ULL << 20U, 1000, 3, 1, 5};
-    case Profile::standard: return {32ULL << 20U, 5000, 3, 1, 7};
-    case Profile::full: return {256ULL << 20U, 10000, 1, 1, 5};
-    case Profile::user: return {0, 1000, 1, 1, 5};
-    }
-    throw Error(ErrorCode::kInvalidInput, "invalid benchmark profile");
+    const auto& definition = sufkit::benchmark::profile_definition(to_string(value));
+    return {definition.reference_bases, definition.query_count,
+            definition.build_repetitions, definition.query_warmups,
+            definition.query_repetitions};
 }
 
 std::string fingerprint_hex(std::uint64_t value) {

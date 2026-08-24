@@ -6,7 +6,6 @@
 #include <cctype>
 #include <chrono>
 #include <climits>
-#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <limits>
@@ -17,6 +16,7 @@
 #include <utility>
 
 #include <sys/resource.h>
+#include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -26,24 +26,7 @@ namespace {
 
 using Clock = std::chrono::steady_clock;
 constexpr std::uint64_t kCompleteLocateSafetyLimit = 100000;
-
-double minimum_measurement_seconds(Profile profile) {
-    switch (profile) {
-    case Profile::smoke:
-        return 0.0;
-    case Profile::quick:
-        return 0.010;
-    case Profile::standard:
-    case Profile::full:
-    case Profile::user:
-        return 0.100;
-    }
-    return 0.100;
-}
-
-double calibration_target_seconds(double minimum_seconds) {
-    return minimum_seconds * 1.25;
-}
+constexpr const char* kSaveWorkerStatus = "save_worker_load_plus_save";
 
 struct CpuUsage {
     double user = 0.0;
@@ -68,6 +51,47 @@ CpuUsage usage_delta(const CpuUsage& begin, const CpuUsage& end) {
 
 double elapsed(Clock::time_point begin) {
     return std::chrono::duration<double>(Clock::now() - begin).count();
+}
+
+double peak_rss_mb(const struct rusage& usage) {
+    return static_cast<double>(usage.ru_maxrss) / 1024.0;
+}
+
+double current_process_peak_rss_mb() {
+    struct rusage usage {};
+    if (getrusage(RUSAGE_SELF, &usage) != 0) {
+        throw Error(ErrorCode::kIoError, "cannot read benchmark worker peak RSS");
+    }
+    return peak_rss_mb(usage);
+}
+
+bool is_sa_method(const std::string& method) {
+    return method.rfind("sa32", 0) == 0 || method.rfind("sa64", 0) == 0 ||
+           method == "caps32" || method == "caps64";
+}
+
+bool is_32bit_sa_method(const std::string& method) {
+    return method.rfind("sa32", 0) == 0 || method == "caps32";
+}
+
+bool is_caps_method(const std::string& method) {
+    return method == "caps32" || method == "caps64";
+}
+
+std::uint32_t sampling_rate_for_method(const std::string& method) {
+    if (method == "sa32-sampled-k2" || method == "sa64-sampled-k2") return 2;
+    if (method == "sa32-sampled-k4" || method == "sa64-sampled-k4") return 4;
+    if (method == "sa32-sampled-k8" || method == "sa64-sampled-k8") return 8;
+    return 1;
+}
+
+std::uint64_t allocated_disk_bytes(const std::filesystem::path& path) {
+    struct stat information {};
+    if (::stat(path.c_str(), &information) != 0) {
+        throw Error(ErrorCode::kIoError,
+            "cannot stat benchmark index for allocated size: " + path.string());
+    }
+    return static_cast<std::uint64_t>(information.st_blocks) * 512ULL;
 }
 
 std::string normalize_sequence(std::string sequence) {
@@ -233,15 +257,13 @@ bool is_fm_method(const std::string& method) {
            method == "fm-balanced" || method == "fm-epr";
 }
 
-std::uint32_t sampling_rate_for_method(const std::string& method) {
-    if (method.find("-sampled-k2-") != std::string::npos) return 2;
-    if (method.find("-sampled-k4-") != std::string::npos) return 4;
-    if (method.find("-sampled-k8-") != std::string::npos) return 8;
-    return 1;
-}
-
-bool is_batch_query_mode(const std::string& mode) {
-    return mode == "batch" || mode == "batch-mixed";
+const std::vector<std::uint32_t>& fm_batch_widths_for_method(
+    const Options& options,
+    const std::string& method) {
+    const auto canonical = method == "fm" ? std::string{"fm-huff"} : method;
+    const auto found = options.fm_batch_width_overrides.find(canonical);
+    return found == options.fm_batch_width_overrides.end()
+        ? options.fm_batch_widths : found->second;
 }
 
 FmBackend fm_backend_for_method(const std::string& method) {
@@ -259,7 +281,7 @@ LoadedIndex load_method(
     loaded.method = method;
     if (method == "naive") {
         loaded.records = normalized_records(dataset.records);
-    } else if (method.rfind("sa32", 0) == 0 || method.rfind("sa64", 0) == 0) {
+    } else if (is_sa_method(method)) {
         loaded.suffix_array.emplace(SuffixArray::Load(path));
         if (method.find("lcp-binary") != std::string::npos)
             loaded.sa_algorithm = SaSearchAlgorithm::kLcpBinary;
@@ -296,19 +318,6 @@ std::vector<const QueryCase*> select_queries(
     return queries;
 }
 
-std::vector<const QueryCase*> select_mixed_length_queries(
-    const Dataset& dataset) {
-    std::set<std::string> lengths;
-    for (const auto& query : dataset.queries) {
-        lengths.insert(query.pattern_length);
-    }
-    if (lengths.size() < 2) return {};
-    std::vector<const QueryCase*> queries;
-    queries.reserve(dataset.queries.size());
-    for (const auto& query : dataset.queries) queries.push_back(&query);
-    return queries;
-}
-
 void mix_match_checksum(std::uint64_t& checksum, const QueryResult& result) {
     mix_checksum(checksum, result.total_hits);
     for (const auto& match : result.hits) {
@@ -337,9 +346,7 @@ QueryRaw measure_group(
     const LocateLimit& limit,
     std::uint32_t repetition,
     const std::string& fm_query_mode = "scalar",
-    std::uint32_t fm_batch_width = 0,
-    std::uint64_t measurement_iterations = 1,
-    bool collect_statistics = false) {
+    std::uint32_t fm_batch_width = 0) {
     QueryRaw result;
     result.group = group.group;
     result.pattern_length = group.pattern_length;
@@ -347,168 +354,94 @@ QueryRaw measure_group(
     result.operation = operation;
     result.max_hits = operation == "count" ? "NA" : (limit.all ? "all" : std::to_string(limit.value));
     result.fm_query_mode = fm_query_mode;
-    result.fm_batch_width = is_batch_query_mode(fm_query_mode)
-        ? std::to_string(fm_batch_width) : "NA";
+    result.fm_batch_width = fm_query_mode == "batch" ? std::to_string(fm_batch_width) : "NA";
     result.repetition = repetition;
-    std::uint64_t query_bases_per_iteration = 0;
-    for (const auto* query : queries) {
-        query_bases_per_iteration += query->sequence.size();
+    std::vector<const QueryCase*> measured_queries = queries;
+    const auto strands = strand_mode(strand_name);
+    if (operation == "locate" && limit.all) {
+        measured_queries.erase(
+            std::remove_if(measured_queries.begin(), measured_queries.end(), [&](const auto* query) {
+                const bool skip = index.count(query->sequence, strands) >
+                    kCompleteLocateSafetyLimit;
+                if (skip) ++result.skipped_high_frequency_queries;
+                return skip;
+            }),
+            measured_queries.end());
     }
-    if (queries.empty()) {
-        result.status = "not_applicable";
+    result.query_count = measured_queries.size();
+    for (const auto* query : measured_queries) result.query_bases += query->sequence.size();
+    if (measured_queries.empty()) {
+        result.status = result.skipped_high_frequency_queries == 0
+            ? "not_applicable" : "skipped_high_frequency";
         return result;
     }
-    const auto strands = strand_mode(strand_name);
     std::vector<std::string_view> batch_patterns;
-    if (is_batch_query_mode(fm_query_mode)) {
+    if (fm_query_mode == "batch") {
         if (operation != "count") {
             throw Error(ErrorCode::kBuildFailure, "batch benchmark mode only supports count");
         }
-        batch_patterns.reserve(queries.size());
-        for (const auto* query : queries) batch_patterns.push_back(query->sequence);
+        batch_patterns.reserve(measured_queries.size());
+        for (const auto* query : measured_queries) batch_patterns.push_back(query->sequence);
     }
-    if (operation == "locate" && limit.all) {
-        for (const auto* query : queries) {
-            if (index.count(query->sequence, strands) > kCompleteLocateSafetyLimit) {
-                result.status = "skipped_high_frequency";
-                return result;
-            }
-        }
-    }
-    if (measurement_iterations == 0 ||
-        measurement_iterations >
-            std::numeric_limits<std::uint64_t>::max() / queries.size() ||
-        (query_bases_per_iteration != 0 &&
-         measurement_iterations >
-             std::numeric_limits<std::uint64_t>::max() /
-                 query_bases_per_iteration)) {
-        throw Error(ErrorCode::kBuildFailure,
-                    "benchmark measurement iteration count overflow");
-    }
-    if (collect_statistics && measurement_iterations != 1) {
-        throw Error(ErrorCode::kBuildFailure,
-                    "instrumented benchmark pass must execute exactly once");
-    }
-    result.query_count = queries.size();
-    result.query_bases = query_bases_per_iteration;
-    result.measurement_iterations = measurement_iterations;
     const auto cpu_begin = usage_now();
     const auto wall_begin = Clock::now();
-    std::uint64_t canonical_checksum = 0;
-    std::uint64_t canonical_total_hits = 0;
-    std::uint64_t canonical_reported_hits = 0;
+    std::uint64_t checksum = checksum_seed();
     std::vector<std::uint64_t> prediction_errors;
     std::vector<std::uint64_t> local_windows;
-    for (std::uint64_t iteration = 0; iteration < measurement_iterations;
-         ++iteration) {
-        std::uint64_t checksum = checksum_seed();
-        std::uint64_t total_hits = 0;
-        std::uint64_t reported_hits = 0;
-        if (is_batch_query_mode(fm_query_mode)) {
-            const auto counts =
-                index.count_batch(batch_patterns, strands, fm_batch_width);
-            if (counts.size() != queries.size()) {
-                throw Error(ErrorCode::kBuildFailure,
-                            "FM batch result cardinality mismatch");
-            }
-            for (const auto hits : counts) {
-                total_hits += hits;
-                mix_checksum(checksum, hits);
-            }
-        } else {
-            for (const auto* query : queries) {
-                const auto execute_query =
-                    [&](SaSearchStatistics* statistics) {
-                        if (operation == "count") {
-                            std::uint64_t hits = 0;
-                            if (index.suffix_array) {
-                                hits = statistics == nullptr
-                                           ? index.suffix_array->Count(
-                                                 query->sequence, strands,
-                                                 index.sa_algorithm)
-                                           : index.suffix_array->Count(
-                                                 query->sequence, strands,
-                                                 index.sa_algorithm,
-                                                 statistics);
-                            } else {
-                                hits = index.count(query->sequence, strands);
-                            }
-                            total_hits += hits;
-                            mix_checksum(checksum, hits);
-                            return;
-                        }
-                        QueryResult located;
-                        if (index.suffix_array) {
-                            LocateOptions locate_options;
-                            locate_options.strands = strands;
-                            locate_options.max_hits =
-                                limit.all
-                                    ? std::optional<std::uint64_t>{}
-                                    : std::optional<std::uint64_t>{
-                                          limit.value};
-                            located = statistics == nullptr
-                                          ? index.suffix_array->Locate(
-                                                query->sequence,
-                                                locate_options,
-                                                index.sa_algorithm)
-                                          : index.suffix_array->Locate(
-                                                query->sequence,
-                                                locate_options,
-                                                index.sa_algorithm,
-                                                statistics);
-                        } else {
-                            located = index.locate(
-                                query->sequence, strands,
-                                limit.all
-                                    ? std::optional<std::uint64_t>{}
-                                    : std::optional<std::uint64_t>{
-                                          limit.value});
-                        }
-                        total_hits += located.total_hits;
-                        reported_hits += located.hits.size();
-                        mix_match_checksum(checksum, located);
-                    };
-                if (!collect_statistics) {
-                    execute_query(nullptr);
-                    continue;
-                }
-                SaSearchStatistics search_statistics;
-                execute_query(&search_statistics);
-                result.suffix_comparisons +=
-                    search_statistics.suffix_comparisons;
-                result.character_comparisons +=
-                    search_statistics.character_comparisons;
-                result.gallop_probes += search_statistics.gallop_probes;
-                result.local_window_rows +=
-                    search_statistics.local_window_rows;
-                result.local_window_rows_max = std::max(
-                    result.local_window_rows_max,
-                    search_statistics.local_window_rows_max);
-                result.predictions += search_statistics.predictions;
-                result.prediction_absolute_error_sum +=
-                    search_statistics.prediction_absolute_error_sum;
-                result.prediction_absolute_error_max = std::max(
-                    result.prediction_absolute_error_max,
-                    search_statistics.prediction_absolute_error_max);
-                result.full_binary_fallbacks +=
-                    search_statistics.full_binary_fallbacks;
-                if (search_statistics.predictions != 0) {
-                    prediction_errors.push_back(
-                        search_statistics.prediction_absolute_error_max);
-                    local_windows.push_back(
-                        search_statistics.local_window_rows_max);
-                }
-            }
+    if (fm_query_mode == "batch") {
+        const auto counts = index.count_batch(batch_patterns, strands, fm_batch_width);
+        if (counts.size() != measured_queries.size()) {
+            throw Error(ErrorCode::kBuildFailure, "FM batch result cardinality mismatch");
         }
-        if (iteration == 0) {
-            canonical_checksum = checksum;
-            canonical_total_hits = total_hits;
-            canonical_reported_hits = reported_hits;
-        } else if (checksum != canonical_checksum ||
-                   total_hits != canonical_total_hits ||
-                   reported_hits != canonical_reported_hits) {
-            throw Error(ErrorCode::kBuildFailure,
-                        "benchmark result changed within a measured repetition");
+        for (const auto hits : counts) {
+            result.total_hits += hits;
+            mix_checksum(checksum, hits);
+        }
+    } else for (const auto* query : measured_queries) {
+        SaSearchStatistics search_statistics;
+        if (operation == "count") {
+            std::uint64_t hits = 0;
+            if (index.suffix_array)
+                hits = index.suffix_array->Count(
+                    query->sequence, strands, index.sa_algorithm, &search_statistics);
+            else hits = index.count(query->sequence, strands);
+            result.total_hits += hits;
+            mix_checksum(checksum, hits);
+        } else {
+            QueryResult located;
+            if (index.suffix_array) {
+                LocateOptions locate_options;
+                locate_options.strands = strands;
+                locate_options.max_hits = limit.all
+                    ? std::optional<std::uint64_t>{}
+                    : std::optional<std::uint64_t>{limit.value};
+                located = index.suffix_array->Locate(
+                    query->sequence, locate_options, index.sa_algorithm, &search_statistics);
+            } else {
+                located = index.locate(
+                    query->sequence, strands,
+                    limit.all ? std::optional<std::uint64_t>{}
+                              : std::optional<std::uint64_t>{limit.value});
+            }
+            result.total_hits += located.total_hits;
+            result.reported_hits += located.hits.size();
+            mix_match_checksum(checksum, located);
+        }
+        result.suffix_comparisons += search_statistics.suffix_comparisons;
+        result.character_comparisons += search_statistics.character_comparisons;
+        result.gallop_probes += search_statistics.gallop_probes;
+        result.local_window_rows += search_statistics.local_window_rows;
+        result.local_window_rows_max =
+            std::max(result.local_window_rows_max, search_statistics.local_window_rows_max);
+        result.predictions += search_statistics.predictions;
+        result.prediction_absolute_error_sum += search_statistics.prediction_absolute_error_sum;
+        result.prediction_absolute_error_max = std::max(
+            result.prediction_absolute_error_max,
+            search_statistics.prediction_absolute_error_max);
+        result.full_binary_fallbacks += search_statistics.full_binary_fallbacks;
+        if (search_statistics.predictions != 0) {
+            prediction_errors.push_back(search_statistics.prediction_absolute_error_max);
+            local_windows.push_back(search_statistics.local_window_rows_max);
         }
     }
     result.prediction_error_p50 = nearest_rank_percentile(prediction_errors, 50);
@@ -517,181 +450,12 @@ QueryRaw measure_group(
     result.local_window_rows_p50 = nearest_rank_percentile(local_windows, 50);
     result.local_window_rows_p95 = nearest_rank_percentile(local_windows, 95);
     result.local_window_rows_p99 = nearest_rank_percentile(local_windows, 99);
-    result.seconds = elapsed(wall_begin) /
-                     static_cast<double>(measurement_iterations);
+    result.seconds = elapsed(wall_begin);
     const auto cpu = usage_delta(cpu_begin, usage_now());
-    result.user_seconds = cpu.user / static_cast<double>(measurement_iterations);
-    result.system_seconds =
-        cpu.system / static_cast<double>(measurement_iterations);
-    result.total_hits = canonical_total_hits;
-    result.reported_hits = canonical_reported_hits;
-    result.checksum = canonical_checksum;
+    result.user_seconds = cpu.user;
+    result.system_seconds = cpu.system;
+    result.checksum = checksum;
     return result;
-}
-
-std::uint64_t calibrate_group_iterations(
-    const LoadedIndex& index,
-    const std::vector<const QueryCase*>& queries,
-    const QueryGroupSpec& group,
-    const std::string& strand_name,
-    const std::string& operation,
-    const LocateLimit& limit,
-    double minimum_measurement_seconds,
-    const std::string& fm_query_mode = "scalar",
-    std::uint32_t fm_batch_width = 0) {
-    if (minimum_measurement_seconds <= 0.0) {
-        return 1;
-    }
-    auto probe = measure_group(index, queries, group, strand_name, operation,
-                               limit, 0, fm_query_mode, fm_batch_width);
-    if (probe.status != "ok" ||
-        probe.seconds * static_cast<double>(probe.measurement_iterations) >=
-            minimum_measurement_seconds) {
-        return 1;
-    }
-    auto iterations = static_cast<std::uint64_t>(std::ceil(
-        calibration_target_seconds(minimum_measurement_seconds) /
-        std::max(probe.seconds, 1.0e-9)));
-    iterations = std::max<std::uint64_t>(2, iterations);
-    for (;;) {
-        probe = measure_group(index, queries, group, strand_name, operation,
-                              limit, 0, fm_query_mode, fm_batch_width,
-                              iterations);
-        if (probe.status != "ok" ||
-            probe.seconds * static_cast<double>(probe.measurement_iterations) >=
-                minimum_measurement_seconds) {
-            return iterations;
-        }
-        const auto multiplier = static_cast<std::uint64_t>(std::ceil(
-            calibration_target_seconds(minimum_measurement_seconds) /
-            std::max(probe.seconds *
-                         static_cast<double>(probe.measurement_iterations),
-                     1.0e-9)));
-        if (multiplier < 2 ||
-            iterations >
-                std::numeric_limits<std::uint64_t>::max() / multiplier) {
-            throw Error(ErrorCode::kBuildFailure,
-                        "benchmark calibration iteration count overflow");
-        }
-        iterations *= multiplier;
-    }
-}
-
-void copy_search_statistics(const QueryRaw& source, QueryRaw& destination) {
-    destination.suffix_comparisons = source.suffix_comparisons;
-    destination.character_comparisons = source.character_comparisons;
-    destination.gallop_probes = source.gallop_probes;
-    destination.local_window_rows = source.local_window_rows;
-    destination.local_window_rows_max = source.local_window_rows_max;
-    destination.predictions = source.predictions;
-    destination.prediction_absolute_error_sum =
-        source.prediction_absolute_error_sum;
-    destination.prediction_absolute_error_max =
-        source.prediction_absolute_error_max;
-    destination.prediction_error_p50 = source.prediction_error_p50;
-    destination.prediction_error_p95 = source.prediction_error_p95;
-    destination.prediction_error_p99 = source.prediction_error_p99;
-    destination.local_window_rows_p50 = source.local_window_rows_p50;
-    destination.local_window_rows_p95 = source.local_window_rows_p95;
-    destination.local_window_rows_p99 = source.local_window_rows_p99;
-    destination.full_binary_fallbacks = source.full_binary_fallbacks;
-}
-
-void verify_instrumented_pass(
-    const QueryRaw& measured,
-    const QueryRaw& instrumented,
-    std::uint64_t measurement_iterations) {
-    if (measured.measurement_iterations != measurement_iterations) {
-        throw Error(ErrorCode::kBuildFailure,
-                    "timed benchmark pass has an invalid iteration count");
-    }
-    if (instrumented.status != measured.status) {
-        throw Error(ErrorCode::kBuildFailure,
-                    "instrumented benchmark pass changed the query status");
-    }
-    if (measured.status != "ok") {
-        return;
-    }
-    if (instrumented.checksum != measured.checksum ||
-        instrumented.total_hits != measured.total_hits ||
-        instrumented.reported_hits != measured.reported_hits) {
-        throw Error(ErrorCode::kBuildFailure,
-                    "instrumented benchmark pass checksum differs from timed pass");
-    }
-}
-
-void append_group_measurements(
-    MethodResult& result,
-    const LoadedIndex& index,
-    const std::vector<const QueryCase*>& queries,
-    const QueryGroupSpec& group,
-    const std::string& strand,
-    const std::string& operation,
-    const LocateLimit& limit,
-    std::uint32_t warmups,
-    std::uint32_t repetitions,
-    double minimum_measurement_seconds,
-    const std::string& fm_query_mode = "scalar",
-    std::uint32_t fm_batch_width = 0) {
-    auto measurement_iterations = calibrate_group_iterations(
-        index, queries, group, strand, operation, limit,
-        minimum_measurement_seconds, fm_query_mode, fm_batch_width);
-    for (std::uint32_t warmup = 0; warmup < warmups && !queries.empty();
-         ++warmup) {
-        (void)measure_group(index, queries, group, strand, operation, limit,
-                            warmup, fm_query_mode, fm_batch_width,
-                            measurement_iterations);
-    }
-    const auto begin = result.queries.size();
-    for (;;) {
-        for (std::uint32_t repetition = 0; repetition < repetitions;
-             ++repetition) {
-            result.queries.push_back(measure_group(
-                index, queries, group, strand, operation, limit, repetition,
-                fm_query_mode, fm_batch_width, measurement_iterations));
-        }
-        double shortest = std::numeric_limits<double>::max();
-        for (auto index_position = begin;
-             index_position < result.queries.size(); ++index_position) {
-            if (result.queries[index_position].status == "ok") {
-                shortest =
-                    std::min(
-                        shortest,
-                        result.queries[index_position].seconds *
-                            static_cast<double>(result.queries[index_position]
-                                                    .measurement_iterations));
-            }
-        }
-        if (shortest == std::numeric_limits<double>::max() ||
-            shortest >= minimum_measurement_seconds) {
-            break;
-        }
-        result.queries.erase(result.queries.begin() +
-                                 static_cast<std::ptrdiff_t>(begin),
-                             result.queries.end());
-        const auto multiplier = std::max<std::uint64_t>(
-            2, static_cast<std::uint64_t>(std::ceil(
-                   calibration_target_seconds(minimum_measurement_seconds) /
-                   std::max(shortest, 1.0e-9))));
-        if (measurement_iterations >
-            std::numeric_limits<std::uint64_t>::max() / multiplier) {
-            throw Error(ErrorCode::kBuildFailure,
-                        "benchmark measurement iteration count overflow");
-        }
-        measurement_iterations *= multiplier;
-    }
-    if (begin == result.queries.size()) {
-        return;
-    }
-    const auto instrumented = measure_group(
-        index, queries, group, strand, operation, limit, 0, fm_query_mode,
-        fm_batch_width, 1, true);
-    for (auto index_position = begin; index_position < result.queries.size();
-         ++index_position) {
-        verify_instrumented_pass(result.queries[index_position], instrumented,
-                                 measurement_iterations);
-        copy_search_statistics(instrumented, result.queries[index_position]);
-    }
 }
 
 struct WorkerHeader {
@@ -703,7 +467,12 @@ struct WorkerHeader {
     char sdsl_version[32]{};
     char canonical_index[512]{};
     std::uint8_t coordinate_width = 0;
-    std::uint32_t sa_sampling_rate = 0;
+    std::uint32_t sa_sampling_rate = 1;
+    std::uint32_t threads = 1;
+    std::uint8_t has_canary = 0;
+    std::uint64_t canary_total_hits = 0;
+    std::uint64_t canary_reported_hits = 0;
+    std::uint64_t canary_checksum = 0;
     std::uint64_t build_count = 0;
     std::uint64_t load_count = 0;
     std::uint64_t query_count = 0;
@@ -716,7 +485,9 @@ struct BuildWire {
     double build_system_seconds = 0.0;
     double phase_seconds[5]{};
     double save_seconds = 0.0;
+    double peak_rss_mb = 0.0;
     std::uint64_t serialized_bytes = 0;
+    std::uint64_t allocated_disk_bytes = 0;
     std::uint64_t learned_index_bytes = 0;
     char status[40]{};
 };
@@ -726,6 +497,7 @@ struct LoadWire {
     double seconds = 0.0;
     double user_seconds = 0.0;
     double system_seconds = 0.0;
+    double peak_rss_mb = 0.0;
     char status[40]{};
 };
 
@@ -740,11 +512,12 @@ struct QueryWire {
     char status[40]{};
     std::uint32_t repetition = 0;
     std::uint64_t query_count = 0;
+    std::uint64_t skipped_high_frequency_queries = 0;
     std::uint64_t query_bases = 0;
-    std::uint64_t measurement_iterations = 1;
     double seconds = 0.0;
     double user_seconds = 0.0;
     double system_seconds = 0.0;
+    double peak_rss_mb = 0.0;
     std::uint64_t total_hits = 0;
     std::uint64_t reported_hits = 0;
     std::uint64_t checksum = 0;
@@ -778,50 +551,67 @@ bool read_exact(int descriptor, void* data, std::size_t size) {
     return true;
 }
 
-MethodResult run_worker(
-    const std::string& method,
-    const Dataset& dataset,
-    const Options& options,
-    const std::filesystem::path& scratch_directory) {
-    MethodResult result;
-    result.method = method;
-    const auto spec = profile_spec(options.profile);
-    const auto build_repetitions = options.build_repetitions.value_or(spec.build_repetitions);
-    auto query_repetitions = options.query_repetitions.value_or(spec.query_repetitions);
-    auto warmups = options.warmups.value_or(spec.warmups);
-    if (method == "naive" && options.profile == Profile::quick) {
-        if (!options.query_repetitions) query_repetitions = 1;
-        if (!options.warmups) warmups = 0;
-    }
+const QueryCase& canary_query_for(const Dataset& dataset) {
     const auto canary = std::find_if(dataset.queries.begin(), dataset.queries.end(), [](const auto& query) {
         return query.group == "exact_unique";
     });
-    const auto& canary_query = canary == dataset.queries.end()
-        ? dataset.queries.front() : *canary;
-    std::optional<std::tuple<std::uint64_t, std::uint64_t, std::uint64_t>> canary_result;
-    const auto record_canary = [&](const QueryResult& located) {
-        auto checksum = checksum_seed();
-        mix_match_checksum(checksum, located);
-        const auto value = std::make_tuple(
-            located.total_hits, static_cast<std::uint64_t>(located.hits.size()), checksum);
-        if (canary_result && *canary_result != value) {
-            throw Error(ErrorCode::kBuildFailure,
-                "query checksum changed between index construction repetitions");
-        }
-        canary_result = value;
-    };
+    if (canary != dataset.queries.end()) return *canary;
+    if (dataset.queries.empty()) {
+        throw Error(ErrorCode::kInvalidInput, "benchmark dataset has no queries");
+    }
+    return dataset.queries.front();
+}
+
+void record_canary(MethodResult& result, const QueryResult& located) {
+    auto checksum = checksum_seed();
+    mix_match_checksum(checksum, located);
+    result.has_canary = true;
+    result.canary_total_hits = located.total_hits;
+    result.canary_reported_hits = located.hits.size();
+    result.canary_checksum = checksum;
+}
+
+void verify_canary(const MethodResult& expected, const QueryResult& located, const std::string& phase) {
+    auto checksum = checksum_seed();
+    mix_match_checksum(checksum, located);
+    if (!expected.has_canary ||
+        expected.canary_total_hits != located.total_hits ||
+        expected.canary_reported_hits != located.hits.size() ||
+        expected.canary_checksum != checksum) {
+        throw Error(ErrorCode::kBuildFailure,
+            "query checksum changed during isolated " + phase + " worker");
+    }
+}
+
+MethodResult run_build_worker(
+    const std::string& method,
+    const Dataset& dataset,
+    const Options& options,
+    const std::filesystem::path& scratch_directory,
+    std::uint32_t repetition) {
+    MethodResult result;
+    result.method = method;
+    result.sa_sampling_rate = sampling_rate_for_method(method);
+    result.threads = is_caps_method(method) ? options.sa_threads : 1;
+    const auto& canary_query = canary_query_for(dataset);
 
     if (method == "naive") {
         result.backend = "naive";
         result.signature = "std::string::find per normalized contig";
-        result.builds.push_back({});
-        result.loads.push_back({});
-    } else if (method.rfind("sa32", 0) == 0 &&
+        BuildRaw raw;
+        raw.repetition = repetition;
+        result.builds.push_back(raw);
+        return result;
+    } else if (is_32bit_sa_method(method) &&
                dataset.total_bases + dataset.contigs + 1 >
-               static_cast<std::uint64_t>(std::numeric_limits<std::int32_t>::max())) {
-        result.backend = "divsufsort32";
-        result.signature = "libdivsufsort-2.0.2/saidx_t";
+               (is_caps_method(method)
+                    ? static_cast<std::uint64_t>(std::numeric_limits<std::uint32_t>::max())
+                    : static_cast<std::uint64_t>(std::numeric_limits<std::int32_t>::max()))) {
+        result.backend = is_caps_method(method) ? "caps32" : "divsufsort32";
+        result.signature = is_caps_method(method)
+            ? "CaPS-SA/uint32_t" : "libdivsufsort-2.0.2/saidx_t";
         BuildRaw build;
+        build.repetition = repetition;
         build.status = "unsupported_input_size";
         result.builds.push_back(build);
         for (const auto& group : dataset.groups) {
@@ -832,131 +622,188 @@ MethodResult run_worker(
             result.queries.push_back(std::move(query));
         }
         return result;
-    } else {
-        for (std::uint32_t repetition = 0; repetition < build_repetitions; ++repetition) {
-            auto reference = GenomeReference::FromRecords(dataset.records);
-            const auto index_path = scratch_directory /
-                (method + "-" + std::to_string(repetition) + ".sufidx");
-            BuildRaw raw;
-            raw.repetition = repetition;
-            if (method.rfind("sa32", 0) == 0 || method.rfind("sa64", 0) == 0) {
-                SuffixArrayBuildOptions build_options;
-                build_options.backend = SaBackend::kDivsufsort;
-                build_options.coordinate_width = method.rfind("sa32", 0) == 0
-                    ? CoordinateWidth::kBits32 : CoordinateWidth::kBits64;
-                build_options.sampling_rate = sampling_rate_for_method(method);
-                if (method == "sa32-none" || method == "sa64-none" ||
-                    (build_options.sampling_rate > 1 &&
-                     method.find("lcp-binary") == std::string::npos)) {
-                    build_options.acceleration = SaAcceleration::kNone;
-                } else if (build_options.sampling_rate > 1) {
-                    build_options.acceleration = SaAcceleration::kLcp;
-                } else {
-                    build_options.acceleration =
-                        method.find("child") != std::string::npos
-                            ? SaAcceleration::kFull
-                            : SaAcceleration::kLcpSuffixLink;
-                }
-                if (method.find("sapling") != std::string::npos) {
-                    build_options.learned_index.enabled = true;
-                    build_options.learned_index.k = options.learned_k;
-                    build_options.learned_index.memory_overhead_basis_points =
-                        options.learned_memory_overhead_basis_points;
-                    build_options.learned_index.bucket_bits = options.learned_bucket_bits;
-                }
-                SuffixArrayBuildStatistics build_statistics;
-                build_options.statistics = &build_statistics;
-                const auto cpu_begin = usage_now();
-                const auto wall_begin = Clock::now();
-                auto index = SuffixArray::Build(reference, build_options);
-                raw.build_seconds = elapsed(wall_begin);
-                const auto cpu = usage_delta(cpu_begin, usage_now());
-                raw.build_user_seconds = cpu.user;
-                raw.build_system_seconds = cpu.system;
-                raw.sa_build_seconds = build_statistics.sa_seconds;
-                raw.isa_build_seconds = build_statistics.isa_seconds;
-                raw.lcp_build_seconds = build_statistics.lcp_seconds;
-                raw.child_build_seconds = build_statistics.child_seconds;
-                raw.learned_index_build_seconds = build_statistics.learned_index_seconds;
-                const auto info = index.GetInfo();
-                result.backend = info.backend;
-                result.signature = info.backend_signature;
-                result.coordinate_width = info.coordinate_width;
-                result.sa_sampling_rate = info.sa_sampling_rate;
-                raw.learned_index_bytes = info.learned_index_bytes;
-                record_canary(index.Locate(canary_query.sequence));
-                const auto save_begin = Clock::now();
-                index.Save(index_path);
-                raw.save_seconds = elapsed(save_begin);
-            } else if (is_fm_method(method)) {
-                FmIndexBuildOptions build_options;
-                build_options.backend = fm_backend_for_method(method);
-                const auto cpu_begin = usage_now();
-                const auto wall_begin = Clock::now();
-                auto index = FmIndex::Build(reference, build_options);
-                raw.build_seconds = elapsed(wall_begin);
-                const auto cpu = usage_delta(cpu_begin, usage_now());
-                raw.build_user_seconds = cpu.user;
-                raw.build_system_seconds = cpu.system;
-                const auto info = index.GetInfo();
-                result.backend = info.backend;
-                result.signature = info.backend_signature;
-                result.sdsl_version = info.sdsl_version;
-                result.coordinate_width = info.coordinate_width;
-                record_canary(index.Locate(canary_query.sequence));
-                const auto save_begin = Clock::now();
-                index.Save(index_path);
-                raw.save_seconds = elapsed(save_begin);
-            } else {
-                throw Error(ErrorCode::kInvalidInput, "unknown benchmark method: " + method);
-            }
-            raw.serialized_bytes = std::filesystem::file_size(index_path);
-            if (repetition == 0) {
-                result.canonical_index = index_path;
-            } else {
-                std::error_code ignored;
-                std::filesystem::remove(index_path, ignored);
-            }
-            result.builds.push_back(raw);
-        }
-
-        for (std::uint32_t repetition = 0; repetition < build_repetitions; ++repetition) {
-            LoadRaw raw;
-            raw.repetition = repetition;
-            const auto cpu_begin = usage_now();
-            const auto wall_begin = Clock::now();
-            if (method.rfind("sa32", 0) == 0 || method.rfind("sa64", 0) == 0) {
-                auto index = SuffixArray::Load(result.canonical_index);
-                (void)index.GetInfo();
-                auto checksum = checksum_seed();
-                const auto located = index.Locate(canary_query.sequence);
-                mix_match_checksum(checksum, located);
-                if (!canary_result || *canary_result != std::make_tuple(
-                        located.total_hits, static_cast<std::uint64_t>(located.hits.size()), checksum)) {
-                    throw Error(ErrorCode::kBuildFailure,
-                        "suffix-array query checksum changed after save/load");
-                }
-            } else {
-                auto index = FmIndex::Load(result.canonical_index);
-                (void)index.GetInfo();
-                auto checksum = checksum_seed();
-                const auto located = index.Locate(canary_query.sequence);
-                mix_match_checksum(checksum, located);
-                if (!canary_result || *canary_result != std::make_tuple(
-                        located.total_hits, static_cast<std::uint64_t>(located.hits.size()), checksum)) {
-                    throw Error(ErrorCode::kBuildFailure,
-                        "FM-index query checksum changed after save/load");
-                }
-            }
-            raw.seconds = elapsed(wall_begin);
-            const auto cpu = usage_delta(cpu_begin, usage_now());
-            raw.user_seconds = cpu.user;
-            raw.system_seconds = cpu.system;
-            result.loads.push_back(raw);
-        }
     }
 
-    auto index = load_method(method, dataset, result.canonical_index);
+    auto reference = GenomeReference::FromRecords(dataset.records);
+    const auto canonical_index = scratch_directory / (method + "-0.sufidx");
+    BuildRaw raw;
+    raw.repetition = repetition;
+    if (is_sa_method(method)) {
+        SuffixArrayBuildOptions build_options;
+        build_options.backend = is_caps_method(method) ? SaBackend::kCaps : SaBackend::kDivsufsort;
+        build_options.coordinate_width = is_32bit_sa_method(method)
+            ? CoordinateWidth::kBits32 : CoordinateWidth::kBits64;
+        build_options.threads = result.threads;
+        build_options.sampling_rate = sampling_rate_for_method(method);
+        build_options.acceleration = method == "sa32-none" || method == "sa64-none"
+            ? SaAcceleration::kNone :
+            (method.find("child") != std::string::npos
+                ? SaAcceleration::kFull : SaAcceleration::kLcpSuffixLink);
+        if (method.find("sapling") != std::string::npos) {
+            build_options.learned_index.enabled = true;
+            build_options.learned_index.k = options.learned_k;
+            build_options.learned_index.memory_overhead_basis_points =
+                options.learned_memory_overhead_basis_points;
+            build_options.learned_index.bucket_bits = options.learned_bucket_bits;
+        }
+        SuffixArrayBuildStatistics build_statistics;
+        build_options.statistics = &build_statistics;
+        const auto cpu_begin = usage_now();
+        const auto wall_begin = Clock::now();
+        auto index = SuffixArray::Build(reference, build_options);
+        raw.build_seconds = elapsed(wall_begin);
+        const auto cpu = usage_delta(cpu_begin, usage_now());
+        raw.build_user_seconds = cpu.user;
+        raw.build_system_seconds = cpu.system;
+        raw.sa_build_seconds = build_statistics.sa_seconds;
+        raw.isa_build_seconds = build_statistics.isa_seconds;
+        raw.lcp_build_seconds = build_statistics.lcp_seconds;
+        raw.child_build_seconds = build_statistics.child_seconds;
+        raw.learned_index_build_seconds = build_statistics.learned_index_seconds;
+        const auto info = index.GetInfo();
+        result.backend = info.backend;
+        result.signature = info.backend_signature;
+        result.coordinate_width = info.coordinate_width;
+        result.sa_sampling_rate = info.sa_sampling_rate;
+        raw.learned_index_bytes = info.learned_index_bytes;
+        raw.peak_rss_mb = current_process_peak_rss_mb();
+        record_canary(result, index.Locate(canary_query.sequence));
+        // Repetition zero creates the transport index used by isolated save,
+        // load, and query workers. Its save is intentionally not measured.
+        if (repetition == 0) index.Save(canonical_index);
+    } else if (is_fm_method(method)) {
+        FmIndexBuildOptions build_options;
+        build_options.backend = fm_backend_for_method(method);
+        const auto cpu_begin = usage_now();
+        const auto wall_begin = Clock::now();
+        auto index = FmIndex::Build(reference, build_options);
+        raw.build_seconds = elapsed(wall_begin);
+        const auto cpu = usage_delta(cpu_begin, usage_now());
+        raw.build_user_seconds = cpu.user;
+        raw.build_system_seconds = cpu.system;
+        const auto info = index.GetInfo();
+        result.backend = info.backend;
+        result.signature = info.backend_signature;
+        result.sdsl_version = info.sdsl_version;
+        result.coordinate_width = info.coordinate_width;
+        result.sa_sampling_rate = info.sa_sampling_rate;
+        raw.peak_rss_mb = current_process_peak_rss_mb();
+        record_canary(result, index.Locate(canary_query.sequence));
+        if (repetition == 0) index.Save(canonical_index);
+    } else {
+        throw Error(ErrorCode::kInvalidInput, "unknown benchmark method: " + method);
+    }
+    raw.serialized_bytes = std::filesystem::file_size(canonical_index);
+    raw.allocated_disk_bytes = allocated_disk_bytes(canonical_index);
+    if (repetition == 0) result.canonical_index = canonical_index;
+    result.builds.push_back(raw);
+    return result;
+}
+
+MethodResult run_save_worker(
+    const std::string& method,
+    const std::filesystem::path& canonical_index,
+    const std::filesystem::path& scratch_directory,
+    std::uint32_t repetition) {
+    MethodResult result;
+    result.method = method;
+    result.canonical_index = canonical_index;
+    LoadRaw raw;
+    raw.repetition = repetition;
+    raw.status = kSaveWorkerStatus;
+    const auto output_path = scratch_directory /
+        (method + "-save-worker-" + std::to_string(repetition) + ".sufidx");
+    if (std::filesystem::exists(output_path)) {
+        throw Error(ErrorCode::kIoError,
+            "isolated save-worker output already exists: " + output_path.string());
+    }
+
+    if (is_sa_method(method)) {
+        auto index = SuffixArray::Load(canonical_index);
+        const auto cpu_begin = usage_now();
+        const auto wall_begin = Clock::now();
+        index.Save(output_path);
+        raw.seconds = elapsed(wall_begin);
+        const auto cpu = usage_delta(cpu_begin, usage_now());
+        raw.user_seconds = cpu.user;
+        raw.system_seconds = cpu.system;
+    } else if (is_fm_method(method)) {
+        auto index = FmIndex::Load(canonical_index);
+        const auto cpu_begin = usage_now();
+        const auto wall_begin = Clock::now();
+        index.Save(output_path);
+        raw.seconds = elapsed(wall_begin);
+        const auto cpu = usage_delta(cpu_begin, usage_now());
+        raw.user_seconds = cpu.user;
+        raw.system_seconds = cpu.system;
+    } else {
+        throw Error(ErrorCode::kInvalidInput,
+            "isolated save worker requires an indexed benchmark method");
+    }
+    if (std::filesystem::file_size(output_path) !=
+        std::filesystem::file_size(canonical_index)) {
+        throw Error(ErrorCode::kBuildFailure,
+            "isolated save worker produced a different serialized size");
+    }
+    std::error_code ignored;
+    std::filesystem::remove(output_path, ignored);
+    result.loads.push_back(raw);
+    return result;
+}
+
+MethodResult run_load_worker(
+    const std::string& method,
+    const Dataset& dataset,
+    const MethodResult& build_result,
+    std::uint32_t repetition) {
+    MethodResult result;
+    result.method = method;
+    result.canonical_index = build_result.canonical_index;
+    LoadRaw raw;
+    raw.repetition = repetition;
+    if (method == "naive") {
+        result.loads.push_back(raw);
+        return result;
+    }
+    const auto cpu_begin = usage_now();
+    const auto wall_begin = Clock::now();
+    auto index = load_method(method, dataset, build_result.canonical_index);
+    raw.seconds = elapsed(wall_begin);
+    const auto cpu = usage_delta(cpu_begin, usage_now());
+    raw.user_seconds = cpu.user;
+    raw.system_seconds = cpu.system;
+    if (index.suffix_array &&
+        index.suffix_array->SamplingRate() != sampling_rate_for_method(method)) {
+        throw Error(ErrorCode::kBuildFailure,
+            "loaded suffix-array sampling rate does not match benchmark method");
+    }
+    verify_canary(
+        build_result,
+        index.locate(canary_query_for(dataset).sequence, StrandMode::kForward, std::nullopt),
+        "load");
+    result.loads.push_back(raw);
+    return result;
+}
+
+MethodResult run_query_worker(
+    const std::string& method,
+    const Dataset& dataset,
+    const Options& options,
+    const std::filesystem::path& canonical_index,
+    bool count_worker,
+    const LocateLimit& locate_limit) {
+    MethodResult result;
+    result.method = method;
+    result.canonical_index = canonical_index;
+    const auto spec = profile_spec(options.profile);
+    auto query_repetitions = options.query_repetitions.value_or(spec.query_repetitions);
+    auto warmups = options.warmups.value_or(spec.warmups);
+    if (method == "naive" && options.profile == Profile::quick) {
+        if (!options.query_repetitions) query_repetitions = 1;
+        if (!options.warmups) warmups = 0;
+    }
+
+    auto index = load_method(method, dataset, canonical_index);
     const bool fm_method = is_fm_method(method);
     const bool scalar_enabled = !fm_method ||
         std::find(options.fm_query_modes.begin(), options.fm_query_modes.end(), "scalar") !=
@@ -964,57 +811,43 @@ MethodResult run_worker(
     const bool batch_enabled = fm_method &&
         std::find(options.fm_query_modes.begin(), options.fm_query_modes.end(), "batch") !=
             options.fm_query_modes.end();
-    const bool mixed_batch_enabled = fm_method &&
-        std::find(options.fm_query_modes.begin(), options.fm_query_modes.end(),
-                  "batch-mixed") != options.fm_query_modes.end();
-    const double minimum_seconds =
-        minimum_measurement_seconds(options.profile);
     static const std::array<std::string, 3> strands{{
         "forward", "reverse-complement", "both"}};
     for (const auto& group : dataset.groups) {
         const auto queries = select_queries(dataset, group);
         for (const auto& strand : strands) {
             LocateLimit count_limit;
-            if (scalar_enabled) {
-                append_group_measurements(
-                    result, index, queries, group, strand, "count",
-                    count_limit, warmups, query_repetitions,
-                    minimum_seconds);
-            }
-            if (batch_enabled) {
-                for (const auto width : options.fm_batch_widths) {
-                    append_group_measurements(
-                        result, index, queries, group, strand, "count",
-                        count_limit, warmups, query_repetitions,
-                        minimum_seconds, "batch", width);
+            if (count_worker && scalar_enabled) {
+                for (std::uint32_t warmup = 0; warmup < warmups && !queries.empty(); ++warmup) {
+                    (void)measure_group(index, queries, group, strand, "count", count_limit, warmup);
+                }
+                for (std::uint32_t repetition = 0; repetition < query_repetitions; ++repetition) {
+                    result.queries.push_back(measure_group(
+                        index, queries, group, strand, "count", count_limit, repetition));
                 }
             }
-            if (scalar_enabled) {
-                for (const auto& limit : options.locate_limits) {
-                    append_group_measurements(
-                        result, index, queries, group, strand, "locate",
-                        limit, warmups, query_repetitions,
-                        minimum_seconds);
+            if (count_worker && batch_enabled) {
+                for (const auto width : fm_batch_widths_for_method(options, method)) {
+                    for (std::uint32_t warmup = 0; warmup < warmups && !queries.empty(); ++warmup) {
+                        (void)measure_group(index, queries, group, strand, "count", count_limit,
+                                            warmup, "batch", width);
+                    }
+                    for (std::uint32_t repetition = 0; repetition < query_repetitions; ++repetition) {
+                        result.queries.push_back(measure_group(
+                            index, queries, group, strand, "count", count_limit,
+                            repetition, "batch", width));
+                    }
                 }
             }
-        }
-    }
-    if (mixed_batch_enabled) {
-        const QueryGroupSpec group{"mixed_length", "mixed"};
-        const auto queries = select_mixed_length_queries(dataset);
-        for (const auto& strand : strands) {
-            LocateLimit count_limit;
-            if (scalar_enabled) {
-                append_group_measurements(
-                    result, index, queries, group, strand, "count",
-                    count_limit, warmups, query_repetitions,
-                    minimum_seconds);
-            }
-            for (const auto width : options.fm_batch_widths) {
-                append_group_measurements(
-                    result, index, queries, group, strand, "count",
-                    count_limit, warmups, query_repetitions,
-                    minimum_seconds, "batch-mixed", width);
+            if (!count_worker && scalar_enabled) {
+                for (std::uint32_t warmup = 0; warmup < warmups && !queries.empty(); ++warmup) {
+                    (void)measure_group(
+                        index, queries, group, strand, "locate", locate_limit, warmup);
+                }
+                for (std::uint32_t repetition = 0; repetition < query_repetitions; ++repetition) {
+                    result.queries.push_back(measure_group(
+                        index, queries, group, strand, "locate", locate_limit, repetition));
+                }
             }
         }
     }
@@ -1032,6 +865,11 @@ void write_worker_result(int descriptor, const MethodResult& result, const std::
     copy_text(header.canonical_index, result.canonical_index.string());
     header.coordinate_width = result.coordinate_width;
     header.sa_sampling_rate = result.sa_sampling_rate;
+    header.threads = result.threads;
+    header.has_canary = result.has_canary ? 1 : 0;
+    header.canary_total_hits = result.canary_total_hits;
+    header.canary_reported_hits = result.canary_reported_hits;
+    header.canary_checksum = result.canary_checksum;
     header.build_count = result.builds.size();
     header.load_count = result.loads.size();
     header.query_count = result.queries.size();
@@ -1048,7 +886,9 @@ void write_worker_result(int descriptor, const MethodResult& result, const std::
         wire.phase_seconds[3] = raw.child_build_seconds;
         wire.phase_seconds[4] = raw.learned_index_build_seconds;
         wire.save_seconds = raw.save_seconds;
+        wire.peak_rss_mb = raw.peak_rss_mb;
         wire.serialized_bytes = raw.serialized_bytes;
+        wire.allocated_disk_bytes = raw.allocated_disk_bytes;
         wire.learned_index_bytes = raw.learned_index_bytes;
         copy_text(wire.status, raw.status);
         if (!write_exact(descriptor, &wire, sizeof(wire))) return;
@@ -1059,6 +899,7 @@ void write_worker_result(int descriptor, const MethodResult& result, const std::
         wire.seconds = raw.seconds;
         wire.user_seconds = raw.user_seconds;
         wire.system_seconds = raw.system_seconds;
+        wire.peak_rss_mb = raw.peak_rss_mb;
         copy_text(wire.status, raw.status);
         if (!write_exact(descriptor, &wire, sizeof(wire))) return;
     }
@@ -1074,11 +915,12 @@ void write_worker_result(int descriptor, const MethodResult& result, const std::
         copy_text(wire.status, raw.status);
         wire.repetition = raw.repetition;
         wire.query_count = raw.query_count;
+        wire.skipped_high_frequency_queries = raw.skipped_high_frequency_queries;
         wire.query_bases = raw.query_bases;
-        wire.measurement_iterations = raw.measurement_iterations;
         wire.seconds = raw.seconds;
         wire.user_seconds = raw.user_seconds;
         wire.system_seconds = raw.system_seconds;
+        wire.peak_rss_mb = raw.peak_rss_mb;
         wire.total_hits = raw.total_hits;
         wire.reported_hits = raw.reported_hits;
         wire.checksum = raw.checksum;
@@ -1117,6 +959,11 @@ MethodResult read_worker_result(int descriptor) {
     result.canonical_index = header.canonical_index;
     result.coordinate_width = header.coordinate_width;
     result.sa_sampling_rate = header.sa_sampling_rate;
+    result.threads = header.threads;
+    result.has_canary = header.has_canary != 0;
+    result.canary_total_hits = header.canary_total_hits;
+    result.canary_reported_hits = header.canary_reported_hits;
+    result.canary_checksum = header.canary_checksum;
     for (std::uint64_t index = 0; index < header.build_count; ++index) {
         BuildWire wire;
         if (!read_exact(descriptor, &wire, sizeof(wire))) throw Error(ErrorCode::kBuildFailure, "truncated build result");
@@ -1131,7 +978,9 @@ MethodResult read_worker_result(int descriptor) {
         raw.child_build_seconds = wire.phase_seconds[3];
         raw.learned_index_build_seconds = wire.phase_seconds[4];
         raw.save_seconds = wire.save_seconds;
+        raw.peak_rss_mb = wire.peak_rss_mb;
         raw.serialized_bytes = wire.serialized_bytes;
+        raw.allocated_disk_bytes = wire.allocated_disk_bytes;
         raw.learned_index_bytes = wire.learned_index_bytes;
         raw.status = wire.status;
         result.builds.push_back(std::move(raw));
@@ -1139,7 +988,14 @@ MethodResult read_worker_result(int descriptor) {
     for (std::uint64_t index = 0; index < header.load_count; ++index) {
         LoadWire wire;
         if (!read_exact(descriptor, &wire, sizeof(wire))) throw Error(ErrorCode::kBuildFailure, "truncated load result");
-        result.loads.push_back({wire.repetition, wire.seconds, wire.user_seconds, wire.system_seconds, wire.status});
+        LoadRaw raw;
+        raw.repetition = wire.repetition;
+        raw.seconds = wire.seconds;
+        raw.user_seconds = wire.user_seconds;
+        raw.system_seconds = wire.system_seconds;
+        raw.peak_rss_mb = wire.peak_rss_mb;
+        raw.status = wire.status;
+        result.loads.push_back(std::move(raw));
     }
     for (std::uint64_t index = 0; index < header.query_count; ++index) {
         QueryWire wire;
@@ -1155,11 +1011,12 @@ MethodResult read_worker_result(int descriptor) {
         raw.status = wire.status;
         raw.repetition = wire.repetition;
         raw.query_count = wire.query_count;
+        raw.skipped_high_frequency_queries = wire.skipped_high_frequency_queries;
         raw.query_bases = wire.query_bases;
-        raw.measurement_iterations = wire.measurement_iterations;
         raw.seconds = wire.seconds;
         raw.user_seconds = wire.user_seconds;
         raw.system_seconds = wire.system_seconds;
+        raw.peak_rss_mb = wire.peak_rss_mb;
         raw.total_hits = wire.total_hits;
         raw.reported_hits = wire.reported_hits;
         raw.checksum = wire.checksum;
@@ -1186,35 +1043,6 @@ MethodResult read_worker_result(int descriptor) {
 std::string query_key(const QueryRaw& raw) {
     return raw.group + "\t" + raw.pattern_length + "\t" + raw.strand + "\t" +
            raw.operation + "\t" + raw.max_hits;
-}
-
-std::uint64_t logical_query_count(
-    const Dataset& dataset,
-    const QueryRaw& raw) {
-    return static_cast<std::uint64_t>(std::count_if(
-        dataset.queries.begin(), dataset.queries.end(),
-        [&](const QueryCase& query) {
-            if (raw.group == "mixed_length" &&
-                raw.pattern_length == "mixed") {
-                return true;
-            }
-            return query.group == raw.group &&
-                   query.pattern_length == raw.pattern_length;
-        }));
-}
-
-std::tuple<std::uint64_t, std::uint64_t, std::uint64_t>
-normalized_query_result(
-    const Dataset& dataset,
-    const QueryRaw& raw) {
-    const auto logical_count = logical_query_count(dataset, raw);
-    if (logical_count == 0 || raw.measurement_iterations == 0 ||
-        raw.query_count != logical_count) {
-        throw Error(ErrorCode::kBuildFailure,
-                    "benchmark logical query count is invalid at " +
-                        query_key(raw));
-    }
-    return std::make_tuple(raw.total_hits, raw.reported_hits, raw.checksum);
 }
 
 bool same_matches(const std::vector<Match>& left, const std::vector<Match>& right) {
@@ -1266,12 +1094,7 @@ std::string diagnose_mismatch(
         limit = static_cast<std::uint64_t>(std::stoull(aggregate.max_hits));
     }
     for (const auto& query : dataset.queries) {
-        const bool mixed = aggregate.group == "mixed_length" &&
-                           aggregate.pattern_length == "mixed";
-        if (!mixed && (query.group != aggregate.group ||
-                       query.pattern_length != aggregate.pattern_length)) {
-            continue;
-        }
+        if (query.group != aggregate.group || query.pattern_length != aggregate.pattern_length) continue;
         if (aggregate.operation == "count") {
             const auto expected_count = expected.count(query.sequence, strands);
             const auto observed_count = observed.count(query.sequence, strands);
@@ -1280,6 +1103,21 @@ std::string diagnose_mismatch(
                     ", observed=" + std::to_string(observed_count);
             }
         } else {
+            if (aggregate.max_hits == "all") {
+                const auto expected_count = expected.count(query.sequence, strands);
+                const auto observed_count = observed.count(query.sequence, strands);
+                if (expected_count != observed_count) {
+                    return "query " + query.id + " complete-locate preflight count expected=" +
+                        std::to_string(expected_count) + ", observed=" +
+                        std::to_string(observed_count);
+                }
+                if (expected_count > kCompleteLocateSafetyLimit) {
+                    // The measured path intentionally omits this query. Never
+                    // defeat that memory-safety boundary while diagnosing an
+                    // unrelated aggregate mismatch.
+                    continue;
+                }
+            }
             const auto expected_matches = expected.locate(query.sequence, strands, limit);
             const auto observed_matches = observed.locate(query.sequence, strands, limit);
             if (expected_matches.total_hits != observed_matches.total_hits ||
@@ -1291,13 +1129,13 @@ std::string diagnose_mismatch(
     return "aggregate checksum differs, but per-query replay found no coordinate mismatch";
 }
 
-} // namespace
+enum class WorkerPhase { build, save, load, query };
 
-MethodResult run_method_isolated(
+template <class Work>
+MethodResult launch_worker(
     const std::string& method,
-    const Dataset& dataset,
-    const Options& options,
-    const std::filesystem::path& scratch_directory) {
+    WorkerPhase phase,
+    Work&& work) {
     int descriptors[2]{};
     if (pipe(descriptors) != 0) throw Error(ErrorCode::kIoError, "cannot create benchmark worker pipe");
     const auto pid = fork();
@@ -1311,7 +1149,7 @@ MethodResult run_method_isolated(
         MethodResult result;
         std::string error;
         try {
-            result = run_worker(method, dataset, options, scratch_directory);
+            result = work();
         } catch (const std::exception& exception) {
             result.method = method;
             error = exception.what();
@@ -1336,7 +1174,120 @@ MethodResult run_method_isolated(
     if (waited < 0 || !WIFEXITED(status) || WEXITSTATUS(status) != 0) {
         throw Error(ErrorCode::kBuildFailure, "benchmark worker failed: " + method);
     }
-    result.peak_rss_mb = static_cast<double>(usage.ru_maxrss) / 1024.0;
+    const auto rss = peak_rss_mb(usage);
+    result.peak_rss_mb = rss;
+    if (phase == WorkerPhase::build) {
+        for (auto& raw : result.builds) {
+            // Build workers snapshot ru_maxrss before the unmeasured
+            // canonical transport save. Preserve that phase boundary.
+            if (raw.peak_rss_mb == 0.0) raw.peak_rss_mb = rss;
+        }
+    } else if (phase == WorkerPhase::save || phase == WorkerPhase::load) {
+        for (auto& raw : result.loads) raw.peak_rss_mb = rss;
+    } else {
+        for (auto& raw : result.queries) raw.peak_rss_mb = rss;
+    }
+    return result;
+}
+
+bool same_canary(const MethodResult& left, const MethodResult& right) {
+    return left.has_canary == right.has_canary &&
+        (!left.has_canary ||
+         (left.canary_total_hits == right.canary_total_hits &&
+          left.canary_reported_hits == right.canary_reported_hits &&
+          left.canary_checksum == right.canary_checksum));
+}
+
+} // namespace
+
+MethodResult run_method_isolated(
+    const std::string& method,
+    const Dataset& dataset,
+    const Options& options,
+    const std::filesystem::path& scratch_directory) {
+    const auto spec = profile_spec(options.profile);
+    const auto requested_build_repetitions =
+        options.build_repetitions.value_or(spec.build_repetitions);
+    const auto build_repetitions = method == "naive" ? 1U : requested_build_repetitions;
+
+    MethodResult result;
+    for (std::uint32_t repetition = 0; repetition < build_repetitions; ++repetition) {
+        auto phase = launch_worker(method, WorkerPhase::build, [&] {
+            return run_build_worker(method, dataset, options, scratch_directory, repetition);
+        });
+        if (repetition == 0) {
+            result = std::move(phase);
+        } else {
+            if (result.backend != phase.backend || result.signature != phase.signature ||
+                result.coordinate_width != phase.coordinate_width ||
+                result.sa_sampling_rate != phase.sa_sampling_rate ||
+                result.threads != phase.threads || !same_canary(result, phase)) {
+                throw Error(ErrorCode::kBuildFailure,
+                    "index metadata or canary changed between build repetitions for " + method);
+            }
+            result.peak_rss_mb = std::max(result.peak_rss_mb, phase.peak_rss_mb);
+            result.builds.insert(
+                result.builds.end(), phase.builds.begin(), phase.builds.end());
+        }
+    }
+    if (method != "naive" && result.canonical_index.empty()) return result;
+
+    if (method != "naive") {
+        for (std::uint32_t repetition = 0; repetition < requested_build_repetitions; ++repetition) {
+            auto phase = launch_worker(method, WorkerPhase::save, [&] {
+                return run_save_worker(
+                    method, result.canonical_index, scratch_directory, repetition);
+            });
+            if (phase.loads.size() != 1 || phase.loads.front().status != kSaveWorkerStatus) {
+                throw Error(ErrorCode::kBuildFailure,
+                    "isolated save worker returned an invalid result");
+            }
+            const auto build = std::find_if(
+                result.builds.begin(), result.builds.end(), [&](const auto& raw) {
+                    return raw.repetition == repetition;
+                });
+            if (build == result.builds.end()) {
+                throw Error(ErrorCode::kBuildFailure,
+                    "isolated save worker has no matching build repetition");
+            }
+            build->save_seconds = phase.loads.front().seconds;
+            result.peak_rss_mb = std::max(result.peak_rss_mb, phase.peak_rss_mb);
+            result.loads.push_back(std::move(phase.loads.front()));
+        }
+    }
+
+    const auto load_repetitions = method == "naive" ? 1U : requested_build_repetitions;
+    for (std::uint32_t repetition = 0; repetition < load_repetitions; ++repetition) {
+        auto phase = launch_worker(method, WorkerPhase::load, [&] {
+            return run_load_worker(method, dataset, result, repetition);
+        });
+        result.peak_rss_mb = std::max(result.peak_rss_mb, phase.peak_rss_mb);
+        result.loads.insert(result.loads.end(), phase.loads.begin(), phase.loads.end());
+    }
+
+    LocateLimit unused_limit;
+    auto count_phase = launch_worker(method, WorkerPhase::query, [&] {
+        return run_query_worker(
+            method, dataset, options, result.canonical_index, true, unused_limit);
+    });
+    result.peak_rss_mb = std::max(result.peak_rss_mb, count_phase.peak_rss_mb);
+    result.queries.insert(
+        result.queries.end(), count_phase.queries.begin(), count_phase.queries.end());
+
+    const bool locate_enabled = !is_fm_method(method) ||
+        std::find(options.fm_query_modes.begin(), options.fm_query_modes.end(), "scalar") !=
+            options.fm_query_modes.end();
+    if (locate_enabled) {
+        for (const auto& limit : options.locate_limits) {
+            auto locate_phase = launch_worker(method, WorkerPhase::query, [&] {
+                return run_query_worker(
+                    method, dataset, options, result.canonical_index, false, limit);
+            });
+            result.peak_rss_mb = std::max(result.peak_rss_mb, locate_phase.peak_rss_mb);
+            result.queries.insert(
+                result.queries.end(), locate_phase.queries.begin(), locate_phase.queries.end());
+        }
+    }
     return result;
 }
 
@@ -1346,11 +1297,16 @@ void validate_results(
     Profile profile) {
     if (results.empty()) throw Error(ErrorCode::kBuildFailure, "benchmark produced no method results");
     for (const auto& result : results) {
-        std::map<std::string, std::tuple<std::uint64_t, std::uint64_t, std::uint64_t>> expected;
+        using StableValue = std::tuple<
+            std::uint64_t, std::uint64_t, std::uint64_t,
+            std::uint64_t, std::uint64_t, std::uint64_t>;
+        std::map<std::string, StableValue> expected;
         for (const auto& raw : result.queries) {
             if (raw.status != "ok") continue;
             const auto key = query_key(raw);
-            const auto value = normalized_query_result(dataset, raw);
+            const auto value = std::make_tuple(
+                raw.total_hits, raw.reported_hits, raw.checksum,
+                raw.query_count, raw.skipped_high_frequency_queries, raw.query_bases);
             const auto inserted = expected.emplace(key, value);
             if (!inserted.second && inserted.first->second != value) {
                 throw Error(ErrorCode::kBuildFailure,
@@ -1364,21 +1320,26 @@ void validate_results(
         }
     }
 
-    std::map<std::string, std::tuple<std::uint64_t, std::uint64_t, std::uint64_t, std::string>> baseline;
+    using CrossMethodValue = std::tuple<
+        std::uint64_t, std::uint64_t, std::uint64_t,
+        std::uint64_t, std::uint64_t, std::uint64_t, std::string>;
+    std::map<std::string, CrossMethodValue> baseline;
     for (const auto& result : results) {
         for (const auto& raw : result.queries) {
             if (raw.repetition != 0 || raw.status != "ok") continue;
             const auto key = query_key(raw);
-            const auto normalized = normalized_query_result(dataset, raw);
             const auto value = std::make_tuple(
-                std::get<0>(normalized), std::get<1>(normalized),
-                std::get<2>(normalized), result.method);
+                raw.total_hits, raw.reported_hits, raw.checksum,
+                raw.query_count, raw.skipped_high_frequency_queries, raw.query_bases,
+                result.method);
             const auto inserted = baseline.emplace(key, value);
             if (!inserted.second &&
-                normalized !=
+                std::tie(raw.total_hits, raw.reported_hits, raw.checksum,
+                         raw.query_count, raw.skipped_high_frequency_queries, raw.query_bases) !=
                 std::tie(std::get<0>(inserted.first->second), std::get<1>(inserted.first->second),
-                         std::get<2>(inserted.first->second))) {
-                const auto expected_method = std::get<3>(inserted.first->second);
+                         std::get<2>(inserted.first->second), std::get<3>(inserted.first->second),
+                         std::get<4>(inserted.first->second), std::get<5>(inserted.first->second))) {
+                const auto expected_method = std::get<6>(inserted.first->second);
                 const auto expected_result = std::find_if(
                     results.begin(), results.end(), [&](const auto& candidate) {
                         return candidate.method == expected_method;
@@ -1406,14 +1367,26 @@ void validate_results(
             for (const auto& group : dataset.groups) {
                 const auto queries = select_queries(dataset, group);
                 if (queries.empty()) continue;
-                const auto* query = queries.front();
-                for (const auto strands : {StrandMode::kForward, StrandMode::kReverseComplement, StrandMode::kBoth}) {
-                    const auto expected = naive_locate(normalized, query->sequence, strands, 1000);
-                    const auto observed = index.locate(query->sequence, strands, 1000);
-                    if (expected.total_hits != observed.total_hits ||
-                        !same_matches(expected.hits, observed.hits)) {
-                        throw Error(ErrorCode::kBuildFailure,
-                            "naive sample mismatch for query " + query->id + " using " + indexed->method);
+                constexpr std::size_t kNaiveOracleQueriesPerGroup = 8;
+                const auto sample_count = std::min(
+                    queries.size(), kNaiveOracleQueriesPerGroup);
+                for (std::size_t sample = 0; sample < sample_count; ++sample) {
+                    const auto selected = sample_count == 1 ? 0 :
+                        sample * (queries.size() - 1) / (sample_count - 1);
+                    const auto* query = queries[selected];
+                    for (const auto strands : {StrandMode::kForward,
+                                               StrandMode::kReverseComplement,
+                                               StrandMode::kBoth}) {
+                        const auto expected = naive_locate(
+                            normalized, query->sequence, strands, 1000);
+                        const auto observed = index.locate(
+                            query->sequence, strands, 1000);
+                        if (expected.total_hits != observed.total_hits ||
+                            !same_matches(expected.hits, observed.hits)) {
+                            throw Error(ErrorCode::kBuildFailure,
+                                "naive sample mismatch for query " + query->id +
+                                " using " + indexed->method);
+                        }
                     }
                 }
             }

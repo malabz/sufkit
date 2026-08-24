@@ -1,0 +1,4 @@
+run_id	dataset	method	serialized_bytes	status
+fixture	full-mixed	fm-huff	536870912	ok
+fixture	full-mixed	sa32-binary	2147483648	ok
+fixture	full-mixed	caps32	2147483648	ok

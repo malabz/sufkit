@@ -1,0 +1,4 @@
+index	builder	threads	build_time_seconds	peak_rss_mb	index_size_bytes	allocated_disk_bytes	bits_per_base	speedup_vs_divsufsort	raw_repetitions	expected_repetitions	status
+SA / divsufsort	divsufsort	1	39.930388	7939.484375	3489661471	3489669120	104.000016	1	3	3	ok
+SA / CaPS	CaPS	64	9.727652	7880.953125	3489661471	3489669120	104.000016	4.104833	3	3	ok
+FM / SDSL Huffman	SDSL Huffman	1	37.076965	2479.613281	158544588	158547968	4.724997	1.076959	3	3	ok

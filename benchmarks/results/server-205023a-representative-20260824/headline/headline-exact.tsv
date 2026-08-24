@@ -1,0 +1,5 @@
+index	operation	query_count	seconds_median	queries_per_second	nanoseconds_per_query	query_bases_per_second	query_peak_rss_mb	result_checksum	raw_repetitions	expected_repetitions	status
+SA32 default	Count	7999	0.241819	33078.459509	30231.153894	3307845.950897	5669.242188	e66015b060c689ab	5	5	ok
+SA32 default	Locate-1	7999	1.537912	5201.207871	192263.032879	520120.787145	5669.347656	c01ba83512f7317a	5	5	ok
+FM Huffman	Count	7999	0.093279	85753.492212	11661.332667	8575349.221154	431.539062	e66015b060c689ab	5	5	ok
+FM Huffman	Locate-1	7999	91.419393	87.497846	11428852.731591	8749.784633	431.546875	c01ba83512f7317a	5	5	ok

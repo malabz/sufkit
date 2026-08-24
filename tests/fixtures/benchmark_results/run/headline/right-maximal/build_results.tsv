@@ -1,0 +1,3 @@
+dataset	method	algorithm	sa_acceleration	repetitions	status
+full-mixed	right-maximal-baseline	baseline	none	3	ok
+full-mixed	right-maximal-suffix-link	suffix_link	suffix-link	3	ok

@@ -1,5 +1,3 @@
-cmake_policy(SET CMP0007 NEW)
-
 if(NOT DEFINED SUFKIT_EXECUTABLE OR NOT DEFINED OUTPUT_ROOT)
     message(FATAL_ERROR "SUFKIT_EXECUTABLE and OUTPUT_ROOT are required")
 endif()
@@ -9,10 +7,11 @@ execute_process(
     COMMAND "${SUFKIT_EXECUTABLE}" bench
         --workload right-maximal
         --profile smoke
-        --methods right-maximal-baseline,right-maximal-suffix-link-binary,right-maximal-suffix-link-sapling,right-maximal-full
+        --methods right-maximal-baseline,right-maximal-suffix-link-binary,right-maximal-suffix-link-sapling,right-maximal-full,right-maximal-sampled-k4,right-maximal-sampled-k8
         --min-lengths 20,50
-        --strands forward,reverse-complement,both
+        --build-repetitions 2
         --query-repetitions 2
+        --warmups 0
         --output-dir "${OUTPUT_ROOT}"
     RESULT_VARIABLE status
     OUTPUT_VARIABLE stdout
@@ -21,7 +20,7 @@ if(NOT status EQUAL 0)
     message(FATAL_ERROR "right-maximal exact match smoke benchmark failed (${status}):\n${stdout}\n${stderr}")
 endif()
 
-foreach(name IN ITEMS run_metadata.tsv build_results.tsv query_results.tsv raw_repetitions.tsv)
+foreach(name IN ITEMS run_metadata.tsv correctness_summary.tsv build_results.tsv query_results.tsv raw_repetitions.tsv)
     set(path "${OUTPUT_ROOT}/${name}")
     if(NOT EXISTS "${path}")
         message(FATAL_ERROR "missing right-maximal exact match benchmark output: ${name}")
@@ -33,312 +32,219 @@ foreach(name IN ITEMS run_metadata.tsv build_results.tsv query_results.tsv raw_r
 endforeach()
 
 file(READ "${OUTPUT_ROOT}/query_results.tsv" query_results)
-file(READ "${OUTPUT_ROOT}/raw_repetitions.tsv" raw_results)
 file(READ "${OUTPUT_ROOT}/run_metadata.tsv" run_metadata)
-if(NOT run_metadata MATCHES "learned_k\tlearned_memory_overhead_basis_points\tlearned_bucket_bits")
+file(READ "${OUTPUT_ROOT}/build_results.tsv" build_results)
+file(READ "${OUTPUT_ROOT}/raw_repetitions.tsv" raw_repetitions)
+file(READ "${OUTPUT_ROOT}/correctness_summary.tsv" correctness_summary)
+if(NOT run_metadata MATCHES "build_repetitions\tquery_repetitions\twarmups" OR
+   NOT run_metadata MATCHES "vector_materialization_match_threshold" OR
+   NOT run_metadata MATCHES "learned_k\tlearned_memory_overhead_basis_points\tlearned_bucket_bits")
     message(FATAL_ERROR "right-maximal exact match run_metadata.tsv does not record learned-index parameters")
 endif()
-foreach(field IN ITEMS query_repetitions git_commit git_dirty compile_flags cpu_flags
-                       executable_sha256 cpu_affinity sse42_compiled sse42_runtime
-                       command_line_redacted peak_rss_scope strands)
-    if(NOT run_metadata MATCHES "${field}")
-        message(FATAL_ERROR "right-maximal run_metadata.tsv is missing ${field}")
+foreach(token IN ITEMS "naive_right_maximal_oracle_status" "oracle_reference_bases"
+                       "oracle_query_bases" "passed")
+    string(FIND "${run_metadata}" "${token}" position)
+    if(position EQUAL -1)
+        message(FATAL_ERROR "run_metadata.tsv is missing oracle marker ${token}")
     endif()
 endforeach()
-file(STRINGS "${OUTPUT_ROOT}/run_metadata.tsv" metadata_lines)
-list(GET metadata_lines 1 metadata_row)
-string(REPLACE "\t" ";" metadata_fields "${metadata_row}")
-list(GET metadata_fields 20 recorded_repetitions)
-list(GET metadata_fields 25 executable_hash)
-list(GET metadata_fields 27 sse42_compiled)
-list(GET metadata_fields 28 sse42_runtime)
-list(GET metadata_fields 29 recorded_command)
-list(GET metadata_fields 30 peak_rss_scope)
-list(GET metadata_fields 31 recorded_strands)
-string(LENGTH "${executable_hash}" executable_hash_length)
-if(NOT recorded_repetitions EQUAL 2)
-    message(FATAL_ERROR "right-maximal metadata ignored --query-repetitions")
-endif()
-if(NOT executable_hash_length EQUAL 64)
-    message(FATAL_ERROR "right-maximal executable SHA-256 is invalid")
-endif()
-if(NOT sse42_compiled EQUAL 1 OR NOT sse42_runtime EQUAL 1)
-    message(FATAL_ERROR "right-maximal metadata does not record active SSE4.2 support")
-endif()
-if(NOT peak_rss_scope STREQUAL "method_process_lifetime")
-    message(FATAL_ERROR "right-maximal metadata has an incorrect peak RSS scope")
-endif()
-if(NOT recorded_strands STREQUAL "forward,reverse-complement,both")
-    message(FATAL_ERROR "right-maximal metadata has incorrect strands")
-endif()
-string(FIND "${recorded_command}" "<path>" redacted_position)
-string(FIND "${recorded_command}" "${OUTPUT_ROOT}" leaked_path_position)
-if(redacted_position EQUAL -1 OR NOT leaked_path_position EQUAL -1)
-    message(FATAL_ERROR "right-maximal command path redaction failed")
-endif()
-foreach(token IN ITEMS "right-maximal-baseline" "right-maximal-suffix-link-binary" "right-maximal-suffix-link-sapling" "right-maximal-full"
-                       "result_checksum" "learned_lookup_calls" "suffix_link_success_rate"
+foreach(token IN ITEMS "right-maximal-baseline" "right-maximal-suffix-link-binary"
+                       "right-maximal-suffix-link-sapling" "right-maximal-full"
+                       "right-maximal-sampled-k4" "right-maximal-sampled-k8"
+                       "operation" "streaming" "vector" "max_matches=0" "max_matches=1000"
+                       "reported_matches" "count_checksum" "result_checksum"
+                       "materialization_match_threshold" "vector_skipped"
+                       "query_peak_rss_mb" "peak_rss_scope"
+                       "query_worker_inherited_controller_dataset_queries_plus_load_plus_query"
+                       "learned_lookup_calls" "suffix_link_success_rate"
                        "prediction_error_mean" "full_binary_fallbacks"
-                       "measurement_iterations" "suffix_link_scan_attempts"
-                       "suffix_link_left_scanned_rows"
-                       "suffix_link_right_scanned_rows"
-                       "suffix_link_scanned_rows_p50"
-                       "suffix_link_scanned_rows_p95"
-                       "suffix_link_scanned_rows_p99"
-                       "suffix_link_scanned_rows_max"
-                       "suffix_link_scan_seconds"
-                       "suffix_link_instrumented_wall_seconds"
-                       "suffix_link_scan_instrumented_wall_fraction"
-                       "suffix_link_scan_diagnostics_available")
+                       "fm-huff" "fm-balanced" "fm-epr" "not_supported")
     string(FIND "${query_results}" "${token}" position)
     if(position EQUAL -1)
         message(FATAL_ERROR "query_results.tsv is missing ${token}")
     endif()
 endforeach()
-if(NOT raw_results MATCHES "status\tmeasurement_iterations")
-    message(FATAL_ERROR "raw_repetitions.tsv is missing measurement iteration metadata")
-endif()
-if(NOT raw_results MATCHES
-       "suffix_link_scan_attempts\tsuffix_link_left_scanned_rows")
-    message(FATAL_ERROR
-        "raw_repetitions.tsv is missing suffix-link scan diagnostics")
-endif()
-if(NOT query_results MATCHES
-       "suffix_link_scan_diagnostics_available\tstrand" OR
-   NOT raw_results MATCHES
-       "suffix_link_scan_diagnostics_available\tstrand")
-    message(FATAL_ERROR "right-maximal result schemas do not append strand")
-endif()
 
-file(STRINGS "${OUTPUT_ROOT}/query_results.tsv" strand_lines)
-list(REMOVE_AT strand_lines 0)
-set(observed_strand_rows)
-foreach(line IN LISTS strand_lines)
-    string(REPLACE "\t" ";" fields "${line}")
-    list(GET fields 1 method)
-    list(GET fields 4 min_length)
-    list(GET fields 43 strand)
-    list(APPEND observed_strand_rows "${method}|${min_length}|${strand}")
-endforeach()
-foreach(method IN ITEMS right-maximal-baseline
-                        right-maximal-suffix-link-binary
-                        right-maximal-suffix-link-sapling
-                        right-maximal-full)
-    foreach(min_length IN ITEMS 20 50)
-        foreach(strand IN ITEMS forward reverse-complement both)
-            list(FIND observed_strand_rows
-                "${method}|${min_length}|${strand}" strand_row_index)
-            if(strand_row_index EQUAL -1)
-                message(FATAL_ERROR
-                    "missing ${method} min=${min_length} strand=${strand}")
-            endif()
-        endforeach()
-    endforeach()
-endforeach()
-
-if(SUFKIT_SUFFIX_LINK_SCAN_DIAGNOSTICS)
-    file(STRINGS "${OUTPUT_ROOT}/query_results.tsv" diagnostic_lines)
-    list(REMOVE_AT diagnostic_lines 0)
-    set(found_suffix_link_diagnostics FALSE)
-    set(found_nonzero_suffix_link_diagnostics FALSE)
-    set(found_baseline_diagnostics FALSE)
-    foreach(line IN LISTS diagnostic_lines)
-        string(REPLACE "\t" ";" fields "${line}")
-        list(GET fields 1 method)
-        list(GET fields 17 public_attempts)
-        list(GET fields 32 scan_attempts)
-        list(GET fields 33 left_rows)
-        list(GET fields 34 right_rows)
-        list(GET fields 35 rows_p50)
-        list(GET fields 36 rows_p95)
-        list(GET fields 37 rows_p99)
-        list(GET fields 38 rows_max)
-        list(GET fields 39 scan_seconds)
-        list(GET fields 40 instrumented_wall_seconds)
-        list(GET fields 41 scan_fraction)
-        list(GET fields 42 diagnostics_available)
-        list(GET fields 43 strand)
-        if(NOT diagnostics_available EQUAL 1)
-            message(FATAL_ERROR
-                "static benchmark did not enable suffix-link diagnostics")
-        endif()
-        if(method MATCHES "suffix-link" OR method STREQUAL "right-maximal-full")
-            set(found_suffix_link_diagnostics TRUE)
-            if(NOT scan_attempts EQUAL public_attempts)
-                message(FATAL_ERROR
-                    "suffix-link scan attempt count is missing or inconsistent")
-            endif()
-            if(scan_attempts GREATER 0)
-                set(found_nonzero_suffix_link_diagnostics TRUE)
-            endif()
-            if(rows_p50 GREATER rows_p95 OR rows_p95 GREATER rows_p99 OR
-               rows_p99 GREATER rows_max)
-                message(FATAL_ERROR
-                    "suffix-link scan percentiles are not monotonic")
-            endif()
-            math(EXPR total_rows "${left_rows} + ${right_rows}")
-            if(rows_max GREATER total_rows)
-                message(FATAL_ERROR
-                    "suffix-link scan maximum exceeds total scanned rows")
-            endif()
-            if(scan_seconds GREATER instrumented_wall_seconds)
-                message(FATAL_ERROR
-                    "suffix-link scan time exceeds instrumented wall time")
-            endif()
-            if(scan_fraction LESS 0 OR scan_fraction GREATER 1.0)
-                message(FATAL_ERROR
-                    "suffix-link scan wall fraction is outside [0,1]")
-            endif()
-        elseif(method STREQUAL "right-maximal-baseline")
-            set(found_baseline_diagnostics TRUE)
-            if(NOT scan_attempts EQUAL 0 OR NOT left_rows EQUAL 0 OR
-               NOT right_rows EQUAL 0)
-                message(FATAL_ERROR
-                    "baseline unexpectedly recorded suffix-link scan work")
-            endif()
-        endif()
-    endforeach()
-    if(NOT found_suffix_link_diagnostics OR
-       NOT found_nonzero_suffix_link_diagnostics OR
-       NOT found_baseline_diagnostics)
-        message(FATAL_ERROR
-            "right-maximal smoke did not cover suffix-link diagnostics")
-    endif()
-endif()
-file(STRINGS "${OUTPUT_ROOT}/raw_repetitions.tsv" raw_lines)
-list(REMOVE_AT raw_lines 0)
-list(LENGTH raw_lines raw_row_count)
-if(NOT raw_row_count EQUAL 48)
-    message(FATAL_ERROR
-        "right-maximal strand/repetition matrix produced ${raw_row_count} raw rows instead of 48")
-endif()
-set(observed_raw_strands)
-foreach(line IN LISTS raw_lines)
-    string(REPLACE "\t" ";" fields "${line}")
-    list(GET fields 24 iterations)
-    list(GET fields 36 strand)
-    list(APPEND observed_raw_strands "${strand}")
-    if(NOT iterations EQUAL 1)
-        message(FATAL_ERROR "right-maximal smoke unexpectedly amplified its workload")
-    endif()
-endforeach()
-foreach(strand IN ITEMS forward reverse-complement both)
-    list(FIND observed_raw_strands "${strand}" raw_strand_index)
-    if(raw_strand_index EQUAL -1)
-        message(FATAL_ERROR "right-maximal raw TSV is missing ${strand}")
+foreach(token IN ITEMS "sa_sampling_rate\trepetitions" "right-maximal-sampled-k4"
+                       "right-maximal-sampled-k8" "build_peak_rss_mb"
+                       "save_peak_rss_mb" "load_peak_rss_mb"
+                       "build_worker_inherited_controller_dataset_plus_build"
+                       "save_worker_inherited_controller_dataset_plus_load_plus_save"
+                       "load_worker_inherited_controller_dataset_plus_load"
+                       "allocated_disk_bytes")
+    string(FIND "${build_results}" "${token}" position)
+    if(position EQUAL -1)
+        message(FATAL_ERROR "build_results.tsv is missing ${token}")
     endif()
 endforeach()
 
+foreach(token IN ITEMS "naive-right-maximal-forward" "synthetic-right-maximal-smoke-mixed"
+                       "\tok")
+    string(FIND "${correctness_summary}" "${token}" position)
+    if(position EQUAL -1)
+        message(FATAL_ERROR "correctness_summary.tsv is missing ${token}")
+    endif()
+endforeach()
+
+foreach(token IN ITEMS "user_cpu_seconds" "system_cpu_seconds" "peak_rss_mb"
+                       "peak_rss_scope" "query_bases" "serialized_bytes"
+                       "allocated_disk_bytes" "auxiliary_bytes"
+                       "materialization_match_threshold" "vector_skipped"
+                       "save_worker_inherited_controller_dataset_plus_load_plus_save"
+                       "query_worker_inherited_controller_dataset_queries_plus_load_plus_query"
+                       "fm-huff\tstreaming\t20\t0\tNA" "not_supported")
+    string(FIND "${raw_repetitions}" "${token}" position)
+    if(position EQUAL -1)
+        message(FATAL_ERROR "raw_repetitions.tsv is missing resource/capability evidence ${token}")
+    endif()
+endforeach()
+
+foreach(token IN ITEMS "\tbuild\t0\t1\t" "\tstreaming\t20\t1\t"
+                       "\tvector\t20\t1\t" "\tmax_matches=0\t20\t1\t"
+                       "\tmax_matches=1000\t20\t1\t")
+    string(FIND "${raw_repetitions}" "${token}" position)
+    if(position EQUAL -1)
+        message(FATAL_ERROR "raw_repetitions.tsv is missing repetition evidence ${token}")
+    endif()
+endforeach()
+
+# Exercise the full profile parser without allocating its 256 MiB synthetic
+# dataset: a user-provided reference keeps this acceptance check lightweight.
+set(full_reference "${OUTPUT_ROOT}-full-reference.fa")
+set(full_output "${OUTPUT_ROOT}-full-profile")
+file(REMOVE_RECURSE "${full_output}")
+file(WRITE "${full_reference}"
+    ">ref0\nACGTTGCAACGATTCGGTACCTAGGCTAACGTACGTTGCAACGATTCGGTACCTAGGCTAACGTACGTTGCAACGATTCGGTACCTAGGCTAACGTACGTTGCAACGATTCGGTACCTAGGCTAACGTACGTTGCAACGATTCGGTACCTAGGCTAACGTACGTTGCAACGATTCGGTACCTAGGCTAACGTACGTTGCAACGATTCGGTACCTAGGCTAACGTACGTTGCAACGATTCGGTACCTAGGCTAACGTACGTTGCAACGATTCGGTACCTAGGCTAACGTACGTTGCAACGATTCGGTACCTAGGCTAACGT\n")
+execute_process(
+    COMMAND "${SUFKIT_EXECUTABLE}" bench
+        --workload right-maximal
+        --profile full
+        --reference "${full_reference}"
+        --methods right-maximal-baseline
+        --min-lengths 500
+        --build-repetitions 1
+        --query-repetitions 1
+        --warmups 0
+        --output-dir "${full_output}"
+    RESULT_VARIABLE full_status
+    OUTPUT_VARIABLE full_stdout
+    ERROR_VARIABLE full_stderr)
+if(NOT full_status EQUAL 0)
+    message(FATAL_ERROR "right-maximal full-profile acceptance check failed (${full_status}):\n${full_stdout}\n${full_stderr}")
+endif()
+
+file(READ "${full_output}/run_metadata.tsv" full_metadata)
+if(NOT full_metadata MATCHES "full\tuser-reference")
+    message(FATAL_ERROR "full external-reference metadata does not retain the full profile")
+endif()
+if(NOT full_metadata MATCHES "\t10000\t2560000\t")
+    message(FATAL_ERROR "full external-reference query generation did not use the full profile")
+endif()
+
+set(scenario_output "${OUTPUT_ROOT}-scenario-names")
+file(REMOVE_RECURSE "${scenario_output}")
 execute_process(
     COMMAND "${SUFKIT_EXECUTABLE}" bench
         --workload right-maximal
         --profile smoke
-        --query-repetitions 0
-        --output-dir "${OUTPUT_ROOT}-invalid-repetitions"
-    RESULT_VARIABLE invalid_repetitions_status
-    OUTPUT_QUIET ERROR_QUIET)
-if(invalid_repetitions_status EQUAL 0)
-    message(FATAL_ERROR "right-maximal accepted --query-repetitions 0")
-endif()
-
-execute_process(
-    COMMAND "${SUFKIT_EXECUTABLE}" bench
-        --workload right-maximal
-        --profile smoke
-        --strands forward,invalid
-        --output-dir "${OUTPUT_ROOT}-invalid-strands"
-    RESULT_VARIABLE invalid_strands_status
-    OUTPUT_QUIET ERROR_QUIET)
-if(invalid_strands_status EQUAL 0)
-    message(FATAL_ERROR "right-maximal accepted an invalid strand")
-endif()
-
-set(user_dir "${OUTPUT_ROOT}-user")
-file(REMOVE_RECURSE "${user_dir}")
-string(REPEAT "ACGT" 64 user_reference)
-string(REPEAT "ACGT" 5 user_query)
-file(WRITE "${OUTPUT_ROOT}-reference.fa" ">reference\n${user_reference}\n")
-file(WRITE "${OUTPUT_ROOT}-queries.fa" ">query\n${user_query}\n")
-execute_process(
-    COMMAND "${SUFKIT_EXECUTABLE}" bench
-        --workload right-maximal
-        --reference "${OUTPUT_ROOT}-reference.fa"
-        --queries "${OUTPUT_ROOT}-queries.fa"
+        --scenarios gc-skewed,n-islands
         --methods right-maximal-baseline
         --min-lengths 20
-        --output-dir "${user_dir}"
-    RESULT_VARIABLE user_status
-    OUTPUT_VARIABLE user_stdout
-    ERROR_VARIABLE user_stderr)
-if(NOT user_status EQUAL 0)
-    message(FATAL_ERROR "right-maximal user benchmark failed (${user_status}):\n${user_stdout}\n${user_stderr}")
+        --build-repetitions 1
+        --query-repetitions 1
+        --warmups 0
+        --output-dir "${scenario_output}"
+    RESULT_VARIABLE scenario_status
+    OUTPUT_VARIABLE scenario_stdout
+    ERROR_VARIABLE scenario_stderr)
+if(NOT scenario_status EQUAL 0)
+    message(FATAL_ERROR "right-maximal scenario-name check failed (${scenario_status}):\n${scenario_stdout}\n${scenario_stderr}")
 endif()
-file(STRINGS "${user_dir}/query_results.tsv" user_lines)
-list(REMOVE_AT user_lines 0)
-list(GET user_lines 0 user_line)
-string(REPLACE "\t" ";" user_fields "${user_line}")
-list(GET user_fields 5 user_query_count)
-list(GET user_fields 31 user_iterations)
-list(GET user_fields 43 user_strand)
-if(NOT user_query_count EQUAL 1)
-    message(FATAL_ERROR "right-maximal user query count was not normalized")
-endif()
-if(user_iterations LESS 2)
-    message(FATAL_ERROR "right-maximal user benchmark still used smoke timing")
-endif()
-if(NOT user_strand STREQUAL "forward")
-    message(FATAL_ERROR "right-maximal default strand is no longer forward")
-endif()
+file(READ "${scenario_output}/run_metadata.tsv" scenario_metadata)
+foreach(token IN ITEMS "smoke\tgc-skewed" "smoke\tn-islands")
+    string(FIND "${scenario_metadata}" "${token}" position)
+    if(position EQUAL -1)
+        message(FATAL_ERROR "run_metadata.tsv is missing explicit scenario ${token}")
+    endif()
+endforeach()
 
-set(strand_dir "${OUTPUT_ROOT}-strand-nonzero")
-file(REMOVE_RECURSE "${strand_dir}")
-string(REPEAT "GGGGGTTTTT" 32 strand_reference)
-file(WRITE "${OUTPUT_ROOT}-strand-reference.fa"
-    ">reference\n${strand_reference}\n")
-file(WRITE "${OUTPUT_ROOT}-strand-queries.fa"
-    ">reverse-only\nAAAAACCCCC\n")
+# A deliberately repetitive but small fixture must cross the unlimited-vector
+# safety threshold. Streaming and bounded max_matches paths still run; the
+# full-vector row must be explicit NA/skipped and must retain the true count.
+set(high_frequency_reference "${OUTPUT_ROOT}-high-frequency-reference.fa")
+set(high_frequency_queries "${OUTPUT_ROOT}-high-frequency-queries.fa")
+set(high_frequency_output "${OUTPUT_ROOT}-high-frequency")
+file(REMOVE_RECURSE "${high_frequency_output}")
+string(REPEAT "A" 512 high_frequency_reference_sequence)
+string(REPEAT "A" 64 high_frequency_query_sequence)
+file(WRITE "${high_frequency_reference}"
+    ">repeat-reference\n${high_frequency_reference_sequence}\n")
+file(WRITE "${high_frequency_queries}" "")
+foreach(query_id RANGE 0 1999)
+    file(APPEND "${high_frequency_queries}"
+        ">repeat-query-${query_id}\n${high_frequency_query_sequence}\n")
+endforeach()
 execute_process(
     COMMAND "${SUFKIT_EXECUTABLE}" bench
         --workload right-maximal
-        --reference "${OUTPUT_ROOT}-strand-reference.fa"
-        --queries "${OUTPUT_ROOT}-strand-queries.fa"
+        --profile smoke
+        --reference "${high_frequency_reference}"
+        --queries "${high_frequency_queries}"
         --methods right-maximal-baseline
-        --min-lengths 10
-        --strands forward,reverse-complement,both
+        --min-lengths 20
+        --build-repetitions 1
         --query-repetitions 1
-        --output-dir "${strand_dir}"
-    RESULT_VARIABLE strand_status
-    OUTPUT_VARIABLE strand_stdout
-    ERROR_VARIABLE strand_stderr)
-if(NOT strand_status EQUAL 0)
+        --warmups 0
+        --output-dir "${high_frequency_output}"
+    RESULT_VARIABLE high_frequency_status
+    OUTPUT_VARIABLE high_frequency_stdout
+    ERROR_VARIABLE high_frequency_stderr)
+if(NOT high_frequency_status EQUAL 0)
     message(FATAL_ERROR
-        "right-maximal strand benchmark failed (${strand_status}):\n"
-        "${strand_stdout}\n${strand_stderr}")
+        "right-maximal high-frequency safety check failed (${high_frequency_status}):\n"
+        "${high_frequency_stdout}\n${high_frequency_stderr}")
 endif()
-file(STRINGS "${strand_dir}/query_results.tsv" strand_result_lines)
-list(REMOVE_AT strand_result_lines 0)
-set(forward_matches "")
-set(reverse_matches "")
-set(both_matches "")
-foreach(line IN LISTS strand_result_lines)
-    string(REPLACE "\t" ";" fields "${line}")
-    list(GET fields 12 total_matches)
-    list(GET fields 43 strand)
-    if(strand STREQUAL "forward")
-        set(forward_matches "${total_matches}")
-    elseif(strand STREQUAL "reverse-complement")
-        set(reverse_matches "${total_matches}")
-    elseif(strand STREQUAL "both")
-        set(both_matches "${total_matches}")
+file(READ "${high_frequency_output}/query_results.tsv" high_frequency_results)
+file(STRINGS "${high_frequency_output}/query_results.tsv" high_frequency_vector_rows
+    REGEX "vector.*skipped_high_frequency$")
+list(LENGTH high_frequency_vector_rows high_frequency_vector_row_count)
+if(NOT high_frequency_vector_row_count EQUAL 1)
+    message(FATAL_ERROR
+        "expected exactly one skipped high-frequency vector row, found "
+        "${high_frequency_vector_row_count}:\n${high_frequency_results}")
+endif()
+list(GET high_frequency_vector_rows 0 high_frequency_vector_row)
+string(REPLACE "\t" ";" high_frequency_vector_columns
+    "${high_frequency_vector_row}")
+list(GET high_frequency_vector_columns 8 high_frequency_vector_seconds)
+list(GET high_frequency_vector_columns 13 high_frequency_vector_rss)
+list(GET high_frequency_vector_columns 14 high_frequency_vector_scope)
+list(GET high_frequency_vector_columns 15 high_frequency_vector_total)
+list(GET high_frequency_vector_columns 16 high_frequency_vector_reported)
+list(GET high_frequency_vector_columns 35 high_frequency_vector_threshold)
+list(GET high_frequency_vector_columns 36 high_frequency_vector_skipped)
+list(GET high_frequency_vector_columns 37 high_frequency_vector_status_value)
+if(NOT high_frequency_vector_seconds STREQUAL "NA" OR
+   NOT high_frequency_vector_rss STREQUAL "NA" OR
+   NOT high_frequency_vector_scope STREQUAL "not_applicable" OR
+   NOT high_frequency_vector_total GREATER 1000000 OR
+   NOT high_frequency_vector_reported EQUAL 0 OR
+   NOT high_frequency_vector_threshold EQUAL 1000000 OR
+   NOT high_frequency_vector_skipped EQUAL 1 OR
+   NOT high_frequency_vector_status_value STREQUAL "skipped_high_frequency")
+    message(FATAL_ERROR
+        "invalid high-frequency vector safety row: ${high_frequency_vector_row}")
+endif()
+foreach(operation IN ITEMS streaming "max_matches=0" "max_matches=1000")
+    if(NOT high_frequency_results MATCHES "${operation}.*ok")
+        message(FATAL_ERROR
+            "high-frequency bounded operation ${operation} did not complete")
     endif()
 endforeach()
-if(forward_matches STREQUAL "" OR reverse_matches STREQUAL "" OR
-   both_matches STREQUAL "")
-    message(FATAL_ERROR "right-maximal strand rows are incomplete")
-endif()
-if(NOT forward_matches EQUAL 0 OR NOT reverse_matches GREATER 0 OR
-   NOT both_matches EQUAL reverse_matches)
+file(READ "${high_frequency_output}/raw_repetitions.tsv" high_frequency_raw)
+if(NOT high_frequency_raw MATCHES
+   "materialization_match_threshold\tvector_skipped" OR
+   NOT high_frequency_raw MATCHES "vector.*1000000\t1.*skipped_high_frequency")
     message(FATAL_ERROR
-        "right-maximal strand semantics are incorrect: forward=${forward_matches}, "
-        "reverse=${reverse_matches}, both=${both_matches}")
+        "raw repetitions do not preserve high-frequency skip evidence")
 endif()

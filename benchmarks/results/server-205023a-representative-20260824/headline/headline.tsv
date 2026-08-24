@@ -1,0 +1,19 @@
+section	item	metric	value	unit	status	provenance
+build	SA / divsufsort	build_time_seconds	39.930388	seconds	ok	headline/exact-build/raw_repetitions.tsv
+build	SA / divsufsort	peak_rss_mb	7939.484375	MiB	ok	headline/exact-build/raw_repetitions.tsv
+build	SA / divsufsort	index_size_bytes	3489661471	bytes	ok	headline/exact-build/raw_repetitions.tsv
+build	SA / divsufsort	bits_per_base	104.000016	bits/base	ok	headline/exact-build/raw_repetitions.tsv
+build	SA / CaPS	build_time_seconds	9.727652	seconds	ok	headline/exact-build/raw_repetitions.tsv
+build	SA / CaPS	peak_rss_mb	7880.953125	MiB	ok	headline/exact-build/raw_repetitions.tsv
+build	SA / CaPS	index_size_bytes	3489661471	bytes	ok	headline/exact-build/raw_repetitions.tsv
+build	SA / CaPS	bits_per_base	104.000016	bits/base	ok	headline/exact-build/raw_repetitions.tsv
+build	FM / SDSL Huffman	build_time_seconds	37.076965	seconds	ok	headline/exact-build/raw_repetitions.tsv
+build	FM / SDSL Huffman	peak_rss_mb	2479.613281	MiB	ok	headline/exact-build/raw_repetitions.tsv
+build	FM / SDSL Huffman	index_size_bytes	158544588	bytes	ok	headline/exact-build/raw_repetitions.tsv
+build	FM / SDSL Huffman	bits_per_base	4.724997	bits/base	ok	headline/exact-build/raw_repetitions.tsv
+exact	SA32 default / Count	queries_per_second	33078.459509	queries/s	ok	headline/exact-query/raw_repetitions.tsv
+exact	SA32 default / Locate-1	queries_per_second	5201.207871	queries/s	ok	headline/exact-query/raw_repetitions.tsv
+exact	FM Huffman / Count	queries_per_second	85753.492212	queries/s	ok	headline/exact-query/raw_repetitions.tsv
+exact	FM Huffman / Locate-1	queries_per_second	87.497846	queries/s	ok	headline/exact-query/raw_repetitions.tsv
+right-maximal	SA baseline	query_bases_per_second	189304.950605	bases/s	ok	full/right-maximal/raw_repetitions.tsv
+right-maximal	SA suffix-link default	query_bases_per_second	1123298.214175	bases/s	ok	full/right-maximal/raw_repetitions.tsv

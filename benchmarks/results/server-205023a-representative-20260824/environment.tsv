@@ -1,0 +1,22 @@
+key	value	source
+server_label	server-205023a	packager argument
+source_revision	205023aa8fbaefdbfd7e20f6a84ebbe7a3fad2dd	manifest/SOURCE_REVISION.txt
+run_complete	false	state/ALL_COMPLETE
+run_id	run	run directory basename
+timestamp	2026-08-24T01:09:07Z | 2026-08-24T01:34:42Z | 2026-08-24T02:52:38Z | 2026-08-24T04:50:20Z | 2026-08-24T06:57:08Z | 2026-08-24T08:15:27Z	run_metadata.tsv
+compiler	13.1.0 | GCC	run_metadata.tsv
+compiler_version	13.1.0	run_metadata.tsv
+cmake_version	3.26.4	run_metadata.tsv
+build_type	Release	run_metadata.tsv
+os	Linux | Linux 6.8.0-136-generic	run_metadata.tsv
+architecture	x86_64	run_metadata.tsv
+cpu_model	AMD EPYC 7763 64-Core Processor	run_metadata.tsv
+logical_cpus	256	run_metadata.tsv
+seed	20260822	run_metadata.tsv
+snapshot_status	completed_stages	completed-stage snapshot contract
+standard_scope	representative_mixed_only	suite configuration
+full_scope	representative_mixed_only	suite configuration
+headline_right_maximal_source	full/right-maximal	snapshot aggregation contract
+headline_right_maximal_query_repetitions	3	full/right-maximal/raw_repetitions.tsv
+excluded_stage	headline/right-maximal	unfinished stage exclusion
+source_archive_sha256	25d928b3d6844a5a98444538b30eb0fe4c2eedea4b0e1182b418edd26c1e1c9f	downloaded completed-stage archive

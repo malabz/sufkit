@@ -1,9 +1,8 @@
 #pragma once
 
-#include "benchmark_provenance.hpp"
-
 #include <cstdint>
 #include <filesystem>
+#include <map>
 #include <optional>
 #include <string>
 #include <vector>
@@ -43,10 +42,13 @@ struct Options {
     std::vector<LocateLimit> locate_limits;
     std::vector<std::string> fm_query_modes{"scalar"};
     std::vector<std::uint32_t> fm_batch_widths{16};
+    /** Per-backend benchmark overrides; absent backends use fm_batch_widths. */
+    std::map<std::string, std::vector<std::uint32_t>> fm_batch_width_overrides;
     std::uint64_t seed = 20260822;
     std::optional<std::uint32_t> build_repetitions;
     std::optional<std::uint32_t> query_repetitions;
     std::optional<std::uint32_t> warmups;
+    std::uint32_t sa_threads = 1;
     std::uint32_t learned_k = 20;
     std::uint32_t learned_memory_overhead_basis_points = 100;
     std::optional<std::uint32_t> learned_bucket_bits;
@@ -92,7 +94,10 @@ struct BuildRaw {
     double child_build_seconds = 0.0;
     double learned_index_build_seconds = 0.0;
     double save_seconds = 0.0;
+    /** Peak RSS of the isolated worker that performs this build and save. */
+    double peak_rss_mb = 0.0;
     std::uint64_t serialized_bytes = 0;
+    std::uint64_t allocated_disk_bytes = 0;
     std::uint64_t learned_index_bytes = 0;
     std::string status = "ok";
 };
@@ -102,6 +107,8 @@ struct LoadRaw {
     double seconds = 0.0;
     double user_seconds = 0.0;
     double system_seconds = 0.0;
+    /** Peak RSS of the isolated worker that performs this load. */
+    double peak_rss_mb = 0.0;
     std::string status = "ok";
 };
 
@@ -115,11 +122,13 @@ struct QueryRaw {
     std::string fm_batch_width = "NA";
     std::uint32_t repetition = 0;
     std::uint64_t query_count = 0;
+    std::uint64_t skipped_high_frequency_queries = 0;
     std::uint64_t query_bases = 0;
-    std::uint64_t measurement_iterations = 1;
     double seconds = 0.0;
     double user_seconds = 0.0;
     double system_seconds = 0.0;
+    /** Peak RSS of the isolated count or locate worker. */
+    double peak_rss_mb = 0.0;
     std::uint64_t total_hits = 0;
     std::uint64_t reported_hits = 0;
     std::uint64_t checksum = 0;
@@ -147,9 +156,15 @@ struct MethodResult {
     std::string signature;
     std::string sdsl_version;
     std::uint8_t coordinate_width = 0;
-    std::uint32_t sa_sampling_rate = 0;
+    std::uint32_t sa_sampling_rate = 1;
+    std::uint32_t threads = 1;
+    /** Compatibility aggregate: maximum of all phase-worker RSS values. */
     double peak_rss_mb = 0.0;
     std::filesystem::path canonical_index;
+    bool has_canary = false;
+    std::uint64_t canary_total_hits = 0;
+    std::uint64_t canary_reported_hits = 0;
+    std::uint64_t canary_checksum = 0;
     std::vector<BuildRaw> builds;
     std::vector<LoadRaw> loads;
     std::vector<QueryRaw> queries;
@@ -166,12 +181,13 @@ struct RunContext {
     std::string build_repetitions;
     std::string query_repetitions;
     std::string warmups;
+    std::string sa_threads;
     std::string learned_k;
     std::string learned_memory_overhead_basis_points;
     std::string learned_bucket_bits;
     std::string fm_query_modes;
     std::string fm_batch_widths;
-    BenchmarkProvenance provenance;
+    std::string fm_batch_width_overrides;
 };
 
 const char* to_string(Profile value) noexcept;

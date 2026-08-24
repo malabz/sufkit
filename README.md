@@ -89,4 +89,5 @@ and `.sufidx` 1.0–1.3 reading remain stable. See the
 
 [Documentation](docs/README.md) · [中文说明](README.zh-CN.md) ·
 [Contributing](CONTRIBUTING.md) ·
-[Benchmark summary](docs/benchmarks/README.md)
+[Benchmark summary](docs/benchmarks/README.md) ·
+[Representative benchmark results](benchmarks/README.md)

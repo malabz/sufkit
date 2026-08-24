@@ -205,7 +205,8 @@ if(SUFKIT_BUILD_CLI)
     endif()
     if(SUFKIT_BUILD_BENCHMARKS)
         target_include_directories(sufkit_cli PRIVATE
-            ${CMAKE_CURRENT_SOURCE_DIR}/src)
+            ${CMAKE_CURRENT_SOURCE_DIR}/src
+            ${CMAKE_CURRENT_SOURCE_DIR}/benchmarks)
         if(_sufkit_suffix_link_scan_diagnostics)
             target_compile_definitions(sufkit_cli PRIVATE
                 SUFKIT_ENABLE_SUFFIX_LINK_DIAGNOSTICS=1)
@@ -326,10 +327,24 @@ if(SUFKIT_BUILD_TESTS)
         add_test(NAME sufkit_mummer4_differential_tests
             COMMAND sufkit_mummer4_differential_tests)
     endif()
+    if(SUFKIT_BUILD_BENCHMARKS)
+        find_package(Python3 COMPONENTS Interpreter QUIET)
+        if(Python3_Interpreter_FOUND)
+            add_test(NAME sufkit_benchmark_packager_tests
+                COMMAND ${CMAKE_COMMAND} -E env PYTHONDONTWRITEBYTECODE=1
+                    ${Python3_EXECUTABLE} -B
+                    ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_package_benchmark_results.py -v)
+            add_test(NAME sufkit_server_runner_recovery_tests
+                COMMAND ${CMAKE_COMMAND} -E env PYTHONDONTWRITEBYTECODE=1
+                    ${Python3_EXECUTABLE} -B
+                    ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_run_server_suite.py -v)
+        endif()
+    endif()
     if(SUFKIT_BUILD_CLI AND SUFKIT_BUILD_BENCHMARKS)
         add_test(NAME sufkit_benchmark_smoke
             COMMAND ${CMAKE_COMMAND}
                 -DSUFKIT_EXECUTABLE=$<TARGET_FILE:sufkit_cli>
+                -DSUFKIT_CAPS_ENABLED=$<BOOL:${SUFKIT_ENABLE_CAPS}>
                 -DOUTPUT_ROOT=${CMAKE_CURRENT_BINARY_DIR}/test-benchmark
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_benchmark.cmake)
         set_tests_properties(sufkit_benchmark_smoke PROPERTIES TIMEOUT 180)
@@ -360,9 +375,20 @@ if(SUFKIT_BUILD_BENCHMARKS)
     add_executable(sufkit_sa_build_bench benchmarks/sa_build_benchmark.cpp)
     target_link_libraries(sufkit_sa_build_bench PRIVATE sufkit::sufkit)
     target_compile_features(sufkit_sa_build_bench PRIVATE cxx_std_17)
-    target_include_directories(sufkit_sa_build_bench PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_include_directories(sufkit_sa_build_bench PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+        ${CMAKE_CURRENT_SOURCE_DIR}/benchmarks)
     if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
         target_compile_options(sufkit_sa_build_bench PRIVATE -Wall -Wextra -Wpedantic -Wconversion -Wshadow)
+    endif()
+    if(SUFKIT_BUILD_TESTS)
+        add_test(NAME sufkit_sa_build_benchmark_smoke
+            COMMAND ${CMAKE_COMMAND}
+                -DSUFKIT_SA_BUILD_BENCH=$<TARGET_FILE:sufkit_sa_build_bench>
+                -DOUTPUT_ROOT=${CMAKE_CURRENT_BINARY_DIR}/test-sa-build-benchmark
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_sa_build_benchmark.cmake)
+        set_tests_properties(sufkit_sa_build_benchmark_smoke PROPERTIES
+            TIMEOUT 180)
     endif()
 
     add_executable(sufkit_low_level_bench

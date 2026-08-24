@@ -1,0 +1,2 @@
+run_id	dataset	method	query_group	pattern_length	strand	operation	status
+fixture	full-mixed	fm-huff	exact_unique	100	forward	count	ok
