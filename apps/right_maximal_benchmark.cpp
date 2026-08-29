@@ -93,6 +93,7 @@ struct BuildResult {
     std::string acceleration;
     double build_seconds = 0;
     double sa_build_seconds = 0;
+    double storage_compaction_seconds = 0;
     double isa_build_seconds = 0;
     double lcp_build_seconds = 0;
     double child_build_seconds = 0;
@@ -103,15 +104,23 @@ struct BuildResult {
     double save_peak_rss_mb = 0;
     double load_peak_rss_mb = 0;
     std::string build_peak_rss_scope =
-        "build_worker_inherited_controller_dataset_plus_build";
+        "build_worker_clean_exec_reference_plus_build";
     std::string save_peak_rss_scope =
-        "save_worker_inherited_controller_dataset_plus_load_plus_save";
+        "save_worker_clean_exec_load_plus_save";
     std::string load_peak_rss_scope =
-        "load_worker_inherited_controller_dataset_plus_load";
+        "load_worker_clean_exec_load";
     std::uint64_t serialized_bytes = 0;
     std::uint64_t allocated_disk_bytes = 0;
     std::uint64_t auxiliary_bytes = 0;
     std::uint64_t learned_index_bytes = 0;
+    std::uint64_t sa_bytes = 0;
+    std::uint64_t isa_bytes = 0;
+    std::uint64_t lcp_bytes = 0;
+    std::uint64_t resident_core_bytes = 0;
+    std::uint8_t construction_coordinate_width = 0;
+    std::uint8_t stored_coordinate_width = 0;
+    SaResourceProfile resource_profile = SaResourceProfile::kFast;
+    SaLcpEncoding lcp_encoding = SaLcpEncoding::kNone;
     std::uint32_t repetitions = 1;
     std::uint32_t sampling_rate = 1;
     std::string status = "ok";
@@ -133,7 +142,7 @@ struct QueryResultRow {
     std::uint64_t checksum = 0;
     double peak_rss_mb = 0;
     std::string peak_rss_scope =
-        "query_worker_inherited_controller_dataset_queries_plus_load_plus_query";
+        "query_worker_clean_exec_queries_plus_load_plus_query";
     std::uint64_t materialization_match_threshold =
         kVectorMaterializationMatchThreshold;
     bool vector_skipped = false;
@@ -293,10 +302,14 @@ Options parse(const std::vector<std::string>& arguments) {
         "right-maximal-sampled-k4", "right-maximal-sampled-k8", "mummer4"};
     const std::set<std::string> mem_methods{
         "mem-baseline", "mem-lcp", "mem-child", "mem-suffix-link",
-        "mem-full", "mummer4"};
+        "mem-full", "mem-auto-fast", "mem-auto-low-memory",
+        "mem-suffix-link-fast",
+        "mem-lcp-fast-auto-skip", "mem-lcp-fast-skip1",
+        "mem-suffix-link-fast-auto-skip", "mem-lcp-low-memory", "mummer4"};
     const std::set<std::string> mam_methods{
         "mam-baseline", "mam-lcp", "mam-child", "mam-suffix-link",
-        "mam-full", "mummer4"};
+        "mam-full", "mam-auto-fast", "mam-auto-low-memory",
+        "mam-suffix-link-fast", "mam-lcp-low-memory", "mummer4"};
     const auto& valid_methods = result.workload == "right-maximal"
                                     ? right_maximal_methods
                                 : result.workload == "mem" ? mem_methods
@@ -817,7 +830,17 @@ void accumulate_statistics(
 SaAcceleration acceleration_for(const std::string& method) {
     if (method.find("baseline") != std::string::npos)
         return SaAcceleration::kNone;
-    if (method.size() >= 4 && method.substr(method.size() - 4) == "-lcp")
+    if (method == "mem-auto-fast" || method == "mam-auto-fast")
+        return SaAcceleration::kLcpSuffixLink;
+    if (method == "mem-auto-low-memory" ||
+        method == "mam-auto-low-memory")
+        return SaAcceleration::kLcp;
+    // Query-strategy ablations with "-fast-" must use the same retained
+    // SA+ISA+raw-LCP index. Only the query algorithm and skip policy differ.
+    if (method.find("mem-lcp-fast-") != std::string::npos)
+        return SaAcceleration::kLcpSuffixLink;
+    if ((method.size() >= 4 && method.substr(method.size() - 4) == "-lcp") ||
+        method.find("-lcp-") != std::string::npos)
         return SaAcceleration::kLcp;
     if (method.find("child") != std::string::npos)
         return SaAcceleration::kLcpChild;
@@ -830,7 +853,11 @@ SaAcceleration acceleration_for(const std::string& method) {
 RightMaximalSearchAlgorithm algorithm_for(const std::string& method) {
     if (method.find("baseline") != std::string::npos)
         return RightMaximalSearchAlgorithm::kBaseline;
-    if (method.size() >= 4 && method.substr(method.size() - 4) == "-lcp")
+    if (method == "mem-auto-fast" || method == "mem-auto-low-memory" ||
+        method == "mam-auto-fast" || method == "mam-auto-low-memory")
+        return RightMaximalSearchAlgorithm::kAutoSelect;
+    if ((method.size() >= 4 && method.substr(method.size() - 4) == "-lcp") ||
+        method.find("-lcp-") != std::string::npos)
         return RightMaximalSearchAlgorithm::kLcp;
     if (method.find("child") != std::string::npos)
         return RightMaximalSearchAlgorithm::kChild;
@@ -840,10 +867,59 @@ RightMaximalSearchAlgorithm algorithm_for(const std::string& method) {
     return RightMaximalSearchAlgorithm::kFull;
 }
 
+std::uint32_t mummer_style_skip(std::uint64_t min_length,
+                                std::uint32_t sampling_rate) {
+    const auto maximum = min_length / sampling_rate;
+    const auto reserve = sampling_rate >= 4 ? std::uint64_t{10}
+                                            : std::uint64_t{12};
+    const auto available =
+        min_length > reserve ? min_length - reserve : std::uint64_t{0};
+    const auto skip = std::min(
+        std::max<std::uint64_t>(available / sampling_rate, 1), maximum);
+    if (skip == 0 || skip > std::numeric_limits<std::uint32_t>::max()) {
+        throw Error(ErrorCode::kInvalidInput,
+                    "benchmark MEM skip is incompatible with min_length");
+    }
+    return static_cast<std::uint32_t>(skip);
+}
+
+void configure_mem_skip(const std::string& method, std::uint64_t min_length,
+                        std::uint32_t sampling_rate, MemOptions& options) {
+    if (method == "mem-lcp-fast-skip1" ||
+        method == "mem-suffix-link-fast") {
+        options.skip_multiplier = 1;
+    } else if (method == "mem-lcp-fast-auto-skip" ||
+               method == "mem-suffix-link-fast-auto-skip") {
+        options.skip_multiplier =
+            mummer_style_skip(min_length, sampling_rate);
+    }
+}
+
 std::uint32_t sampling_rate_for(const std::string& method) {
     if (method == "right-maximal-sampled-k4") return 4;
     if (method == "right-maximal-sampled-k8") return 8;
     return 1;
+}
+
+SuffixArrayBuildOptions internal_build_options(
+    const std::string& method, const Options& options,
+    SuffixArrayBuildStatistics* statistics) {
+    SuffixArrayBuildOptions value;
+    value.acceleration = acceleration_for(method);
+    value.sampling_rate = sampling_rate_for(method);
+    value.statistics = statistics;
+    value.resource_profile =
+        method.find("low-memory") == std::string::npos
+            ? SaResourceProfile::kFast
+            : SaResourceProfile::kLowMemory;
+    if (method.find("-suffix-link-sapling") != std::string::npos) {
+        value.learned_index.enabled = true;
+        value.learned_index.k = options.learned_k;
+        value.learned_index.memory_overhead_basis_points =
+            options.learned_memory_overhead_basis_points;
+        value.learned_index.bucket_bits = options.learned_bucket_bits;
+    }
+    return value;
 }
 
 std::uint64_t serialized_size(const std::filesystem::path& path) {
@@ -916,23 +992,30 @@ CpuUsage cpu_usage_delta(const CpuUsage& begin, const CpuUsage& end) {
             end.system_seconds - begin.system_seconds};
 }
 
-ChildUsage run_isolated_worker(
+ChildUsage run_clean_exec_worker(
     const std::filesystem::path& error_path,
-    const std::function<void()>& work) {
+    const std::vector<std::string>& worker_arguments) {
     const pid_t pid = fork();
     if (pid < 0)
         throw Error(ErrorCode::kIoError,
             "cannot fork isolated right-maximal benchmark phase worker");
     if (pid == 0) {
-        try {
-            work();
-            _exit(0);
-        } catch (const std::exception& error) {
-            std::ofstream output(error_path);
-            output << error.what() << '\n';
-            output.flush();
-            _exit(1);
+        const auto error_descriptor = open(
+            error_path.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
+        if (error_descriptor < 0 ||
+            dup2(error_descriptor, STDERR_FILENO) < 0) {
+            _exit(126);
         }
+        std::vector<std::string> arguments{
+            "/proc/self/exe", "__maximal-benchmark-worker"};
+        arguments.insert(
+            arguments.end(), worker_arguments.begin(), worker_arguments.end());
+        std::vector<char*> argv;
+        argv.reserve(arguments.size() + 1);
+        for (auto& argument : arguments) argv.push_back(argument.data());
+        argv.push_back(nullptr);
+        execv(argv.front(), argv.data());
+        _exit(127);
     }
     int status = 0;
     rusage usage{};
@@ -944,7 +1027,9 @@ ChildUsage run_isolated_worker(
         std::string message;
         std::getline(input, message);
         throw Error(ErrorCode::kBuildFailure,
-            message.empty() ? "isolated right-maximal benchmark phase worker failed" : message);
+            message.empty()
+                ? "clean-exec maximal-match benchmark phase worker failed"
+                : message);
     }
     return {
         timeval_seconds(usage.ru_utime),
@@ -985,12 +1070,21 @@ struct BuildPhaseResult {
     double user_cpu_seconds = 0;
     double system_cpu_seconds = 0;
     double sa_seconds = 0;
+    double storage_compaction_seconds = 0;
     double isa_seconds = 0;
     double lcp_seconds = 0;
     double child_seconds = 0;
     double learned_seconds = 0;
     std::uint64_t auxiliary_bytes = 0;
     std::uint64_t learned_index_bytes = 0;
+    std::uint64_t sa_bytes = 0;
+    std::uint64_t isa_bytes = 0;
+    std::uint64_t lcp_bytes = 0;
+    std::uint64_t resident_core_bytes = 0;
+    std::uint8_t construction_coordinate_width = 0;
+    std::uint8_t stored_coordinate_width = 0;
+    std::uint8_t resource_profile = 0;
+    std::uint8_t lcp_encoding = 0;
 };
 
 struct SavePhaseResult {
@@ -1080,6 +1174,8 @@ OperationMeasurement measure_operation(
             options.strands = strands;
             options.algorithm = static_cast<MemSearchAlgorithm>(
                 static_cast<std::uint8_t>(algorithm_for(method)));
+            configure_mem_skip(method, min_length, index.SamplingRate(),
+                               options);
             if (method.find("-binary") != std::string::npos)
                 options.lookup_algorithm = SaSearchAlgorithm::kBinary;
             else if (method.find("-sapling") != std::string::npos)
@@ -1160,9 +1256,220 @@ OperationMeasurement measure_operation(
     return measured;
 }
 
+const std::string& require_worker_argument(
+    const std::vector<std::string>& arguments, std::size_t& index,
+    const char* label) {
+    if (index >= arguments.size()) {
+        throw Error(ErrorCode::kInvalidInput,
+            std::string("missing maximal-match worker argument: ") + label);
+    }
+    return arguments[index++];
+}
+
+std::optional<std::uint32_t> parse_worker_optional_u32(
+    const std::string& value, const char* label) {
+    if (value == "NA") return std::nullopt;
+    const auto parsed = parse_number(value, label);
+    if (parsed > std::numeric_limits<std::uint32_t>::max()) {
+        throw Error(ErrorCode::kInvalidInput,
+            std::string(label) + " exceeds uint32_t");
+    }
+    return static_cast<std::uint32_t>(parsed);
+}
+
+std::uint32_t parse_worker_u32(
+    const std::string& value, const char* label) {
+    const auto parsed = parse_number(value, label);
+    if (parsed > std::numeric_limits<std::uint32_t>::max()) {
+        throw Error(ErrorCode::kInvalidInput,
+            std::string(label) + " exceeds uint32_t");
+    }
+    return static_cast<std::uint32_t>(parsed);
+}
+
+OperationSpec worker_operation(const std::string& name) {
+    for (const auto& operation : operation_specs()) {
+        if (name == operation.name) return operation;
+    }
+    throw Error(ErrorCode::kInvalidInput,
+        "invalid maximal-match worker operation: " + name);
+}
+
+int run_clean_exec_phase(const std::vector<std::string>& arguments) {
+    std::size_t index = 0;
+    const auto action = require_worker_argument(arguments, index, "action");
+    if (action == "build" || action == "canonical") {
+        const auto method = require_worker_argument(arguments, index, "method");
+        const std::filesystem::path reference_path =
+            require_worker_argument(arguments, index, "reference");
+        const std::filesystem::path output_path =
+            require_worker_argument(arguments, index, "output");
+        Options options;
+        options.learned_k = parse_worker_u32(
+            require_worker_argument(arguments, index, "learned k"),
+            "learned k");
+        options.learned_memory_overhead_basis_points = parse_worker_u32(
+            require_worker_argument(arguments, index, "learned memory"),
+            "learned memory");
+        options.learned_bucket_bits = parse_worker_optional_u32(
+            require_worker_argument(arguments, index, "learned bucket bits"),
+            "learned bucket bits");
+        if (index != arguments.size()) {
+            throw Error(ErrorCode::kInvalidInput,
+                "too many maximal-match build worker arguments");
+        }
+        const auto reference = GenomeReference::FromFasta(reference_path);
+        if (action == "canonical") {
+            const auto built = SuffixArray::Build(
+                reference, internal_build_options(method, options, nullptr));
+            built.Save(output_path, {true});
+            return 0;
+        }
+        SuffixArrayBuildStatistics statistics;
+        const auto build_options =
+            internal_build_options(method, options, &statistics);
+        const auto cpu_begin = current_cpu_usage();
+        const auto begin = Clock::now();
+        const auto built = SuffixArray::Build(reference, build_options);
+        BuildPhaseResult phase;
+        phase.seconds = seconds_since(begin);
+        const auto cpu = cpu_usage_delta(cpu_begin, current_cpu_usage());
+        phase.user_cpu_seconds = cpu.user_seconds;
+        phase.system_cpu_seconds = cpu.system_seconds;
+        phase.sa_seconds = statistics.sa_seconds;
+        phase.storage_compaction_seconds =
+            statistics.storage_compaction_seconds;
+        phase.isa_seconds = statistics.isa_seconds;
+        phase.lcp_seconds = statistics.lcp_seconds;
+        phase.child_seconds = statistics.child_seconds;
+        phase.learned_seconds = statistics.learned_index_seconds;
+        const auto info = built.GetInfo();
+        phase.auxiliary_bytes = info.auxiliary_bytes;
+        phase.learned_index_bytes = info.learned_index_bytes;
+        phase.sa_bytes = info.sa_bytes;
+        phase.isa_bytes = info.isa_bytes;
+        phase.lcp_bytes = info.lcp_bytes;
+        phase.resident_core_bytes = info.resident_core_bytes;
+        phase.construction_coordinate_width = info.coordinate_width;
+        phase.stored_coordinate_width = info.stored_coordinate_width;
+        phase.resource_profile =
+            static_cast<std::uint8_t>(info.sa_resource_profile);
+        phase.lcp_encoding = static_cast<std::uint8_t>(info.lcp_encoding);
+        write_phase_result(output_path, phase);
+        return 0;
+    }
+    if (action == "save") {
+        const std::filesystem::path canonical_path =
+            require_worker_argument(arguments, index, "canonical index");
+        const std::filesystem::path saved_path =
+            require_worker_argument(arguments, index, "saved index");
+        const std::filesystem::path result_path =
+            require_worker_argument(arguments, index, "result");
+        if (index != arguments.size()) {
+            throw Error(ErrorCode::kInvalidInput,
+                "too many maximal-match save worker arguments");
+        }
+        const auto loaded = SuffixArray::Load(canonical_path);
+        const auto cpu_begin = current_cpu_usage();
+        const auto begin = Clock::now();
+        loaded.Save(saved_path, {true});
+        SavePhaseResult phase;
+        phase.seconds = seconds_since(begin);
+        const auto cpu = cpu_usage_delta(cpu_begin, current_cpu_usage());
+        phase.user_cpu_seconds = cpu.user_seconds;
+        phase.system_cpu_seconds = cpu.system_seconds;
+        phase.serialized_bytes = serialized_size(saved_path);
+        phase.allocated_disk_bytes = allocated_disk_size(saved_path);
+        phase.auxiliary_bytes = loaded.GetInfo().auxiliary_bytes;
+        phase.learned_index_bytes = loaded.GetInfo().learned_index_bytes;
+        write_phase_result(result_path, phase);
+        return 0;
+    }
+    if (action == "load") {
+        const std::filesystem::path canonical_path =
+            require_worker_argument(arguments, index, "canonical index");
+        const std::filesystem::path result_path =
+            require_worker_argument(arguments, index, "result");
+        if (index != arguments.size()) {
+            throw Error(ErrorCode::kInvalidInput,
+                "too many maximal-match load worker arguments");
+        }
+        const auto cpu_begin = current_cpu_usage();
+        const auto begin = Clock::now();
+        const auto loaded = SuffixArray::Load(canonical_path);
+        LoadPhaseResult phase;
+        phase.seconds = seconds_since(begin);
+        const auto cpu = cpu_usage_delta(cpu_begin, current_cpu_usage());
+        phase.user_cpu_seconds = cpu.user_seconds;
+        phase.system_cpu_seconds = cpu.system_seconds;
+        phase.serialized_bytes = serialized_size(canonical_path);
+        phase.allocated_disk_bytes = allocated_disk_size(canonical_path);
+        phase.auxiliary_bytes = loaded.GetInfo().auxiliary_bytes;
+        phase.learned_index_bytes = loaded.GetInfo().learned_index_bytes;
+        write_phase_result(result_path, phase);
+        return 0;
+    }
+    if (action == "query") {
+        const auto method = require_worker_argument(arguments, index, "method");
+        const auto workload =
+            require_worker_argument(arguments, index, "workload");
+        const std::filesystem::path query_path =
+            require_worker_argument(arguments, index, "queries");
+        const std::filesystem::path canonical_path =
+            require_worker_argument(arguments, index, "canonical index");
+        const std::filesystem::path result_path =
+            require_worker_argument(arguments, index, "result");
+        const auto min_length = parse_number(
+            require_worker_argument(arguments, index, "minimum length"),
+            "minimum length");
+        const auto operation = worker_operation(
+            require_worker_argument(arguments, index, "operation"));
+        const auto warmups = parse_worker_u32(
+            require_worker_argument(arguments, index, "warmups"),
+            "warmups");
+        if (index != arguments.size()) {
+            throw Error(ErrorCode::kInvalidInput,
+                "too many maximal-match query worker arguments");
+        }
+        Dataset dataset;
+        dataset.queries = ReadFastaRecords(query_path);
+        for (const auto& query : dataset.queries) {
+            dataset.query_bases += query.sequence.size();
+        }
+        Options options;
+        options.workload = workload;
+        const auto loaded = SuffixArray::Load(canonical_path);
+        for (std::uint32_t warmup = 0; warmup < warmups; ++warmup) {
+            (void)measure_operation(
+                loaded, dataset, options, method, min_length,
+                StrandMode::kForward, operation);
+        }
+        const auto measured = measure_operation(
+            loaded, dataset, options, method, min_length,
+            StrandMode::kForward, operation);
+        QueryPhaseResult phase;
+        phase.seconds = measured.seconds;
+        phase.user_cpu_seconds = measured.user_cpu_seconds;
+        phase.system_cpu_seconds = measured.system_cpu_seconds;
+        phase.total_matches = measured.total_matches;
+        phase.reported_matches = measured.reported_matches;
+        phase.count_checksum = measured.count_checksum;
+        phase.result_checksum = measured.result_checksum;
+        phase.statistics = measured.statistics;
+        write_phase_result(result_path, phase);
+        return 0;
+    }
+    throw Error(ErrorCode::kInvalidInput,
+        "unknown maximal-match benchmark worker action: " + action);
+}
+
 void benchmark_internal(const Dataset& dataset, const Options& options, const std::string& method,
     const std::filesystem::path& scratch, std::vector<BuildResult>& builds,
     std::vector<QueryResultRow>& queries, std::vector<RawRow>& raw) {
+    const auto reference_path = scratch / (method + ".reference.fa");
+    const auto query_path = scratch / (method + ".queries.fa");
+    write_fasta(reference_path, dataset.reference);
+    write_fasta(query_path, dataset.queries);
     BuildResult build;
     build.dataset = dataset.name;
     build.method = method;
@@ -1170,22 +1477,19 @@ void benchmark_internal(const Dataset& dataset, const Options& options, const st
     build.acceleration = ToString(acceleration_for(method));
     build.repetitions = options.build_repetitions;
     build.sampling_rate = sampling_rate_for(method);
-    const auto make_build_options = [&](SuffixArrayBuildStatistics* statistics) {
-        SuffixArrayBuildOptions value;
-        value.acceleration = acceleration_for(method);
-        value.sampling_rate = build.sampling_rate;
-        value.statistics = statistics;
-        if (method.find("-suffix-link-sapling") != std::string::npos) {
-            value.learned_index.enabled = true;
-            value.learned_index.k = options.learned_k;
-            value.learned_index.memory_overhead_basis_points =
-                options.learned_memory_overhead_basis_points;
-            value.learned_index.bucket_bits = options.learned_bucket_bits;
-        }
-        return value;
+    const auto learned_bucket_bits = options.learned_bucket_bits
+        ? std::to_string(*options.learned_bucket_bits) : std::string("NA");
+    const auto build_worker_arguments = [&](const char* action,
+                                             const auto& output) {
+        return std::vector<std::string>{
+            action, method, reference_path.string(), output.string(),
+            std::to_string(options.learned_k),
+            std::to_string(options.learned_memory_overhead_basis_points),
+            learned_bucket_bits};
     };
     std::vector<double> build_seconds;
     std::vector<double> sa_seconds;
+    std::vector<double> storage_compaction_seconds;
     std::vector<double> isa_seconds;
     std::vector<double> lcp_seconds;
     std::vector<double> child_seconds;
@@ -1201,30 +1505,13 @@ void benchmark_internal(const Dataset& dataset, const Options& options, const st
             (method + ".build." + std::to_string(repetition) + ".bin");
         const auto error_path = scratch /
             (method + ".build." + std::to_string(repetition) + ".error");
-        const auto usage = run_isolated_worker(error_path, [&] {
-            const auto reference = GenomeReference::FromRecords(dataset.reference);
-            SuffixArrayBuildStatistics statistics;
-            const auto build_options = make_build_options(&statistics);
-            const auto cpu_begin = current_cpu_usage();
-            const auto begin = Clock::now();
-            const auto index = SuffixArray::Build(reference, build_options);
-            BuildPhaseResult phase;
-            phase.seconds = seconds_since(begin);
-            const auto cpu = cpu_usage_delta(cpu_begin, current_cpu_usage());
-            phase.user_cpu_seconds = cpu.user_seconds;
-            phase.system_cpu_seconds = cpu.system_seconds;
-            phase.sa_seconds = statistics.sa_seconds;
-            phase.isa_seconds = statistics.isa_seconds;
-            phase.lcp_seconds = statistics.lcp_seconds;
-            phase.child_seconds = statistics.child_seconds;
-            phase.learned_seconds = statistics.learned_index_seconds;
-            phase.auxiliary_bytes = index.GetInfo().auxiliary_bytes;
-            phase.learned_index_bytes = index.GetInfo().learned_index_bytes;
-            write_phase_result(result_path, phase);
-        });
+        const auto usage = run_clean_exec_worker(
+            error_path, build_worker_arguments("build", result_path));
         const auto phase = read_phase_result<BuildPhaseResult>(result_path);
         build_seconds.push_back(phase.seconds);
         sa_seconds.push_back(phase.sa_seconds);
+        storage_compaction_seconds.push_back(
+            phase.storage_compaction_seconds);
         isa_seconds.push_back(phase.isa_seconds);
         lcp_seconds.push_back(phase.lcp_seconds);
         child_seconds.push_back(phase.child_seconds);
@@ -1232,6 +1519,17 @@ void benchmark_internal(const Dataset& dataset, const Options& options, const st
         build_peak_rss.push_back(usage.peak_rss_mb);
         build.auxiliary_bytes = phase.auxiliary_bytes;
         build.learned_index_bytes = phase.learned_index_bytes;
+        build.sa_bytes = phase.sa_bytes;
+        build.isa_bytes = phase.isa_bytes;
+        build.lcp_bytes = phase.lcp_bytes;
+        build.resident_core_bytes = phase.resident_core_bytes;
+        build.construction_coordinate_width =
+            phase.construction_coordinate_width;
+        build.stored_coordinate_width = phase.stored_coordinate_width;
+        build.resource_profile =
+            static_cast<SaResourceProfile>(phase.resource_profile);
+        build.lcp_encoding =
+            static_cast<SaLcpEncoding>(phase.lcp_encoding);
         auto phase_usage = usage;
         phase_usage.user_cpu_seconds = phase.user_cpu_seconds;
         phase_usage.system_cpu_seconds = phase.system_cpu_seconds;
@@ -1245,11 +1543,9 @@ void benchmark_internal(const Dataset& dataset, const Options& options, const st
     // save, load, and query phases can each start in a fresh process.
     const auto canonical_path = scratch / (method + ".canonical.sufidx");
     const auto canonical_error = scratch / (method + ".canonical.error");
-    (void)run_isolated_worker(canonical_error, [&] {
-        const auto reference = GenomeReference::FromRecords(dataset.reference);
-        const auto index = SuffixArray::Build(reference, make_build_options(nullptr));
-        index.Save(canonical_path, {true});
-    });
+    (void)run_clean_exec_worker(
+        canonical_error,
+        build_worker_arguments("canonical", canonical_path));
 
     for (std::uint32_t repetition = 0; repetition < options.build_repetitions; ++repetition) {
         const auto saved_path = scratch /
@@ -1258,22 +1554,9 @@ void benchmark_internal(const Dataset& dataset, const Options& options, const st
             (method + ".save." + std::to_string(repetition) + ".bin");
         const auto error_path = scratch /
             (method + ".save." + std::to_string(repetition) + ".error");
-        const auto usage = run_isolated_worker(error_path, [&] {
-            const auto index = SuffixArray::Load(canonical_path);
-            const auto cpu_begin = current_cpu_usage();
-            const auto begin = Clock::now();
-            index.Save(saved_path, {true});
-            SavePhaseResult phase;
-            phase.seconds = seconds_since(begin);
-            const auto cpu = cpu_usage_delta(cpu_begin, current_cpu_usage());
-            phase.user_cpu_seconds = cpu.user_seconds;
-            phase.system_cpu_seconds = cpu.system_seconds;
-            phase.serialized_bytes = serialized_size(saved_path);
-            phase.allocated_disk_bytes = allocated_disk_size(saved_path);
-            phase.auxiliary_bytes = index.GetInfo().auxiliary_bytes;
-            phase.learned_index_bytes = index.GetInfo().learned_index_bytes;
-            write_phase_result(result_path, phase);
-        });
+        const auto usage = run_clean_exec_worker(error_path, {
+            "save", canonical_path.string(), saved_path.string(),
+            result_path.string()});
         const auto phase = read_phase_result<SavePhaseResult>(result_path);
         save_seconds.push_back(phase.seconds);
         save_peak_rss.push_back(usage.peak_rss_mb);
@@ -1297,21 +1580,8 @@ void benchmark_internal(const Dataset& dataset, const Options& options, const st
             (method + ".load." + std::to_string(repetition) + ".bin");
         const auto error_path = scratch /
             (method + ".load." + std::to_string(repetition) + ".error");
-        const auto usage = run_isolated_worker(error_path, [&] {
-            const auto cpu_begin = current_cpu_usage();
-            const auto begin = Clock::now();
-            const auto index = SuffixArray::Load(canonical_path);
-            LoadPhaseResult phase;
-            phase.seconds = seconds_since(begin);
-            const auto cpu = cpu_usage_delta(cpu_begin, current_cpu_usage());
-            phase.user_cpu_seconds = cpu.user_seconds;
-            phase.system_cpu_seconds = cpu.system_seconds;
-            phase.serialized_bytes = canonical_serialized_bytes;
-            phase.allocated_disk_bytes = canonical_allocated_bytes;
-            phase.auxiliary_bytes = index.GetInfo().auxiliary_bytes;
-            phase.learned_index_bytes = index.GetInfo().learned_index_bytes;
-            write_phase_result(result_path, phase);
-        });
+        const auto usage = run_clean_exec_worker(error_path, {
+            "load", canonical_path.string(), result_path.string()});
         const auto phase = read_phase_result<LoadPhaseResult>(result_path);
         load_seconds.push_back(phase.seconds);
         load_peak_rss.push_back(usage.peak_rss_mb);
@@ -1326,6 +1596,7 @@ void benchmark_internal(const Dataset& dataset, const Options& options, const st
 
     build.build_seconds = median(build_seconds);
     build.sa_build_seconds = median(sa_seconds);
+    build.storage_compaction_seconds = median(storage_compaction_seconds);
     build.isa_build_seconds = median(isa_seconds);
     build.lcp_build_seconds = median(lcp_seconds);
     build.child_build_seconds = median(child_seconds);
@@ -1399,28 +1670,11 @@ void benchmark_internal(const Dataset& dataset, const Options& options, const st
                 const auto error_path = scratch / (method + ".query." +
                     std::to_string(min_length) + "." + operation.name + "." +
                     std::to_string(repetition) + ".error");
-                const auto usage = run_isolated_worker(error_path, [&] {
-                    const auto index = SuffixArray::Load(canonical_path);
-                    for (std::uint32_t warmup = 0;
-                         warmup < options.warmups; ++warmup) {
-                        (void)measure_operation(
-                            index, dataset, options, method, min_length,
-                            StrandMode::kForward, operation);
-                    }
-                    const auto measured = measure_operation(
-                        index, dataset, options, method, min_length,
-                        StrandMode::kForward, operation);
-                    QueryPhaseResult phase;
-                    phase.seconds = measured.seconds;
-                    phase.user_cpu_seconds = measured.user_cpu_seconds;
-                    phase.system_cpu_seconds = measured.system_cpu_seconds;
-                    phase.total_matches = measured.total_matches;
-                    phase.reported_matches = measured.reported_matches;
-                    phase.count_checksum = measured.count_checksum;
-                    phase.result_checksum = measured.result_checksum;
-                    phase.statistics = measured.statistics;
-                    write_phase_result(result_path, phase);
-                });
+                const auto usage = run_clean_exec_worker(error_path, {
+                    "query", method, options.workload, query_path.string(),
+                    canonical_path.string(), result_path.string(),
+                    std::to_string(min_length), operation.name,
+                    std::to_string(options.warmups)});
                 const auto measured = read_phase_result<QueryPhaseResult>(result_path);
                 if (repetition != 0 &&
                     (summary.total_matches != measured.total_matches ||
@@ -1510,7 +1764,7 @@ std::string read_worker_string(std::istream& input, const char* label) {
     return value;
 }
 
-void write_internal_worker_file(
+[[maybe_unused]] void write_internal_worker_file(
     const std::filesystem::path& path,
     const std::vector<BuildResult>& builds,
     const std::vector<QueryResultRow>& queries,
@@ -1529,6 +1783,7 @@ void write_internal_worker_file(
         write_worker_string(output, row.status);
         write_worker_value(output, row.build_seconds);
         write_worker_value(output, row.sa_build_seconds);
+        write_worker_value(output, row.storage_compaction_seconds);
         write_worker_value(output, row.isa_build_seconds);
         write_worker_value(output, row.lcp_build_seconds);
         write_worker_value(output, row.child_build_seconds);
@@ -1542,6 +1797,14 @@ void write_internal_worker_file(
         write_worker_value(output, row.allocated_disk_bytes);
         write_worker_value(output, row.auxiliary_bytes);
         write_worker_value(output, row.learned_index_bytes);
+        write_worker_value(output, row.sa_bytes);
+        write_worker_value(output, row.isa_bytes);
+        write_worker_value(output, row.lcp_bytes);
+        write_worker_value(output, row.resident_core_bytes);
+        write_worker_value(output, row.construction_coordinate_width);
+        write_worker_value(output, row.stored_coordinate_width);
+        write_worker_value(output, row.resource_profile);
+        write_worker_value(output, row.lcp_encoding);
         write_worker_value(output, row.repetitions);
         write_worker_value(output, row.sampling_rate);
     }
@@ -1597,7 +1860,7 @@ void write_internal_worker_file(
     if (!output) throw Error(ErrorCode::kIoError, "cannot finish right-maximal exact match worker result");
 }
 
-void read_internal_worker_file(
+[[maybe_unused]] void read_internal_worker_file(
     const std::filesystem::path& path,
     std::vector<BuildResult>& builds,
     std::vector<QueryResultRow>& queries,
@@ -1617,6 +1880,8 @@ void read_internal_worker_file(
         row.status = read_worker_string(input, "build status");
         row.build_seconds = read_worker_value<double>(input, "build seconds");
         row.sa_build_seconds = read_worker_value<double>(input, "SA seconds");
+        row.storage_compaction_seconds =
+            read_worker_value<double>(input, "storage compaction seconds");
         row.isa_build_seconds = read_worker_value<double>(input, "ISA seconds");
         row.lcp_build_seconds = read_worker_value<double>(input, "LCP seconds");
         row.child_build_seconds = read_worker_value<double>(input, "CHILD seconds");
@@ -1630,6 +1895,19 @@ void read_internal_worker_file(
         row.allocated_disk_bytes = read_worker_value<std::uint64_t>(input, "allocated disk bytes");
         row.auxiliary_bytes = read_worker_value<std::uint64_t>(input, "auxiliary bytes");
         row.learned_index_bytes = read_worker_value<std::uint64_t>(input, "model bytes");
+        row.sa_bytes = read_worker_value<std::uint64_t>(input, "SA bytes");
+        row.isa_bytes = read_worker_value<std::uint64_t>(input, "ISA bytes");
+        row.lcp_bytes = read_worker_value<std::uint64_t>(input, "LCP bytes");
+        row.resident_core_bytes =
+            read_worker_value<std::uint64_t>(input, "resident core bytes");
+        row.construction_coordinate_width = read_worker_value<std::uint8_t>(
+            input, "construction coordinate width");
+        row.stored_coordinate_width = read_worker_value<std::uint8_t>(
+            input, "stored coordinate width");
+        row.resource_profile = read_worker_value<SaResourceProfile>(
+            input, "SA resource profile");
+        row.lcp_encoding =
+            read_worker_value<SaLcpEncoding>(input, "LCP encoding");
         row.repetitions = read_worker_value<std::uint32_t>(input, "build repetitions");
         row.sampling_rate = read_worker_value<std::uint32_t>(input, "SA sampling rate");
         builds.push_back(std::move(row));
@@ -1697,7 +1975,7 @@ void read_internal_worker_file(
         throw Error(ErrorCode::kBuildFailure, "right-maximal exact match worker result has trailing bytes");
 }
 
-void benchmark_internal_isolated(
+void benchmark_internal_clean_exec(
     const Dataset& dataset,
     const Options& options,
     const std::string& method,
@@ -1705,38 +1983,10 @@ void benchmark_internal_isolated(
     std::vector<BuildResult>& builds,
     std::vector<QueryResultRow>& queries,
     std::vector<RawRow>& raw) {
-    const auto result_path = scratch / (method + ".worker.bin");
-    const auto error_path = scratch / (method + ".worker.error");
-    const pid_t pid = fork();
-    if (pid < 0) throw Error(ErrorCode::kIoError, "cannot fork right-maximal exact match benchmark worker");
-    if (pid == 0) {
-        try {
-            std::vector<BuildResult> worker_builds;
-            std::vector<QueryResultRow> worker_queries;
-            std::vector<RawRow> worker_raw;
-            benchmark_internal(
-                dataset, options, method, scratch,
-                worker_builds, worker_queries, worker_raw);
-            write_internal_worker_file(result_path, worker_builds, worker_queries, worker_raw);
-            _exit(0);
-        } catch (const std::exception& error) {
-            std::ofstream error_output(error_path);
-            error_output << error.what() << '\n';
-            error_output.flush();
-            _exit(1);
-        }
-    }
-    int status = 0;
-    if (waitpid(pid, &status, 0) < 0)
-        throw Error(ErrorCode::kIoError, "cannot wait for right-maximal exact match benchmark worker");
-    if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
-        std::ifstream error_input(error_path);
-        std::string message;
-        std::getline(error_input, message);
-        throw Error(ErrorCode::kBuildFailure,
-                    message.empty() ? "right-maximal exact match benchmark worker failed" : message);
-    }
-    read_internal_worker_file(result_path, builds, queries, raw);
+    // Every measured phase below uses exec(), so this orchestration layer no
+    // longer needs a fork that would leak the controller's resident heap into
+    // all phase RSS measurements.
+    benchmark_internal(dataset, options, method, scratch, builds, queries, raw);
 }
 
 struct ProcessResult {
@@ -2232,7 +2482,7 @@ void write_outputs(const Options& options, const std::vector<Dataset>& datasets,
                "\tvector_materialization_match_threshold"
                "\tnaive_right_maximal_oracle_status\toracle_reference_bases\toracle_query_bases"
                "\tlearned_k\tlearned_memory_overhead_basis_points\tlearned_bucket_bits"
-               "\tcompiler\tcmake_version\tbuild_type\tos\tarchitecture\tlogical_cpus\tmummer_version\tmummer_sha256\tworkload\n";
+               "\tcompiler\tcmake_version\tbuild_type\tos\tarchitecture\tlogical_cpus\tmummer_version\tmummer_sha256\tworkload\tworker_process_model\n";
         for (const auto& dataset : datasets) {
             out << options.profile << '\t' << dataset.scenario
             << '\t' << options.seed << '\t' << dataset.name << '\t' << std::hex << dataset.fingerprint << std::dec
@@ -2247,7 +2497,7 @@ void write_outputs(const Options& options, const std::vector<Dataset>& datasets,
             << __VERSION__ << '\t' << SUFKIT_BENCH_CMAKE_VERSION << '\t' << SUFKIT_BENCH_BUILD_TYPE
             << "\tLinux\tx86_64\t" << sysconf(_SC_NPROCESSORS_ONLN) << '\t'
             << options.mummer_version << '\t' << options.mummer_sha256 << '\t'
-            << options.workload << '\n';
+            << options.workload << "\tclean-exec-phase-v1\n";
         }
     }
     {
@@ -2263,7 +2513,7 @@ void write_outputs(const Options& options, const std::vector<Dataset>& datasets,
     }
     {
         std::ofstream out(options.output_directory / "build_results.tsv");
-        out << "dataset\tmethod\talgorithm\tsa_acceleration\tsa_sampling_rate\trepetitions\tbuild_seconds\tsa_build_seconds\tisa_build_seconds\tlcp_build_seconds\tchild_build_seconds\tlearned_index_build_seconds\tsave_seconds\tload_seconds\tbuild_peak_rss_mb_median\tsave_peak_rss_mb_median\tload_peak_rss_mb_median\tbuild_peak_rss_scope\tsave_peak_rss_scope\tload_peak_rss_scope\tserialized_bytes\tallocated_disk_bytes\tauxiliary_bytes\tlearned_index_bytes\tbits_per_base\tstatus\n";
+        out << "dataset\tmethod\talgorithm\tsa_acceleration\tsa_sampling_rate\trepetitions\tbuild_seconds\tsa_build_seconds\tisa_build_seconds\tlcp_build_seconds\tchild_build_seconds\tlearned_index_build_seconds\tsave_seconds\tload_seconds\tbuild_peak_rss_mb_median\tsave_peak_rss_mb_median\tload_peak_rss_mb_median\tbuild_peak_rss_scope\tsave_peak_rss_scope\tload_peak_rss_scope\tserialized_bytes\tallocated_disk_bytes\tauxiliary_bytes\tlearned_index_bytes\tbits_per_base\tstatus\tstorage_compaction_seconds\tconstruction_coordinate_width\tstored_coordinate_width\tsa_resource_profile\tlcp_encoding\tsa_bytes\tisa_bytes\tlcp_bytes\tresident_core_bytes\n";
         out << std::fixed << std::setprecision(6);
         for (const auto& row : builds) {
             const auto data = std::find_if(datasets.begin(), datasets.end(), [&](const auto& value) { return value.name == row.dataset; });
@@ -2280,7 +2530,14 @@ void write_outputs(const Options& options, const std::vector<Dataset>& datasets,
                 << row.serialized_bytes << '\t' << row.allocated_disk_bytes << '\t'
                 << row.auxiliary_bytes << '\t'
                 << row.learned_index_bytes << '\t'
-                << bits << '\t' << row.status << '\n';
+                << bits << '\t' << row.status << '\t'
+                << row.storage_compaction_seconds << '\t'
+                << static_cast<unsigned>(row.construction_coordinate_width)
+                << '\t' << static_cast<unsigned>(row.stored_coordinate_width)
+                << '\t' << ToString(row.resource_profile) << '\t'
+                << ToString(row.lcp_encoding) << '\t' << row.sa_bytes << '\t'
+                << row.isa_bytes << '\t' << row.lcp_bytes << '\t'
+                << row.resident_core_bytes << '\n';
         }
     }
     {
@@ -2420,7 +2677,7 @@ int run(const std::vector<std::string>& arguments) {
         for (const auto& method : options.methods) {
             std::cerr << "benchmarking " << dataset.name << " with " << method << "...\n";
             if (method == "mummer4") benchmark_mummer(dataset, options, dataset_scratch, builds, queries, raw);
-            else benchmark_internal_isolated(
+            else benchmark_internal_clean_exec(
                 dataset, options, method, dataset_scratch, builds, queries, raw);
         }
         // Finish correctness checks while this scenario's reference is still
@@ -2443,4 +2700,16 @@ int run(const std::vector<std::string>& arguments) {
     return 0;
 }
 
+int run_worker(const std::vector<std::string>& arguments) {
+    return run_clean_exec_phase(arguments);
+}
+
 } // namespace sufkit::app::right_maximal_bench
+
+namespace sufkit::app {
+
+int run_maximal_benchmark_worker(const std::vector<std::string>& arguments) {
+    return right_maximal_bench::run_worker(arguments);
+}
+
+} // namespace sufkit::app

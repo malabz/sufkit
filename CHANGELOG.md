@@ -16,8 +16,25 @@ All notable changes to sufkit are documented in this file.
   CHILD remains explicit and is never selected automatically.
 - Added independent MEM/MAM oracles, MUMmer4 4.0.1 black-box differential
   tests, and correctness-gated `mem`/`mam` smoke benchmark workloads.
-- Kept `.sufidx` formats 1.0-1.3 unchanged; MEM/MAM use the normalized text
-  and existing SA/ISA/LCP/CHILD/PWL sections and do not depend on SeqPro.
+- Added independent construction and storage widths for standalone SAs. A
+  64-bit constructor may now be validated and down-packed to native 32-bit,
+  split low32/high8 40-bit, or split low32/high16 48-bit storage.
+- Added Fast and Low-memory SA profiles. Fast keeps complete SA+ISA+raw LCP
+  and native access by default; Low-memory keeps complete SA+byte-coded LCP
+  and omits persistent ISA, CHILD, and PWL data.
+- Made automatic maximal-match selection workload-specific: both profiles use
+  LCP with MUMmer-style query skipping for MEM, while Fast retains suffix-link
+  auto selection for reference-MAM and Low-memory uses LCP.
+- Added `.sufidx` format 1.4 codec headers for SA/ISA/CHILD/learned coordinates
+  and raw or byte-coded LCP. Readers retain 1.0-1.3 compatibility, and backend
+  identity remains independent from physical storage encoding.
+- Added split-coordinate and LCP codec validation, legacy binary fixtures,
+  detailed resident-byte inspection fields, and clean-exec benchmark phase
+  isolation. A native32 microbial comparison is documented; real-scale
+  `>2^32`, cold-start, and universal MUMmer4 superiority claims remain gated on
+  future representative measurements.
+- MEM/MAM continue to use normalized text and existing SA/ISA/LCP/CHILD/PWL
+  data and do not depend on SeqPro.
 
 ## 0.2.0 - 2026-08-24
 

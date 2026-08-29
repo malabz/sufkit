@@ -84,14 +84,48 @@ enum class SaBackend : std::uint8_t {
   kCaps = 2
 };
 
-/** Integer width used for stored SA-style rows. */
+/** Integer width used by a standalone-SA constructor. */
 enum class CoordinateWidth : std::uint8_t {
-  /** Choose the smallest width representable by the effective constructor. */
+  /** Choose the smallest width accepted by the effective constructor. */
   kAutoSelect = 0,
-  /** Use a 32-bit backend-specific SA integer type. */
+  /** Use a 32-bit backend-specific construction integer type. */
   kBits32 = 32,
-  /** Use a 64-bit SA integer type. */
+  /** Use a 64-bit construction integer type. */
   kBits64 = 64
+};
+
+/** Physical width used by persisted and resident SA-style coordinates.
+ *  @since 0.3.0
+ */
+enum class CoordinateStorageWidth : std::uint8_t {
+  /** Select the narrowest profile-compatible representation. */
+  kAutoSelect = 0,
+  /** Native unsigned 32-bit coordinates. */
+  kBits32 = 32,
+  /** Split low-32/high-8 coordinates. */
+  kBits40 = 40,
+  /** Split low-32/high-16 coordinates. */
+  kBits48 = 48,
+  /** Native unsigned 64-bit coordinates. */
+  kBits64 = 64
+};
+
+/** Resource policy applied to a standalone suffix-array index. @since 0.3.0 */
+enum class SaResourceProfile : std::uint8_t {
+  /** Preserve query acceleration and raw LCP; auto uses native coordinates. */
+  kFast = 0,
+  /** Keep complete SA+byte-coded LCP without persistent ISA/CHILD/PWL. */
+  kLowMemory = 1
+};
+
+/** Physical representation of the persisted LCP array. @since 0.3.0 */
+enum class SaLcpEncoding : std::uint8_t {
+  /** No LCP is present. */
+  kNone = 0,
+  /** One native 32- or 64-bit integer per stored SA row. */
+  kRaw = 1,
+  /** One primary byte per row plus compact PLCP-range anchors. */
+  kByteCoded = 2
 };
 
 /** Persisted enhanced-suffix-array layout. */
@@ -148,7 +182,7 @@ enum class RightMaximalSearchAlgorithm : std::uint8_t {
 
 /** MEM interval-discovery/reuse algorithm. @since 0.3.0 */
 enum class MemSearchAlgorithm : std::uint8_t {
-  /** Choose suffix-link, then LCP, then baseline; never auto-select CHILD. */
+  /** MEM chooses LCP then baseline; MAM chooses suffix-link, LCP, baseline. */
   kAutoSelect = 0,
   /** Start every canonical query anchor with an SA root lookup. */
   kBaseline = 1,
@@ -210,6 +244,8 @@ struct LearnedSaOptions {
 struct SuffixArrayBuildStatistics {
   /** Backend complete-SA construction plus optional in-adapter compaction. */
   double sa_seconds = 0.0;
+  /** Validation and conversion from constructor output to resident storage. */
+  double storage_compaction_seconds = 0.0;
   /** ISA construction wall time in seconds. */
   double isa_seconds = 0.0;
   /** LCP construction/retention wall time; algorithm is backend-dependent. */
@@ -224,7 +260,7 @@ struct SuffixArrayBuildStatistics {
 struct SuffixArrayBuildOptions {
   /** Requested complete-SA constructor. */
   SaBackend backend = SaBackend::kAutoSelect;
-  /** Requested stored row width. */
+  /** Requested construction-backend coordinate width. */
   CoordinateWidth coordinate_width = CoordinateWidth::kAutoSelect;
   /** Positive build thread count; divsufsort itself remains serial. */
   std::uint32_t threads = 1;
@@ -240,7 +276,26 @@ struct SuffixArrayBuildOptions {
   LearnedSaOptions learned_index;
   /** Optional caller-owned mutable phase output, reset by build. */
   SuffixArrayBuildStatistics* statistics = nullptr;
+  /** Requested resident/persisted coordinate width, independent of builder. */
+  CoordinateStorageWidth storage_width =
+      CoordinateStorageWidth::kAutoSelect;
+  /**
+   * Fast or complete-SA low-memory resource policy. Fast retains raw LCP;
+   * Low-memory requires K=1, retains byte-coded LCP, and overrides
+   * acceleration/learned settings so only SA+LCP remains.
+   */
+  SaResourceProfile resource_profile = SaResourceProfile::kFast;
 };
+
+/** @return The canonical complete-SA suffix-link/raw-LCP performance preset.
+ *  @since 0.3.0
+ */
+SUFKIT_API SuffixArrayBuildOptions FastSuffixArrayBuildOptions();
+
+/** @return The canonical complete-SA byte-coded-LCP low-memory preset.
+ *  @since 0.3.0
+ */
+SUFKIT_API SuffixArrayBuildOptions LowMemorySuffixArrayBuildOptions();
 
 /** Optional work counters for one standalone-SA exact operation. */
 struct SaSearchStatistics {
@@ -492,8 +547,10 @@ struct IndexInfo {
   std::string backend_signature;
   /** Recorded SDSL version for FM payloads; empty for SA. */
   std::string sdsl_version;
-  /** Stored row width in bits. */
+  /** Construction backend row width in bits. */
   std::uint8_t coordinate_width = 0;
+  /** Physical resident/persisted width of the primary SA in bits. */
+  std::uint8_t stored_coordinate_width = 0;
   /** Number of reference contigs. */
   std::uint64_t sequence_count = 0;
   /** Number of biological bases before separators/sentinel. */
@@ -512,8 +569,32 @@ struct IndexInfo {
   std::uint64_t serialized_bytes = 0;
   /** Persisted ESA layout for a standalone SA. */
   SaAcceleration sa_acceleration = SaAcceleration::kNone;
-  /** Persisted ISA/LCP/CHILD section bytes. */
+  /** Effective standalone-SA resource profile. */
+  SaResourceProfile sa_resource_profile = SaResourceProfile::kFast;
+  /** Physical LCP representation. */
+  SaLcpEncoding lcp_encoding = SaLcpEncoding::kNone;
+  /** Resident ISA/LCP/CHILD payload bytes, including a derived LCP guide. */
   std::uint64_t auxiliary_bytes = 0;
+  /** Resident logical-text payload bytes. */
+  std::uint64_t text_bytes = 0;
+  /** Resident suffix-array payload bytes. */
+  std::uint64_t sa_bytes = 0;
+  /** Resident inverse-suffix-array payload bytes. */
+  std::uint64_t isa_bytes = 0;
+  /** Resident LCP payload bytes, including the derived guide. */
+  std::uint64_t lcp_bytes = 0;
+  /** Resident one-byte LCP primary payload, or zero for raw LCP. */
+  std::uint64_t lcp_primary_bytes = 0;
+  /** Number of compact long-LCP range anchors. */
+  std::uint64_t lcp_overflow_anchors = 0;
+  /** Resident long-LCP anchor payload bytes. */
+  std::uint64_t lcp_overflow_bytes = 0;
+  /** Resident derived long-LCP guide bytes. */
+  std::uint64_t lcp_guide_bytes = 0;
+  /** Resident CHILD payload bytes. */
+  std::uint64_t child_bytes = 0;
+  /** Sum of resident text, SA, ISA, LCP, CHILD, and learned payloads. */
+  std::uint64_t resident_core_bytes = 0;
   /** Learned lookup capability, independent of ESA layout. */
   SaLookupAcceleration sa_lookup_acceleration = SaLookupAcceleration::kBinary;
   /** Persisted learned section bytes. */
@@ -568,6 +649,12 @@ class SUFKIT_API Error : public std::runtime_error {
 SUFKIT_API const char* ToString(IndexKind value) noexcept;
 /** @param value SA constructor. @return Stable selector name. */
 SUFKIT_API const char* ToString(SaBackend value) noexcept;
+/** @param value Persisted coordinate width. @return Stable selector name. */
+SUFKIT_API const char* ToString(CoordinateStorageWidth value) noexcept;
+/** @param value SA resource profile. @return Stable selector name. */
+SUFKIT_API const char* ToString(SaResourceProfile value) noexcept;
+/** @param value LCP representation. @return Stable representation name. */
+SUFKIT_API const char* ToString(SaLcpEncoding value) noexcept;
 /** @param value SA auxiliary layout. @return Stable name. */
 SUFKIT_API const char* ToString(SaAcceleration value) noexcept;
 /** @param value SA lookup capability. @return Stable name. */

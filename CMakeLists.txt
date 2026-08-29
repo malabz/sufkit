@@ -30,6 +30,20 @@ option(SUFKIT_ENABLE_INTERNAL_BENCH_DIAGNOSTICS
     "Instrument suffix-link scans in a developer-only static benchmark build"
     OFF)
 mark_as_advanced(SUFKIT_ENABLE_INTERNAL_BENCH_DIAGNOSTICS)
+option(SUFKIT_INTERNAL_FORCE_RAW_LCP
+    "Developer-only raw-LCP override for controlled benchmark A/B builds"
+    OFF)
+mark_as_advanced(SUFKIT_INTERNAL_FORCE_RAW_LCP)
+if(SUFKIT_INTERNAL_FORCE_RAW_LCP AND NOT SUFKIT_BUILD_BENCHMARKS)
+    message(FATAL_ERROR
+        "SUFKIT_INTERNAL_FORCE_RAW_LCP is a developer-only A/B control and "
+        "requires SUFKIT_BUILD_BENCHMARKS=ON")
+endif()
+set(_sufkit_expected_fast_lcp_encoding "raw")
+set(_sufkit_expected_low_lcp_encoding "byte-coded")
+if(SUFKIT_INTERNAL_FORCE_RAW_LCP)
+    set(_sufkit_expected_low_lcp_encoding "raw")
+endif()
 set(SUFKIT_IO_BUFFER_KIB "1024" CACHE STRING
     "Private serialization stream buffer size in KiB (64, 256, or 1024)")
 set_property(CACHE SUFKIT_IO_BUFFER_KIB PROPERTY STRINGS 64 256 1024)
@@ -120,6 +134,9 @@ add_library(sufkit ${_sufkit_library_type}
     src/genome_reference.cpp
     src/query.cpp
     src/serialization.cpp
+    src/coordinate_storage.cpp
+    src/lcp_storage.cpp
+    src/sa_codec.cpp
     src/caps_backend.cpp
     src/divsufsort_backend.cpp
     src/suffix_array.cpp
@@ -136,6 +153,10 @@ target_compile_definitions(sufkit PRIVATE
     SUFKIT_BUILDING_LIBRARY
     SUFKIT_HAS_CAPS=$<BOOL:${SUFKIT_ENABLE_CAPS}>
     SUFKIT_IO_BUFFER_KIB=${SUFKIT_IO_BUFFER_KIB})
+if(SUFKIT_INTERNAL_FORCE_RAW_LCP)
+    target_compile_definitions(sufkit PRIVATE
+        SUFKIT_INTERNAL_FORCE_RAW_LCP=1)
+endif()
 set(_sufkit_suffix_link_scan_diagnostics OFF)
 if(SUFKIT_ENABLE_INTERNAL_BENCH_DIAGNOSTICS)
     if(NOT SUFKIT_BUILD_BENCHMARKS OR NOT SUFKIT_BUILD_CLI OR BUILD_SHARED_LIBS)
@@ -197,6 +218,13 @@ if(SUFKIT_BUILD_CLI)
     endif()
     add_executable(sufkit_cli ${_sufkit_cli_sources})
     set_target_properties(sufkit_cli PROPERTIES OUTPUT_NAME sufkit)
+    if(BUILD_SHARED_LIBS AND UNIX AND NOT APPLE)
+        # Keep a non-system-prefix installation relocatable: the installed
+        # CLI loads the sibling shared library without requiring ldconfig or
+        # a user-provided LD_LIBRARY_PATH.
+        set_target_properties(sufkit_cli PROPERTIES
+            INSTALL_RPATH "\$ORIGIN/../${CMAKE_INSTALL_LIBDIR}")
+    endif()
     target_link_libraries(sufkit_cli PRIVATE sufkit::sufkit)
     target_compile_features(sufkit_cli PRIVATE cxx_std_17)
     target_include_directories(sufkit_cli SYSTEM PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/third_party/kseq)
@@ -280,6 +308,34 @@ endif()
 
 if(SUFKIT_BUILD_TESTS)
     enable_testing()
+    # These white-box tests intentionally call hidden implementation symbols.
+    # Keep those symbols out of the shared-library ABI and exercise the same
+    # code through public integration tests when BUILD_SHARED_LIBS is enabled.
+    if(NOT BUILD_SHARED_LIBS)
+        add_executable(sufkit_coordinate_storage_tests
+            tests/test_coordinate_storage.cpp)
+        target_link_libraries(sufkit_coordinate_storage_tests
+            PRIVATE sufkit::sufkit)
+        target_compile_features(sufkit_coordinate_storage_tests
+            PRIVATE cxx_std_17)
+        target_include_directories(sufkit_coordinate_storage_tests PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/src)
+        add_test(NAME sufkit_coordinate_storage_tests
+            COMMAND sufkit_coordinate_storage_tests)
+        add_executable(sufkit_lcp_storage_tests tests/test_lcp_storage.cpp)
+        target_link_libraries(sufkit_lcp_storage_tests PRIVATE sufkit::sufkit)
+        target_compile_features(sufkit_lcp_storage_tests PRIVATE cxx_std_17)
+        target_include_directories(sufkit_lcp_storage_tests PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/src)
+        add_test(NAME sufkit_lcp_storage_tests
+            COMMAND sufkit_lcp_storage_tests)
+        add_executable(sufkit_sa_codec_tests tests/test_sa_codec.cpp)
+        target_link_libraries(sufkit_sa_codec_tests PRIVATE sufkit::sufkit)
+        target_compile_features(sufkit_sa_codec_tests PRIVATE cxx_std_17)
+        target_include_directories(sufkit_sa_codec_tests PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/src)
+        add_test(NAME sufkit_sa_codec_tests COMMAND sufkit_sa_codec_tests)
+    endif()
     add_executable(sufkit_tests tests/test_sufkit.cpp)
     target_link_libraries(sufkit_tests PRIVATE sufkit::sufkit)
     target_compile_features(sufkit_tests PRIVATE cxx_std_17)
@@ -289,7 +345,8 @@ if(SUFKIT_BUILD_TESTS)
     target_compile_features(sufkit_caps_tests PRIVATE cxx_std_17)
     target_include_directories(sufkit_caps_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
     target_compile_definitions(sufkit_caps_tests PRIVATE
-        SUFKIT_TEST_CAPS_ENABLED=$<BOOL:${SUFKIT_ENABLE_CAPS}>)
+        SUFKIT_TEST_CAPS_ENABLED=$<BOOL:${SUFKIT_ENABLE_CAPS}>
+        SUFKIT_TEST_EXPECT_RAW_LCP=$<BOOL:${SUFKIT_INTERNAL_FORCE_RAW_LCP}>)
     add_test(NAME sufkit_caps_tests COMMAND sufkit_caps_tests)
     add_executable(sufkit_sampled_sa_tests tests/test_sampled_sa.cpp)
     target_link_libraries(sufkit_sampled_sa_tests PRIVATE sufkit::sufkit)
@@ -313,6 +370,7 @@ if(SUFKIT_BUILD_TESTS)
             COMMAND ${CMAKE_COMMAND}
                 -DSUFKIT_EXECUTABLE=$<TARGET_FILE:sufkit_cli>
                 -DOUTPUT_ROOT=${CMAKE_CURRENT_BINARY_DIR}/test-mem-mam-cli
+                -DSUFKIT_EXPECT_LCP_ENCODING=${_sufkit_expected_low_lcp_encoding}
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_mem_mam_cli.cmake)
     endif()
     if(SUFKIT_MUMMER4_EXECUTABLE AND EXISTS "${SUFKIT_MUMMER4_EXECUTABLE}")
@@ -345,6 +403,8 @@ if(SUFKIT_BUILD_TESTS)
             COMMAND ${CMAKE_COMMAND}
                 -DSUFKIT_EXECUTABLE=$<TARGET_FILE:sufkit_cli>
                 -DSUFKIT_CAPS_ENABLED=$<BOOL:${SUFKIT_ENABLE_CAPS}>
+                -DSUFKIT_EXPECT_FAST_LCP_ENCODING=${_sufkit_expected_fast_lcp_encoding}
+                -DSUFKIT_EXPECT_LOW_LCP_ENCODING=${_sufkit_expected_low_lcp_encoding}
                 -DOUTPUT_ROOT=${CMAKE_CURRENT_BINARY_DIR}/test-benchmark
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_benchmark.cmake)
         set_tests_properties(sufkit_benchmark_smoke PROPERTIES TIMEOUT 180)
@@ -353,6 +413,8 @@ if(SUFKIT_BUILD_TESTS)
                 -DSUFKIT_EXECUTABLE=$<TARGET_FILE:sufkit_cli>
                 -DOUTPUT_ROOT=${CMAKE_CURRENT_BINARY_DIR}/test-right-maximal-benchmark
                 -DSUFKIT_SUFFIX_LINK_SCAN_DIAGNOSTICS=${_sufkit_suffix_link_scan_diagnostics}
+                -DSUFKIT_EXPECT_FAST_LCP_ENCODING=${_sufkit_expected_fast_lcp_encoding}
+                -DSUFKIT_EXPECT_LOW_LCP_ENCODING=${_sufkit_expected_low_lcp_encoding}
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_right_maximal_benchmark.cmake)
         set_tests_properties(sufkit_right_maximal_benchmark_smoke PROPERTIES TIMEOUT 180)
     endif()
@@ -439,6 +501,8 @@ if(SUFKIT_BUILD_BENCHMARKS)
             COMMAND ${CMAKE_COMMAND}
                 -DSUFKIT_QUERY_MEMORY_BENCH=$<TARGET_FILE:sufkit_query_memory_bench>
                 -DOUTPUT_ROOT=${CMAKE_CURRENT_BINARY_DIR}/test-query-memory
+                -DSUFKIT_EXPECT_FAST_LCP_ENCODING=${_sufkit_expected_fast_lcp_encoding}
+                -DSUFKIT_EXPECT_LOW_LCP_ENCODING=${_sufkit_expected_low_lcp_encoding}
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_query_memory_benchmark.cmake)
         set_tests_properties(sufkit_query_memory_verify PROPERTIES
             TIMEOUT 60)

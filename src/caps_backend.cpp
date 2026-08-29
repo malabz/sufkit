@@ -43,13 +43,11 @@ CapsBuildResult<Index> BuildCaps(const std::vector<std::uint8_t>& text,
     result.suffix_array.assign(suffix_array.SA(),
                                suffix_array.SA() + text.size());
     if (retain_lcp) {
-      // Reuse CaPS's native complete-SA LCP instead of repeating a full
-      // adjacent-suffix scan in the common accelerated build path.
-      result.lcp.reserve(text.size());
-      for (std::size_t row = 0; row < text.size(); ++row) {
-        result.lcp.push_back(
-            static_cast<std::uint64_t>(suffix_array.LCP()[row]));
-      }
+      // Reuse CaPS's native-width LCP when CHILD construction needs a raw
+      // row array. Other layouts rebuild byte-coded LCP after this object is
+      // destroyed, avoiding an extra full LCP plane at the CaPS peak.
+      result.lcp.assign(suffix_array.LCP(),
+                        suffix_array.LCP() + text.size());
     }
     return result;
   } catch (const std::bad_alloc&) {

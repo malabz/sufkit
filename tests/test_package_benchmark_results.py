@@ -114,6 +114,7 @@ def create_profile_fixture(root: Path, profile: str) -> None:
             "logical_cpus": "128", "fm_query_modes": "scalar,batch",
             "fm_batch_widths": "1,4,8,16,32",
             "fm_batch_width_overrides": "fm-balanced:16,32;fm-epr:16,32",
+            "worker_process_model": MODULE.CLEAN_EXEC_WORKER_MODEL,
         })
         for method in methods:
             builds = 1 if method == "naive" else build_repetitions
@@ -125,7 +126,8 @@ def create_profile_fixture(root: Path, profile: str) -> None:
                     repetition=str(repetition), query_count="0", seconds="1",
                     skipped_high_frequency_queries="0",
                     user_cpu_seconds="1", system_cpu_seconds="0", peak_rss_mb="10",
-                    peak_rss_scope="build_worker", total_hits="0", reported_hits="0",
+                    peak_rss_scope="build_worker_clean_exec_reference_plus_build",
+                    total_hits="0", reported_hits="0",
                     result_checksum="0", status="ok", fm_query_mode="NA",
                     fm_batch_width="NA", query_bases="0", serialized_bytes="1024",
                     allocated_disk_bytes="4096", total_bases="16384", threads="1",
@@ -155,7 +157,10 @@ def create_profile_fixture(root: Path, profile: str) -> None:
                         seconds="0.001" if status == "ok" else "NA",
                         user_cpu_seconds="0", system_cpu_seconds="0",
                         peak_rss_mb="10" if status == "ok" else "NA",
-                        peak_rss_scope="count_worker" if operation == "count" else "locate_worker",
+                        peak_rss_scope=(
+                            "count_worker_clean_exec_required_dataset_plus_load_plus_query"
+                            if operation == "count" else
+                            f"locate_worker_{max_hits}_clean_exec_required_dataset_plus_load_plus_query"),
                         total_hits="1" if status == "ok" else "0",
                         reported_hits="1" if status == "ok" else "0",
                         result_checksum="shared" if status == "ok" else "0", status=status,
@@ -185,6 +190,13 @@ def create_profile_fixture(root: Path, profile: str) -> None:
                [{"method": method, "status": "ok"} for method in methods])
 
     sa_columns = fixture_columns("headline/sa-build/raw_repetitions.tsv")
+    for field in (
+        "construction_coordinate_width", "stored_coordinate_width",
+        "sa_resource_profile", "lcp_encoding", "storage_compaction_seconds",
+        "build_peak_rss_scope", "save_peak_rss_scope", "load_peak_rss_scope",
+    ):
+        if field not in sa_columns:
+            sa_columns.append(field)
     for scope_name, configurations in MODULE.SA_BUILD_MATRICES[profile].items():
         scope = root / profile / scope_name
         raw: list[dict[str, str]] = []
@@ -193,23 +205,36 @@ def create_profile_fixture(root: Path, profile: str) -> None:
                 raw.append(blank_row(
                     sa_columns, method=method, effective_backend=method,
                     backend_signature=method, coordinate_width="32" if method.endswith("32") else "64",
+                    construction_coordinate_width=(
+                        "32" if method.endswith("32") else "64"),
+                    stored_coordinate_width=("32" if method.endswith("32") else "64"),
+                    sa_resource_profile="fast", lcp_encoding="raw",
                     threads=threads, sampling_rate=sampling_rate, suffix_count="100",
                     subproblem_count="1",
                     acceleration=("suffix-link" if acceleration == "default" else acceleration),
                     repetition=str(repetition), total_bases="16384", sequence_count="4",
                     reference_read_seconds="0.1", normalization_seconds="0.1", sa_seconds="1",
+                    storage_compaction_seconds="0.01",
                     isa_seconds="1", lcp_seconds="1", child_seconds="0", sapling_seconds="0",
                     build_wall_seconds="3", user_cpu_seconds="3", system_cpu_seconds="0",
-                    peak_rss_mb="10", build_peak_rss_mb="10", save_seconds="0.1",
+                    peak_rss_mb="10", build_peak_rss_mb="10",
+                    build_peak_rss_scope="clean_exec_build_worker_until_index_ready",
+                    save_seconds="0.1",
                     save_user_cpu_seconds="0", save_system_cpu_seconds="0",
-                    save_peak_rss_mb="10", load_seconds="0.1", load_user_cpu_seconds="0",
+                    save_peak_rss_mb="10",
+                    save_peak_rss_scope="clean_exec_save_worker_including_source_load",
+                    load_seconds="0.1", load_user_cpu_seconds="0",
                     load_system_cpu_seconds="0", load_peak_rss_mb="10",
+                    load_peak_rss_scope="clean_exec_load_worker_until_index_ready",
                     serialized_bytes="1024", allocated_disk_bytes="4096", bits_per_base="0.5",
                     learned_index_bytes="0", sa_checksum="sa", exact_checksum="exact",
                     right_maximal_checksum="right", status="ok"))
         write_rows(scope / "raw_repetitions.tsv", sa_columns, raw)
-        write_rows(scope / "run_metadata.tsv", ["profile", "dataset_fingerprint"],
-                   [{"profile": profile, "dataset_fingerprint": f"fp-{profile}"}])
+        write_rows(
+            scope / "run_metadata.tsv",
+            ["profile", "dataset_fingerprint", "worker_process_model"],
+            [{"profile": profile, "dataset_fingerprint": f"fp-{profile}",
+              "worker_process_model": MODULE.CLEAN_EXEC_WORKER_MODEL}])
         write_rows(scope / "build_results.tsv", ["method", "status"],
                    [{"method": row["method"], "status": "ok"} for row in raw])
 
@@ -226,7 +251,8 @@ def create_profile_fixture(root: Path, profile: str) -> None:
         right_metadata.append({
             "profile": profile, "scenario": scenario, "seed": "20260822", "dataset": dataset,
             "dataset_fingerprint": f"fp-{profile}-{scenario}", "total_bases": "16384",
-            "query_count": "100", "query_bases": "25600"})
+            "query_count": "100", "query_bases": "25600",
+            "worker_process_model": MODULE.CLEAN_EXEC_WORKER_MODEL})
         for length in ("20", "50", "100"):
             oracle.append({
                 "dataset": dataset, "scenario": scenario, "oracle": "naive", "min_length": length,
@@ -237,7 +263,9 @@ def create_profile_fixture(root: Path, profile: str) -> None:
                 right_raw.append(blank_row(
                     right_columns, dataset=dataset, method=method, operation="build",
                     min_length="0", repetition=str(repetition), seconds="1",
-                    peak_rss_mb="10", peak_rss_scope="build_worker", query_bases="0",
+                    peak_rss_mb="10",
+                    peak_rss_scope="build_worker_clean_exec_reference_plus_build",
+                    query_bases="0",
                     serialized_bytes="1024", allocated_disk_bytes="4096", auxiliary_bytes="0",
                     total_matches="0", reported_matches="0", count_checksum="0",
                     result_checksum="0", status="ok"))
@@ -247,7 +275,10 @@ def create_profile_fixture(root: Path, profile: str) -> None:
                         right_raw.append(blank_row(
                             right_columns, dataset=dataset, method=method, operation=operation,
                             min_length=length, repetition=str(repetition), seconds="0.01",
-                            peak_rss_mb="10", peak_rss_scope="query_worker", query_bases="25600",
+                            peak_rss_mb="10",
+                            peak_rss_scope=(
+                                "query_worker_clean_exec_queries_plus_load_plus_query"),
+                            query_bases="25600",
                             serialized_bytes="1024", allocated_disk_bytes="4096", auxiliary_bytes="0",
                             materialization_match_threshold="1000000", vector_skipped="0",
                             total_matches="1", reported_matches="1", count_checksum="right-count",
@@ -308,6 +339,12 @@ def prepare_unified_headline_scope(run: Path) -> None:
         row["skipped_high_frequency_queries"] = row.get("skipped_high_frequency_queries") or "0"
         if row["method"] == "sa32-lcp-binary":
             row["method"] = "sa32-binary"
+        row["peak_rss_scope"] = (
+            "build_worker_clean_exec_reference_plus_build"
+            if row["phase"] == "build" else
+            ("count_worker_clean_exec_required_dataset_plus_load_plus_query"
+             if row["operation"] == "count" else
+             f"locate_worker_{row['max_hits']}_clean_exec_required_dataset_plus_load_plus_query"))
     fm_build = next(row for row in exact if row["method"] == "fm-huff" and row["phase"] == "build")
     for method, seconds, rss, size, threads in (
         ("sa32-binary", "13.0", "2048", "2147483648", "1"),
@@ -349,9 +386,35 @@ def prepare_unified_headline_scope(run: Path) -> None:
     # unified headline must ignore them rather than silently pooling scopes.
     legacy_path = run / "headline" / "sa-build" / "raw_repetitions.tsv"
     legacy = rows(legacy_path)
+    legacy_fields = list(legacy[0])
+    for field in (
+        "construction_coordinate_width", "stored_coordinate_width",
+        "sa_resource_profile", "lcp_encoding", "storage_compaction_seconds",
+        "build_peak_rss_scope", "save_peak_rss_scope", "load_peak_rss_scope",
+    ):
+        if field not in legacy_fields:
+            legacy_fields.append(field)
     for row in legacy:
         row["build_wall_seconds"] = "999"
-    write_rows(legacy_path, list(legacy[0]), legacy)
+        row.update({
+            "construction_coordinate_width": row["coordinate_width"],
+            "stored_coordinate_width": row["coordinate_width"],
+            "sa_resource_profile": "fast",
+            "lcp_encoding": "raw",
+            "storage_compaction_seconds": "0.01",
+            "build_peak_rss_scope": "clean_exec_build_worker_until_index_ready",
+            "save_peak_rss_scope": "clean_exec_save_worker_including_source_load",
+            "load_peak_rss_scope": "clean_exec_load_worker_until_index_ready",
+        })
+    write_rows(legacy_path, legacy_fields, legacy)
+    legacy_metadata_path = run / "headline" / "sa-build" / "run_metadata.tsv"
+    legacy_metadata = rows(legacy_metadata_path)
+    legacy_metadata_fields = list(legacy_metadata[0])
+    if "worker_process_model" not in legacy_metadata_fields:
+        legacy_metadata_fields.append("worker_process_model")
+    for row in legacy_metadata:
+        row["worker_process_model"] = MODULE.CLEAN_EXEC_WORKER_MODEL
+    write_rows(legacy_metadata_path, legacy_metadata_fields, legacy_metadata)
 
     exact_scope = run / "headline" / "exact"
     metadata = rows(exact_scope / "run_metadata.tsv")
@@ -366,6 +429,7 @@ def prepare_unified_headline_scope(run: Path) -> None:
             "query_bases": "1000000",
             "fm_query_modes": "scalar", "fm_batch_widths": "16",
             "fm_batch_width_overrides": "none",
+            "worker_process_model": MODULE.CLEAN_EXEC_WORKER_MODEL,
         })
     definition = blank_row(
         fieldnames, run_id="fixture", dataset="full-mixed", scenario="mixed",
@@ -395,10 +459,13 @@ def prepare_unified_headline_scope(run: Path) -> None:
     right_metadata_fields = list(right_metadata[0])
     if "contigs" not in right_metadata_fields:
         right_metadata_fields.append("contigs")
+    if "worker_process_model" not in right_metadata_fields:
+        right_metadata_fields.append("worker_process_model")
     for row in right_metadata:
         row.update({
             "scenario": "user-reference", "dataset_fingerprint": "right-reference-fp",
             "contigs": "4",
+            "worker_process_model": MODULE.CLEAN_EXEC_WORKER_MODEL,
         })
     write_rows(right_metadata_path, right_metadata_fields, right_metadata)
 
@@ -411,6 +478,8 @@ def prepare_unified_headline_scope(run: Path) -> None:
     for row in right:
         row.setdefault("materialization_match_threshold", "1000000")
         row.setdefault("vector_skipped", "0")
+        row["peak_rss_scope"] = (
+            "query_worker_clean_exec_queries_plus_load_plus_query")
         for repetition in range(5):
             copy = dict(row)
             copy["repetition"] = str(repetition)
@@ -591,6 +660,68 @@ class BenchmarkResultPackagerTest(unittest.TestCase):
                 contract = {row["check"]: row for row in checks}["exact_metadata_contract"]
                 self.assertEqual(contract["status"], "fail")
                 self.assertIn(field, contract["details"])
+
+    def test_clean_exec_contract_rejects_wrong_worker_model(self) -> None:
+        paths = (
+            self.run / "headline" / "exact-build" / "run_metadata.tsv",
+            self.run / "headline" / "right-maximal" / "run_metadata.tsv",
+            self.run / "headline" / "sa-build" / "run_metadata.tsv",
+        )
+        originals = {path: path.read_bytes() for path in paths}
+        for path in paths:
+            with self.subTest(scope=path.parent.name):
+                for restored, content in originals.items():
+                    restored.write_bytes(content)
+                metadata = rows(path)
+                metadata[0]["worker_process_model"] = "legacy-fork-only"
+                write_rows(path, list(metadata[0]), metadata)
+                checks, failed = MODULE.audit_profile(self.run, "headline")
+                self.assertTrue(failed)
+                contract = {
+                    row["check"]: row for row in checks
+                }["clean_exec_worker_contract"]
+                self.assertEqual(contract["status"], "fail")
+                self.assertIn("worker_process_model", contract["details"])
+
+    def test_clean_exec_contract_rejects_noncanonical_rss_scopes(self) -> None:
+        cases = (
+            (self.run / "headline" / "exact-query" / "raw_repetitions.tsv",
+             "peak_rss_scope", lambda row: row["phase"] == "query"),
+            (self.run / "headline" / "right-maximal" / "raw_repetitions.tsv",
+             "peak_rss_scope", lambda row: row["operation"] == "streaming"),
+            (self.run / "headline" / "sa-build" / "raw_repetitions.tsv",
+             "build_peak_rss_scope", lambda row: row["status"] == "ok"),
+        )
+        originals = {path: path.read_bytes() for path, _, _ in cases}
+        for path, field, predicate in cases:
+            with self.subTest(scope=path.parent.name, field=field):
+                for restored, content in originals.items():
+                    restored.write_bytes(content)
+                content = rows(path)
+                selected = next(row for row in content if predicate(row))
+                selected[field] = "legacy_or_ambiguous_scope"
+                write_rows(path, list(content[0]), content)
+                checks, failed = MODULE.audit_profile(self.run, "headline")
+                self.assertTrue(failed)
+                contract = {
+                    row["check"]: row for row in checks
+                }["clean_exec_worker_contract"]
+                self.assertEqual(contract["status"], "fail")
+                self.assertIn(field, contract["details"])
+
+    def test_exact_unsupported_save_without_worker_uses_not_applicable_scope(self) -> None:
+        self.assertEqual(
+            MODULE.expected_exact_rss_scope({
+                "method": "sa32-binary", "phase": "save", "operation": "save",
+                "status": "unsupported_input_size",
+            }),
+            "not_applicable")
+        self.assertEqual(
+            MODULE.expected_exact_rss_scope({
+                "method": "sa32-binary", "phase": "save", "operation": "save",
+                "status": "ok",
+            }),
+            "save_worker_clean_exec_load_plus_save")
 
     def test_audit_cli_returns_tsv_and_zero(self) -> None:
         stdout = io.StringIO()
@@ -794,6 +925,11 @@ class BenchmarkResultPackagerTest(unittest.TestCase):
             copy = dict(phase)
             copy["operation"] = operation
             copy["min_length"] = "0"
+            copy["peak_rss_scope"] = {
+                "build": "build_worker_clean_exec_reference_plus_build",
+                "save": "save_worker_clean_exec_load_plus_save",
+                "load": "load_worker_clean_exec_load",
+            }[operation]
             content.append(copy)
         write_rows(path, fieldnames, content)
         output = self.root / "right-filter"
@@ -1139,6 +1275,9 @@ class BenchmarkMatrixAuditTest(unittest.TestCase):
                                 if row["method"] == "caps64" and row["threads"] == "64"))
         placeholder["repetition"] = "0"
         placeholder["status"] = "not_applicable:threads_exceed_logical_cpus"
+        for field in ("build_peak_rss_scope", "save_peak_rss_scope",
+                      "load_peak_rss_scope"):
+            placeholder[field] = "NA"
         write_rows(path, list(content[0]), retained + [placeholder])
         self.assert_matrix_ok("quick")
 

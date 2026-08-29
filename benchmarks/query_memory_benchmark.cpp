@@ -28,7 +28,7 @@
 namespace {
 
 constexpr std::uint64_t kReportMagic = 0x5355464b4d454d31ULL;
-constexpr std::uint32_t kReportVersion = 1;
+constexpr std::uint32_t kReportVersion = 2;
 constexpr std::uint64_t kFnvOffset = 14695981039346656037ULL;
 constexpr std::uint64_t kFnvPrime = 1099511628211ULL;
 
@@ -52,7 +52,15 @@ struct WorkerReport {
   std::uint64_t current_rss_bytes = 0;
   std::uint64_t index_ready_rss_bytes = 0;
   std::uint64_t after_rss_bytes = 0;
+  std::uint64_t current_pss_bytes = 0;
+  std::uint64_t index_ready_pss_bytes = 0;
+  std::uint64_t after_pss_bytes = 0;
   std::uint64_t serialized_bytes = 0;
+  std::uint64_t construction_coordinate_width = 0;
+  std::uint64_t stored_coordinate_width = 0;
+  std::uint64_t resource_profile = 0;
+  std::uint64_t lcp_encoding = 0;
+  std::uint64_t resident_core_bytes = 0;
   std::uint64_t query_count = 0;
   std::uint64_t total_hits = 0;
   std::uint64_t reported_hits = 0;
@@ -118,15 +126,31 @@ Options ParseOptions(int argc, char** argv) {
 }
 
 void ValidateMethod(const std::string& method) {
-  if (method != "sa32" && method != "fm-huff") {
-    throw std::runtime_error("--method must be sa32 or fm-huff");
+  if (method != "sa32" && method != "sa32-fast" &&
+      method != "sa32-low-memory" && method != "sa-fast" &&
+      method != "sa-low-memory" && method != "sa64-fast" &&
+      method != "sa64-low-memory" &&
+      method != "sa64-store32-fast" &&
+      method != "sa64-store40-low-memory" &&
+      method != "sa64-store48-low-memory" &&
+      method != "sa64-store64-fast" && method != "fm-huff") {
+    throw std::runtime_error("unsupported --method");
   }
+}
+
+bool IsSuffixArrayMethod(const std::string& method) {
+  return method != "fm-huff";
 }
 
 void PrintHelp() {
   std::cout
       << "sufkit_query_memory_bench --reference REF.fa[.gz] "
-         "--method sa32|fm-huff --output RESULTS.tsv\n";
+         "--method METHOD --output RESULTS.tsv\n\n"
+         "SA methods: sa32, sa32-fast, sa32-low-memory, sa-fast, "
+         "sa-low-memory, sa64-fast, sa64-low-memory, "
+         "sa64-store32-fast, sa64-store40-low-memory, "
+         "sa64-store48-low-memory, sa64-store64-fast\n"
+         "FM method: fm-huff\n";
 }
 
 std::uint64_t CurrentRssBytes() {
@@ -173,6 +197,30 @@ std::uint64_t CurrentRssBytes() {
     throw std::runtime_error("current RSS byte count overflow");
   }
   return resident_pages * page_size;
+}
+
+std::uint64_t CurrentPssBytes() {
+  std::ifstream input("/proc/self/smaps_rollup");
+  if (!input) {
+    throw std::runtime_error("cannot open /proc/self/smaps_rollup");
+  }
+  std::string line;
+  while (std::getline(input, line)) {
+    if (line.rfind("Pss:", 0) != 0) {
+      continue;
+    }
+    std::istringstream parser(line.substr(4));
+    std::uint64_t kib = 0;
+    std::string unit;
+    if (!(parser >> kib >> unit) || unit != "kB") {
+      throw std::runtime_error("cannot parse /proc/self/smaps_rollup Pss");
+    }
+    if (kib > std::numeric_limits<std::uint64_t>::max() / 1024U) {
+      throw std::runtime_error("current PSS byte count overflow");
+    }
+    return kib * 1024U;
+  }
+  throw std::runtime_error("Pss is absent from /proc/self/smaps_rollup");
 }
 
 void MixByte(std::uint64_t* checksum, std::uint8_t value) {
@@ -265,23 +313,56 @@ WorkerReport ReadWorkerReport(const std::filesystem::path& path) {
   return report;
 }
 
+sufkit::SuffixArrayBuildOptions SuffixArrayOptionsForMethod(
+    const std::string& method) {
+  const bool low_memory = method.find("low-memory") != std::string::npos;
+  auto options = low_memory ? sufkit::LowMemorySuffixArrayBuildOptions()
+                            : sufkit::FastSuffixArrayBuildOptions();
+  options.backend = sufkit::SaBackend::kDivsufsort;
+  options.sampling_rate = 1;
+
+  if (method == "sa32" || method.rfind("sa32-", 0) == 0) {
+    options.coordinate_width = sufkit::CoordinateWidth::kBits32;
+  } else if (method.rfind("sa64", 0) == 0) {
+    options.coordinate_width = sufkit::CoordinateWidth::kBits64;
+  }
+
+  if (method.find("store32") != std::string::npos) {
+    options.storage_width = sufkit::CoordinateStorageWidth::kBits32;
+  } else if (method.find("store40") != std::string::npos) {
+    options.storage_width = sufkit::CoordinateStorageWidth::kBits40;
+  } else if (method.find("store48") != std::string::npos) {
+    options.storage_width = sufkit::CoordinateStorageWidth::kBits48;
+  } else if (method.find("store64") != std::string::npos) {
+    options.storage_width = sufkit::CoordinateStorageWidth::kBits64;
+  }
+  return options;
+}
+
+void RecordIndexInfo(const sufkit::IndexInfo& info, WorkerReport* report) {
+  report->construction_coordinate_width = info.coordinate_width;
+  report->stored_coordinate_width = info.stored_coordinate_width;
+  report->resource_profile =
+      static_cast<std::uint64_t>(info.sa_resource_profile);
+  report->lcp_encoding = static_cast<std::uint64_t>(info.lcp_encoding);
+  report->resident_core_bytes = info.resident_core_bytes;
+}
+
 WorkerReport BuildIndex(const Options& options) {
   auto reference = sufkit::GenomeReference::FromFasta(options.reference);
   WorkerReport report;
   report.dataset_fingerprint = reference.Fingerprint();
   report.total_bases = reference.TotalBases();
   report.contigs = reference.SequenceCount();
-  if (options.method == "sa32") {
-    sufkit::SuffixArrayBuildOptions build_options;
-    build_options.backend = sufkit::SaBackend::kDivsufsort;
-    build_options.coordinate_width = sufkit::CoordinateWidth::kBits32;
-    build_options.acceleration = sufkit::SaAcceleration::kLcpSuffixLink;
-    build_options.sampling_rate = 1;
+  if (IsSuffixArrayMethod(options.method)) {
+    const auto build_options = SuffixArrayOptionsForMethod(options.method);
     auto index = sufkit::SuffixArray::Build(reference, build_options);
+    RecordIndexInfo(index.GetInfo(), &report);
     index.Save(options.index);
     report.serialized_bytes = static_cast<std::uint64_t>(
         std::filesystem::file_size(options.index));
     report.current_rss_bytes = CurrentRssBytes();
+    report.current_pss_bytes = CurrentPssBytes();
   } else {
     sufkit::FmIndexBuildOptions build_options;
     build_options.backend = sufkit::FmBackend::kSdslCsaWtHuff;
@@ -290,41 +371,50 @@ WorkerReport BuildIndex(const Options& options) {
     report.serialized_bytes = static_cast<std::uint64_t>(
         std::filesystem::file_size(options.index));
     report.current_rss_bytes = CurrentRssBytes();
+    report.current_pss_bytes = CurrentPssBytes();
   }
   return report;
 }
 
 WorkerReport LoadIndex(const Options& options) {
   WorkerReport report;
-  if (options.method == "sa32") {
+  if (IsSuffixArrayMethod(options.method)) {
     auto index = sufkit::SuffixArray::Load(options.index);
-    (void)index.GetInfo();
+    RecordIndexInfo(index.GetInfo(), &report);
     report.index_ready_rss_bytes = CurrentRssBytes();
+    report.index_ready_pss_bytes = CurrentPssBytes();
   } else {
     auto index = sufkit::FmIndex::Load(options.index);
     (void)index.GetInfo();
     report.index_ready_rss_bytes = CurrentRssBytes();
+    report.index_ready_pss_bytes = CurrentPssBytes();
   }
   report.current_rss_bytes = report.index_ready_rss_bytes;
+  report.current_pss_bytes = report.index_ready_pss_bytes;
   return report;
 }
 
 WorkerReport QueryIndex(const Options& options) {
   WorkerReport report;
-  if (options.method == "sa32") {
+  if (IsSuffixArrayMethod(options.method)) {
     auto index = sufkit::SuffixArray::Load(options.index);
-    (void)index.GetInfo();
+    RecordIndexInfo(index.GetInfo(), &report);
     report.index_ready_rss_bytes = CurrentRssBytes();
+    report.index_ready_pss_bytes = CurrentPssBytes();
     ExecuteQueries(index, &report);
     report.after_rss_bytes = CurrentRssBytes();
+    report.after_pss_bytes = CurrentPssBytes();
   } else {
     auto index = sufkit::FmIndex::Load(options.index);
     (void)index.GetInfo();
     report.index_ready_rss_bytes = CurrentRssBytes();
+    report.index_ready_pss_bytes = CurrentPssBytes();
     ExecuteQueries(index, &report);
     report.after_rss_bytes = CurrentRssBytes();
+    report.after_pss_bytes = CurrentPssBytes();
   }
   report.current_rss_bytes = report.after_rss_bytes;
+  report.current_pss_bytes = report.after_pss_bytes;
   return report;
 }
 
@@ -447,6 +537,26 @@ std::string RssMib(std::uint64_t bytes) {
   return output.str();
 }
 
+std::string CoordinateWidthText(std::uint64_t width) {
+  return width == 0 ? "NA" : std::to_string(width);
+}
+
+std::string ProfileText(const WorkerReport& report) {
+  if (report.construction_coordinate_width == 0) {
+    return "NA";
+  }
+  return sufkit::ToString(
+      static_cast<sufkit::SaResourceProfile>(report.resource_profile));
+}
+
+std::string LcpEncodingText(const WorkerReport& report) {
+  if (report.construction_coordinate_width == 0) {
+    return "NA";
+  }
+  return sufkit::ToString(
+      static_cast<sufkit::SaLcpEncoding>(report.lcp_encoding));
+}
+
 void WriteRow(std::ostream& output,
               const std::string& method,
               const std::string& phase,
@@ -468,8 +578,17 @@ void WriteRow(std::ostream& output,
          << current_scope << '\t'
          << RssMib(result.report.index_ready_rss_bytes) << '\t'
          << RssMib(result.report.after_rss_bytes) << '\t'
+         << RssMib(result.report.current_pss_bytes) << '\t'
+         << RssMib(result.report.index_ready_pss_bytes) << '\t'
+         << RssMib(result.report.after_pss_bytes) << '\t'
          << RssMib(result.peak_rss_bytes) << '\t' << peak_scope << '\t'
          << dataset.serialized_bytes << '\t'
+         << CoordinateWidthText(result.report.construction_coordinate_width)
+         << '\t'
+         << CoordinateWidthText(result.report.stored_coordinate_width) << '\t'
+         << ProfileText(result.report) << '\t'
+         << LcpEncodingText(result.report) << '\t'
+         << result.report.resident_core_bytes << '\t'
          << result.report.query_count << '\t'
          << result.report.total_hits << '\t'
          << result.report.reported_hits << '\t'
@@ -481,7 +600,8 @@ void WriteRow(std::ostream& output,
 int RunParent(const Options& original_options) {
   ValidateMethod(original_options.method);
   if (original_options.reference.empty() || original_options.output.empty()) {
-    throw std::runtime_error("--reference, --method, and --output are required");
+    throw std::runtime_error(
+        "--reference, --method, and --output are required");
   }
 
   Options options = original_options;
@@ -505,8 +625,11 @@ int RunParent(const Options& original_options) {
   const auto query =
       RunPhase("query", options, index_path, query_report_path);
   if (load.report.index_ready_rss_bytes == 0 ||
+      load.report.index_ready_pss_bytes == 0 ||
       query.report.index_ready_rss_bytes == 0 ||
-      query.report.after_rss_bytes == 0 || query.report.query_count != 9) {
+      query.report.index_ready_pss_bytes == 0 ||
+      query.report.after_rss_bytes == 0 ||
+      query.report.after_pss_bytes == 0 || query.report.query_count != 9) {
     throw std::runtime_error("phase worker returned incomplete RSS metrics");
   }
 
@@ -516,7 +639,10 @@ int RunParent(const Options& original_options) {
   }
   output << "method\tphase\tdataset_fingerprint\ttotal_bases\tcontigs\t"
             "current_rss_mb\tcurrent_rss_scope\tindex_ready_rss_mb\t"
-            "after_rss_mb\tpeak_rss_mb\tpeak_rss_scope\tserialized_bytes\t"
+            "after_rss_mb\tcurrent_pss_mb\tindex_ready_pss_mb\t"
+            "after_pss_mb\tpeak_rss_mb\tpeak_rss_scope\tserialized_bytes\t"
+            "construction_coordinate_width\tstored_coordinate_width\t"
+            "sa_profile\tlcp_encoding\tresident_core_bytes\t"
             "query_count\ttotal_hits\treported_hits\tresult_checksum\tstatus\n";
   WriteRow(output, options.method, "build", build.report, build);
   WriteRow(output, options.method, "load", build.report, load);

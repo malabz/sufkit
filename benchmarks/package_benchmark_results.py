@@ -29,6 +29,7 @@ from typing import Iterable, Mapping, Sequence
 
 
 NA = "NA"
+CLEAN_EXEC_WORKER_MODEL = "clean-exec-phase-v1"
 EXPECTED_NON_OK = {
     "not_applicable",
     "not_supported",
@@ -59,19 +60,23 @@ REPRESENTATIVE_EXACT_METADATA = {
     "fm_query_modes": "scalar",
     "fm_batch_widths": "16",
     "fm_batch_width_overrides": "none",
+    "worker_process_model": CLEAN_EXEC_WORKER_MODEL,
 }
 EXACT_METADATA_COLUMNS = (
     "fm_query_modes", "fm_batch_widths", "fm_batch_width_overrides",
+    "worker_process_model",
 )
 REGULAR_EXACT_METADATA = {
     "fm_query_modes": "scalar,batch",
     "fm_batch_widths": "1,4,8,16,32",
     "fm_batch_width_overrides": "fm-balanced:16,32;fm-epr:16,32",
+    "worker_process_model": CLEAN_EXEC_WORKER_MODEL,
 }
 HEADLINE_EXACT_METADATA = {
     "fm_query_modes": "scalar",
     "fm_batch_widths": "16",
     "fm_batch_width_overrides": "none",
+    "worker_process_model": CLEAN_EXEC_WORKER_MODEL,
 }
 RIGHT_QUERY_OPERATIONS = ("streaming", "vector", "max_matches=0", "max_matches=1000")
 RIGHT_VECTOR_MATERIALIZATION_THRESHOLD = "1000000"
@@ -212,12 +217,16 @@ HEADLINE_RIGHT_COLUMNS = [
 ]
 BUILD_AGG_COLUMNS = [
     "source_scope", "profile", "method", "effective_backend", "backend_signature",
-    "coordinate_width", "threads", "sampling_rate", "suffix_count", "acceleration",
+    "coordinate_width", "construction_coordinate_width", "stored_coordinate_width",
+    "sa_resource_profile", "lcp_encoding", "threads", "sampling_rate",
+    "suffix_count", "acceleration",
     "reference_read_seconds_median", "normalization_seconds_median", "sa_seconds_median",
+    "storage_compaction_seconds_median",
     "isa_seconds_median", "lcp_seconds_median", "child_seconds_median",
     "sapling_seconds_median", "build_seconds_median", "build_seconds_min",
-    "build_seconds_max", "build_peak_rss_mb_median", "save_seconds_median",
-    "save_peak_rss_mb_median", "load_seconds_median", "load_peak_rss_mb_median",
+    "build_seconds_max", "build_peak_rss_mb_median", "build_peak_rss_scope",
+    "save_seconds_median", "save_peak_rss_mb_median", "save_peak_rss_scope",
+    "load_seconds_median", "load_peak_rss_mb_median", "load_peak_rss_scope",
     "serialized_bytes_median", "allocated_disk_bytes_median", "bits_per_base_median",
     "learned_index_bytes_median", "repetitions", "status",
 ]
@@ -743,11 +752,15 @@ def aggregate_exact_rows(tables: Sequence[Table]) -> list[dict[str, str]]:
 def aggregate_sa_build_rows(tables: Sequence[Table]) -> list[dict[str, str]]:
     raw = ok_rows(all_rows(raw_tables(tables, "sa-build")))
     keys = ["_source_scope", "_profile", "method", "effective_backend", "backend_signature",
-            "coordinate_width", "threads", "sampling_rate", "suffix_count", "acceleration"]
+            "coordinate_width", "construction_coordinate_width", "stored_coordinate_width",
+            "sa_resource_profile", "lcp_encoding", "threads", "sampling_rate",
+            "suffix_count", "acceleration", "build_peak_rss_scope",
+            "save_peak_rss_scope", "load_peak_rss_scope"]
     metrics = [
         ("reference_read_seconds", ["reference_read_seconds"]),
         ("normalization_seconds", ["normalization_seconds"]),
         ("sa_seconds", ["sa_seconds"]),
+        ("storage_compaction_seconds", ["storage_compaction_seconds"]),
         ("isa_seconds", ["isa_seconds"]),
         ("lcp_seconds", ["lcp_seconds"]),
         ("child_seconds", ["child_seconds"]),
@@ -800,6 +813,12 @@ def aggregate_exact_build_rows(tables: Sequence[Table]) -> list[dict[str, str]]:
             "effective_backend": constant_or_na(rows, ["backend", "effective_backend", "method"]),
             "backend_signature": constant_or_na(rows, ["backend_signature"]),
             "coordinate_width": constant_or_na(rows, ["coordinate_width"]),
+            "construction_coordinate_width": constant_or_na(
+                rows, ["construction_coordinate_width", "coordinate_width"]),
+            "stored_coordinate_width": constant_or_na(
+                rows, ["stored_coordinate_width", "coordinate_width"]),
+            "sa_resource_profile": constant_or_na(rows, ["sa_resource_profile"]),
+            "lcp_encoding": constant_or_na(rows, ["lcp_encoding"]),
             "threads": constant_or_na(rows, ["threads"]),
             "sampling_rate": constant_or_na(rows, ["sa_sampling_rate", "sampling_rate"]),
             "suffix_count": constant_or_na(rows, ["suffix_count"]),
@@ -807,6 +826,8 @@ def aggregate_exact_build_rows(tables: Sequence[Table]) -> list[dict[str, str]]:
             "reference_read_seconds_median": NA,
             "normalization_seconds_median": NA,
             "sa_seconds_median": format_number(numeric_median(build, ["sa_build_seconds"])),
+            "storage_compaction_seconds_median": format_number(
+                numeric_median(build, ["storage_compaction_seconds"])),
             "isa_seconds_median": format_number(numeric_median(build, ["isa_build_seconds"])),
             "lcp_seconds_median": format_number(numeric_median(build, ["lcp_build_seconds"])),
             "child_seconds_median": format_number(numeric_median(build, ["child_build_seconds"])),
@@ -815,10 +836,13 @@ def aggregate_exact_build_rows(tables: Sequence[Table]) -> list[dict[str, str]]:
             "build_seconds_min": format_number(minimum(row.get("seconds") for row in build)),
             "build_seconds_max": format_number(maximum(row.get("seconds") for row in build)),
             "build_peak_rss_mb_median": format_number(numeric_median(build, ["peak_rss_mb"])),
+            "build_peak_rss_scope": constant_or_na(build, ["peak_rss_scope"]),
             "save_seconds_median": format_number(numeric_median(save, ["seconds", "save_seconds"])),
             "save_peak_rss_mb_median": format_number(numeric_median(save, ["peak_rss_mb"])),
+            "save_peak_rss_scope": constant_or_na(save, ["peak_rss_scope"]),
             "load_seconds_median": format_number(numeric_median(load, ["seconds", "load_seconds"])),
             "load_peak_rss_mb_median": format_number(numeric_median(load, ["peak_rss_mb"])),
+            "load_peak_rss_scope": constant_or_na(load, ["peak_rss_scope"]),
             "serialized_bytes_median": format_integer(serialized),
             "allocated_disk_bytes_median": format_integer(allocated),
             "bits_per_base_median": format_number(
@@ -912,7 +936,10 @@ def summarize_correctness(tables: Sequence[Table]) -> tuple[list[dict[str, str]]
          ["total_matches", "reported_matches", "count_checksum", "result_checksum"],
          lambda row: True),
         ("sa-build", ["_source_scope", "method", "threads", "sampling_rate", "acceleration"],
-         ["sa_checksum", "exact_checksum", "right_maximal_checksum"],
+         ["construction_coordinate_width", "stored_coordinate_width",
+          "sa_resource_profile", "lcp_encoding", "build_peak_rss_scope",
+          "save_peak_rss_scope", "load_peak_rss_scope", "sa_checksum",
+          "exact_checksum", "right_maximal_checksum"],
          lambda row: True),
     ]
     for workload, keys, values, predicate in repetition_specs:
@@ -1854,6 +1881,127 @@ def audit_exact_metadata_contract(
          else "exact-build and exact-query are scalar-only with no overrides"))
 
 
+def expected_exact_rss_scope(row: Mapping[str, str]) -> str | None:
+    """Return the only valid whole-worker RSS scope for an exact raw row."""
+    phase = row.get("phase")
+    if phase == "query_definition":
+        return "not_applicable"
+    if phase == "build":
+        return "build_worker_clean_exec_reference_plus_build"
+    if phase == "save":
+        return ("not_applicable" if row.get("method") == "naive" or
+                row_status(row) in EXPECTED_NON_OK else
+                "save_worker_clean_exec_load_plus_save")
+    if phase == "load":
+        return "load_worker_clean_exec_load_plus_canary"
+    if phase != "query":
+        return None
+    operation = row.get("operation")
+    if operation == "count":
+        return "count_worker_clean_exec_required_dataset_plus_load_plus_query"
+    if operation == "locate":
+        max_hits = row.get("max_hits")
+        if not max_hits or max_hits == NA:
+            return None
+        return f"locate_worker_{max_hits}_clean_exec_required_dataset_plus_load_plus_query"
+    return None
+
+
+def expected_right_maximal_rss_scope(row: Mapping[str, str]) -> str | None:
+    """Return the valid RSS scope for right-maximal, MEM, or MAM raw rows."""
+    status = row_status(row)
+    if status in {"not_applicable", "not_supported", "skipped_high_frequency"}:
+        return "not_applicable"
+    operation = row.get("operation")
+    if row.get("method") == "mummer4":
+        if operation == "build":
+            return "mummer4_build_process_including_save"
+        if operation == "vector":
+            return "mummer4_process_load_plus_query"
+        return None
+    if operation == "build":
+        return "build_worker_clean_exec_reference_plus_build"
+    if operation == "save":
+        return "save_worker_clean_exec_load_plus_save"
+    if operation == "load":
+        return "load_worker_clean_exec_load"
+    if operation in RIGHT_QUERY_OPERATIONS:
+        return "query_worker_clean_exec_queries_plus_load_plus_query"
+    return None
+
+
+def audit_clean_exec_worker_contract(
+        tables: Sequence[Table], profile: str) -> dict[str, str]:
+    """Reject evidence whose process model or RSS attribution is ambiguous."""
+    failures: list[str] = []
+    metadata_by_scope = {
+        table.scope: table for table in tables if table.name == "run_metadata.tsv"
+    }
+    for table in raw_tables(tables):
+        metadata = metadata_by_scope.get(table.scope)
+        if metadata is None:
+            failures.append(f"{table.scope}/run_metadata=missing")
+        elif "worker_process_model" not in metadata.columns:
+            failures.append(f"{table.scope}/worker_process_model=missing")
+        else:
+            models = {row.get("worker_process_model", NA) for row in metadata.rows}
+            if models != {CLEAN_EXEC_WORKER_MODEL}:
+                rendered = ",".join(sorted(models)) or "<empty>"
+                failures.append(
+                    f"{table.scope}/worker_process_model={rendered};"
+                    f"expected={CLEAN_EXEC_WORKER_MODEL}")
+
+        for row in table.rows:
+            source = f"{table.relative}:{row.get('_source_line', '?')}"
+            if table.workload == "exact":
+                expected = expected_exact_rss_scope(row)
+                observed = row.get("peak_rss_scope", NA)
+                if expected is None:
+                    failures.append(
+                        f"{source}/unknown_exact_phase={row.get('phase', NA)}/"
+                        f"{row.get('operation', NA)}")
+                elif observed != expected:
+                    failures.append(
+                        f"{source}/peak_rss_scope={observed};expected={expected}")
+            elif table.workload == "right-maximal":
+                expected = expected_right_maximal_rss_scope(row)
+                observed = row.get("peak_rss_scope", NA)
+                if expected is None:
+                    failures.append(
+                        f"{source}/unknown_maximal_operation={row.get('method', NA)}/"
+                        f"{row.get('operation', NA)}")
+                elif observed != expected:
+                    failures.append(
+                        f"{source}/peak_rss_scope={observed};expected={expected}")
+            elif table.workload == "sa-build":
+                if row_status(row) == "not_applicable:threads_exceed_logical_cpus":
+                    allowed = {NA, "not_applicable"}
+                    for field in ("build_peak_rss_scope", "save_peak_rss_scope",
+                                  "load_peak_rss_scope"):
+                        if row.get(field, NA) not in allowed:
+                            failures.append(
+                                f"{source}/{field}={row.get(field, NA)};"
+                                "expected=not_applicable")
+                    continue
+                expected_scopes = {
+                    "build_peak_rss_scope":
+                        "clean_exec_build_worker_until_index_ready",
+                    "save_peak_rss_scope":
+                        "clean_exec_save_worker_including_source_load",
+                    "load_peak_rss_scope":
+                        "clean_exec_load_worker_until_index_ready",
+                }
+                for field, expected in expected_scopes.items():
+                    observed = row.get(field, NA)
+                    if observed != expected:
+                        failures.append(
+                            f"{source}/{field}={observed};expected={expected}")
+
+    return audit_check(
+        profile, "clean_exec_worker_contract", failures,
+        "all raw evidence uses clean-exec workers and canonical RSS scopes")
+
+
 def audit_profile(run_dir: Path, profile: str) -> tuple[list[dict[str, str]], bool]:
     """Validate files, schemas, statuses, and checksums for one suite stage."""
     if not run_dir.is_dir():
@@ -1881,7 +2029,7 @@ def audit_profile(run_dir: Path, profile: str) -> tuple[list[dict[str, str]], bo
     required_columns = {
         "exact": {"method", "phase", "query_group", "pattern_length", "strand", "operation",
                   "repetition", "query_count", "skipped_high_frequency_queries", "seconds",
-                  "peak_rss_mb", "total_hits",
+                  "peak_rss_mb", "peak_rss_scope", "total_hits",
                   "reported_hits", "result_checksum", "serialized_bytes", "allocated_disk_bytes",
                   "total_bases", "threads", "backend", "backend_signature", "sdsl_version",
                   "coordinate_width", "sa_sampling_rate", "canary_total_hits",
@@ -1889,8 +2037,11 @@ def audit_profile(run_dir: Path, profile: str) -> tuple[list[dict[str, str]], bo
                   "fm_query_mode", "fm_batch_width", "status"},
         "sa-build": {"method", "effective_backend", "threads", "sampling_rate", "acceleration",
                      "repetition", "build_wall_seconds", "build_peak_rss_mb", "serialized_bytes",
-                     "allocated_disk_bytes", "sa_checksum", "exact_checksum",
-                     "right_maximal_checksum", "status"},
+                     "allocated_disk_bytes", "construction_coordinate_width",
+                     "stored_coordinate_width", "sa_resource_profile", "lcp_encoding",
+                     "storage_compaction_seconds", "build_peak_rss_scope",
+                     "save_peak_rss_scope", "load_peak_rss_scope", "sa_checksum",
+                     "exact_checksum", "right_maximal_checksum", "status"},
         "right-maximal": {"dataset", "method", "operation", "min_length", "repetition", "seconds",
                           "peak_rss_mb", "peak_rss_scope", "query_bases", "serialized_bytes",
                           "allocated_disk_bytes", "auxiliary_bytes", "total_matches",
@@ -1921,6 +2072,10 @@ def audit_profile(run_dir: Path, profile: str) -> tuple[list[dict[str, str]], bo
     exact_metadata = audit_exact_metadata_contract(selected, profile, run_dir)
     checks.append(exact_metadata)
     failed = failed or exact_metadata["status"] != "ok"
+
+    clean_exec = audit_clean_exec_worker_contract(selected, profile)
+    checks.append(clean_exec)
+    failed = failed or clean_exec["status"] != "ok"
 
     correctness, blocked = summarize_correctness(selected)
     for row in correctness:

@@ -3,6 +3,9 @@
 if(NOT DEFINED SUFKIT_EXECUTABLE OR NOT DEFINED OUTPUT_ROOT)
     message(FATAL_ERROR "SUFKIT_EXECUTABLE and OUTPUT_ROOT are required")
 endif()
+if(NOT DEFINED SUFKIT_EXPECT_LCP_ENCODING)
+    set(SUFKIT_EXPECT_LCP_ENCODING "byte-coded")
+endif()
 
 file(REMOVE_RECURSE "${OUTPUT_ROOT}")
 file(MAKE_DIRECTORY "${OUTPUT_ROOT}")
@@ -11,6 +14,7 @@ set(queries "${OUTPUT_ROOT}/queries.fa")
 set(index "${OUTPUT_ROOT}/reference.sufidx")
 set(sampled "${OUTPUT_ROOT}/sampled.sufidx")
 set(fm "${OUTPUT_ROOT}/reference-fm.sufidx")
+set(low_memory "${OUTPUT_ROOT}/low-memory.sufidx")
 file(WRITE "${reference}" ">r0\nTTGATTACAGGACGTACGT\n>r1\nCCCCAAAATTTT\n")
 file(WRITE "${queries}" ">q0\nAAGATTACACCGATTACA\n")
 
@@ -21,6 +25,45 @@ execute_process(
 if(NOT build_status EQUAL 0)
     message(FATAL_ERROR "cannot build MEM/MAM CLI fixture: ${build_error}")
 endif()
+
+execute_process(
+    COMMAND "${SUFKIT_EXECUTABLE}" build --type sa --input "${reference}"
+            --output "${low_memory}" --sa-profile low-memory
+    RESULT_VARIABLE low_build_status ERROR_VARIABLE low_build_error)
+if(NOT low_build_status EQUAL 0)
+    message(FATAL_ERROR "cannot build low-memory CLI fixture: ${low_build_error}")
+endif()
+execute_process(
+    COMMAND "${SUFKIT_EXECUTABLE}" inspect --index "${low_memory}"
+    RESULT_VARIABLE inspect_status OUTPUT_VARIABLE inspect_output
+    ERROR_VARIABLE inspect_error)
+if(NOT inspect_status EQUAL 0 OR
+   NOT inspect_output MATCHES "construction_backend[\t]divsufsort32" OR
+   NOT inspect_output MATCHES "sa_resource_profile[\t]low-memory" OR
+   NOT inspect_output MATCHES
+       "lcp_encoding[\t]${SUFKIT_EXPECT_LCP_ENCODING}")
+    message(FATAL_ERROR
+        "low-memory inspect metadata is incomplete: ${inspect_error}")
+endif()
+
+foreach(conflict IN ITEMS acceleration learned sampling)
+    if(conflict STREQUAL "acceleration")
+        set(conflicting_arguments --sa-acceleration full)
+    elseif(conflict STREQUAL "learned")
+        set(conflicting_arguments --learned-index)
+    else()
+        set(conflicting_arguments --sa-sampling-rate 2)
+    endif()
+    execute_process(
+        COMMAND "${SUFKIT_EXECUTABLE}" build --type sa --input "${reference}"
+                --output "${OUTPUT_ROOT}/invalid-${conflict}.sufidx"
+                --sa-profile low-memory ${conflicting_arguments}
+        RESULT_VARIABLE conflict_status)
+    if(conflict_status EQUAL 0)
+        message(FATAL_ERROR
+            "low-memory accepted conflicting ${conflict} options")
+    endif()
+endforeach()
 
 foreach(command IN ITEMS mem mam)
     execute_process(

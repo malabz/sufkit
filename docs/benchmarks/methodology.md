@@ -134,13 +134,15 @@ methods continue.
 
 Build, save, load, count, and each locate limit run in separate phase workers,
 so peak RSS from an earlier phase or method cannot contaminate a later one.
-These workers are created with `fork()` after the controller has generated the
-current dataset. Their RSS therefore includes inherited controller dataset
-pages in addition to the phase-specific reference/index/query allocations.
-The exact raw output names this boundary in `peak_rss_scope`; it is a
-whole-worker high-water mark for that declared scope, not the incremental RSS
-of the index alone. Comparisons are meaningful only between rows produced by
-the same worker protocol and dataset scope.
+The controller uses `fork()` only as the short transition to `exec()`; each
+phase therefore starts from a clean process image and does not inherit the
+controller's resident dataset heap. Build workers include reference loading
+and construction, save workers include index loading and saving, and query
+workers include index/query loading plus the query operation. The exact raw
+output names this boundary in `peak_rss_scope`; it is a whole-worker
+high-water mark for that declared scope, not the incremental RSS of the index
+alone. Comparisons remain meaningful only between rows produced by the same
+worker protocol and dataset scope.
 
 Timed query loops exclude TSV formatting and output. Wall time and user/system
 CPU time are retained for every raw repetition; summary tables use medians and
@@ -161,7 +163,7 @@ files and does not print the successful-completion message.
 
 ## Output files
 
-`--output-dir` creates exactly four result files:
+Exact `--output-dir` runs create four result files:
 
 - `run_metadata.tsv`: dataset, generator, toolchain, OS, CPU, and composition;
 - `build_results.tsv`: build/save/load medians, RSS, size, and bits per base;
@@ -170,18 +172,42 @@ files and does not print the successful-completion message.
   declared RSS scope, plus ordered query-definition rows containing the query
   ID and synthetic source coordinate/template offset when available.
 
+Maximal-match, MEM, and MAM workloads also create
+`correctness_summary.tsv`, which records their independent small-oracle gate.
+
 Exact raw rows also carry backend provenance (`backend`,
-`backend_signature`, `sdsl_version`, coordinate width, SA sampling rate, and
-builder `threads`), a deterministic post-build/load query canary
+`backend_signature`, `sdsl_version`, legacy construction width, SA sampling
+rate, and builder `threads`), explicit construction/stored coordinate widths,
+the SA resource profile, LCP encoding, component/resident bytes,
+storage-compaction time, and a deterministic post-build/load query canary
 (`canary_total_hits`, `canary_reported_hits`, and `canary_checksum`), and the
 phase-local number of query threads (`query_threads`: zero for non-query rows,
 one for the current scalar/batch query workers). These fields let the packager
 reject a headline assembled from a mislabeled backend, incompatible index, or
 different query-execution contract.
 
+For controlled Low-memory raw-versus-byte-coded LCP experiments, maintainers
+may configure a separate build with the advanced, developer-only option
+`SUFKIT_INTERNAL_FORCE_RAW_LCP=ON`. The option is rejected unless
+`SUFKIT_BUILD_BENCHMARKS=ON`, does not change the public API or CLI, and makes
+all retained LCP arrays use the raw codec. Fast already keeps raw LCP after the
+byte-coded representation failed its pinned quick three-percent regression
+gate. Compare Low-memory from the override build with default Low-memory from
+the same source revision, compiler flags, dataset, and CPU pinning; the
+recorded `lcp_encoding` field distinguishes the two artifacts. This switch is
+an A/B instrument, not a supported end-user storage policy.
+
 Metadata deliberately omits the hostname and user-specific input/output paths.
 Existing result files are not overwritten. Use a new or empty result directory
 for every run.
+
+The non-installed `sufkit_query_memory_bench` provides a complementary
+resident-memory view. It runs build, load, and query in separate clean-exec
+workers and records both RSS and `/proc/self/smaps_rollup` PSS. Its
+`index_ready_pss_mb` is the loaded-process measurement; `peak_rss_mb` remains
+the worker lifetime high-water mark. It supports Fast, Low-memory, forced
+32/40/48/64 storage, and FM Huffman methods. PSS values are Linux-specific and
+must not be silently substituted with RSS on other platforms.
 
 Learned exact rows additionally record SA/ISA/LCP/CHILD/model construction
 times, model bytes, suffix and character comparisons, gallop probes, local
@@ -250,7 +276,7 @@ allocation.
 All internal and MUMmer4 rows are normalized to the same zero-based,
 query-first tuple checksum. A mismatch preserves diagnostic TSV files and
 returns nonzero. See the
-[archived 0.1.1 right-maximal report](../archive/benchmarks/0.1.1-right-maximal.md)
+[archived 0.1.1 right-maximal report](https://github.com/malabz/sufkit/blob/main/docs/archive/benchmarks/0.1.1-right-maximal.md)
 for the historical release run.
 
 ## Formal MEM and reference-MAM smoke
@@ -267,10 +293,14 @@ sufkit bench --workload mam --profile smoke \
   --output-dir results/mam-smoke
 ```
 
-The four TSV files retain the established schema and add `workload` to run
-metadata. MUMmer4 uses `-maxmatch` for MEM and `-mumreference` for MAM. Its
-timed row is external load+query; sufkit rows are in-process query-only. Every
-method must produce the same total and checksum for each comparison group.
+MEM and MAM runs retain the four performance TSV files described above and add
+`correctness_summary.tsv` as a fifth file for the independent small-oracle
+gate. Run metadata records the selected `workload`. MUMmer4 uses `-maxmatch`
+for MEM and `-mumreference` for MAM. Its timed row covers external process
+startup, index loading, querying, and output-file writing; parsing and checksum
+calculation happen afterward and are not timed. Sufkit rows measure the
+preloaded in-process query kernel. Every method must produce the same total and
+checksum for each comparison group.
 
 ## Headline and server execution scopes
 

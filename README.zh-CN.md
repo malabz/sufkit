@@ -9,6 +9,8 @@
 - ISA、LCP、CHILD 与 suffix-link 右极大精确匹配搜索；
 - 正式的双侧极大 MEM 与 reference-MAM（参考中唯一、query 可重复）搜索；
 - 可选的文本位置采样 SA，保持完整 exact count/locate 和右极大匹配结果；
+- 构建宽度与最终存储宽度分离，支持原生 32/64 位及 split40/split48；
+- 使用 raw LCP 的 Fast 与使用 byte-coded LCP 的 Low-memory 两种配置；
 - 可选的 Sapling 风格分段线性 learned index；
 - FASTA/FASTA.gz、多 contig、正向、反向互补和双链查询；
 - 自包含、带版本和 CRC 校验的 `.sufidx` 文件；
@@ -38,7 +40,10 @@ count 和 Sapling PWL 均已随 0.2.0 发布；其中采样 SA 和 Sapling PWL �
 默认选择保持保守：
 
 - 普通 SA 构建使用 divsufsort；只有逻辑文本至少 1 GiB、线程数大于 1 且 CaPS 可用时，`auto` 才选择 CaPS。
-- SA 默认构建 `SA+ISA+LCP`，右极大匹配自动使用 suffix-link；CHILD 只在显式请求时使用。
+- Fast 是默认 SA profile，保留完整 SA+ISA+原生 raw LCP，右极大/MEM 自动使用
+  suffix-link；CHILD 只在显式请求时使用。
+- Low-memory 保留完整 SA+byte-coded LCP，并移除常驻 ISA、CHILD 与 PWL；
+  查询自动使用 LCP 路径。它目前不与文本位置采样组合。
 - 采样 SA 默认关闭。`K>1` 主要减少最终索引内存和文件大小，不降低底层完整 SA 构建的峰值内存；采样右极大匹配要求 `min_length >= K`。
 - FM-index 默认使用 Huffman；EPR 适合查询速度优先且能接受更大索引的场景。
 - Sapling PWL 默认关闭，因为其收益与数据重复结构和查询负载有关。
@@ -79,6 +84,25 @@ ctest --preset release --output-on-failure
 ./build/release/sufkit mam --index reference.sa.sufidx \
   --query queries.fa.gz --min-length 20
 ```
+
+低内存 SA：
+
+```bash
+./build/release/sufkit build --type sa \
+  --input reference.fa.gz --output reference.low-memory.sufidx \
+  --sa-profile low-memory --sa-width auto --sa-storage-width auto
+```
+
+`--sa-width` 决定 divsufsort/CaPS 构建时使用 32 还是 64 位；
+`--sa-storage-width` 决定最终 SA 的物理宽度和 auxiliary 的优先宽度；需要
+one-past row 标记的 auxiliary 在必要时可单独提升。可选布局为 32、split40、
+split48 或 64 位。自动判断依据是“碱基 + 每条 contig 的 separator + sentinel”的
+完整逻辑符号数，而不只是 FASTA 碱基数。因此可以用 64 位构建器安全构建，
+再在完整校验后压成更窄的最终索引。
+
+当前源码的 `.sufidx` 1.4 已支持这些 codec，并继续读取 1.0–1.3。split40/48
+已经通过小规模正确性测试，但尚未完成超过 `2^32` 逻辑符号的真实规模验证，
+也不能据此宣称内存和速度已经全面超过 MUMmer4；这些范围仍属于实验能力。
 
 所有公开坐标都是 0-based、contig-local。exact pattern 只接受 A/C/G/T；
 右极大、MEM 和 MAM query 中的其他字符会成为 hard break。

@@ -59,8 +59,9 @@ not the result TSV on stdout.
   --input reference.fa --output reference.sa.sufidx
 ```
 
-The default construction uses divsufsort and stores SA+ISA+LCP. It is ready
-for suffix-link right-maximal exact match search. To request CaPS explicitly:
+The default Fast profile uses divsufsort and stores a complete SA+ISA+raw LCP.
+It is ready for suffix-link right-maximal exact match and MEM search. To
+request CaPS explicitly:
 
 ```bash
 ./build/release/sufkit build --type sa \
@@ -69,7 +70,26 @@ for suffix-link right-maximal exact match search. To request CaPS explicitly:
 ```
 
 CaPS has parallel setup and larger working-memory costs. It is intended for
-large references, not this small example.
+large references, not this small example. Low-memory changes the final index,
+but it does not remove CaPS's complete SA/LCP and work arrays during
+construction.
+
+Construction and final storage widths are independent. A memory-oriented
+build can use a safe constructor width and let the final index choose the
+narrowest physical representation:
+
+```bash
+./build/release/sufkit build --type sa \
+  --input reference.fa --output reference.low-memory.sufidx \
+  --sa-profile low-memory --sa-width auto --sa-storage-width auto
+
+./build/release/sufkit inspect --index reference.low-memory.sufidx
+```
+
+Low-memory stores a complete SA and LCP, but not ISA, CHILD, or PWL. Its LCP
+uses byte coding. It remains capable of exact,
+right-maximal, MEM, and complete-SA reference-MAM queries, but automatically
+uses LCP rather than suffix-link traversal.
 
 To trade query work for a smaller loaded and serialized standalone SA:
 
@@ -147,6 +167,12 @@ int main() {
   }
 }
 ```
+
+The equivalent explicit resource presets are
+`sufkit::FastSuffixArrayBuildOptions()` and
+`sufkit::LowMemorySuffixArrayBuildOptions()`. Set
+`SuffixArrayBuildOptions::coordinate_width` for the constructor and
+`storage_width` for the resident/persisted representation.
 
 Continue with [C++ workflows](../user-guide/cpp-workflows.md), the
 [CLI reference](../user-guide/cli-reference.md), or the

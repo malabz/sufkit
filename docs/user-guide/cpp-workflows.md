@@ -41,6 +41,19 @@ Default SA+ISA+LCP:
 auto index = sufkit::SuffixArray::Build(reference);
 ```
 
+The default is the Fast resource preset and retains raw LCP. For a complete
+low-memory index:
+
+```cpp
+auto options = sufkit::LowMemorySuffixArrayBuildOptions();
+auto compact = sufkit::SuffixArray::Build(reference, options);
+```
+
+Low-memory keeps SA+byte-coded LCP, discards the temporary ISA after LCP
+construction, and disables CHILD and PWL. It supports exact, right-maximal,
+MEM, and complete-SA reference-MAM queries through LCP traversal rather than
+suffix-link reuse. It currently requires `sampling_rate=1`.
+
 Explicit CaPS build:
 
 ```cpp
@@ -54,6 +67,27 @@ sufkit::SuffixArrayBuildStatistics timing;
 options.statistics = &timing;
 auto index = sufkit::SuffixArray::Build(reference, options);
 ```
+
+`coordinate_width` selects the constructor integer width. Primary SA storage
+and the preferred auxiliary width are an independent choice:
+
+```cpp
+auto options = sufkit::FastSuffixArrayBuildOptions();
+options.coordinate_width = sufkit::CoordinateWidth::kBits64;
+options.storage_width = sufkit::CoordinateStorageWidth::kBits32;
+auto index = sufkit::SuffixArray::Build(reference, options);
+```
+
+This combination is legal when the complete logical text fits unsigned
+32-bit positions, even if the chosen constructor uses 64-bit integers. Other
+explicit storage choices are `kBits40`, `kBits48`, and `kBits64`. Auto Fast
+uses native32 then native64; auto Low-memory selects the narrowest width.
+Every down-pack is validated before the build-width representation is freed.
+
+Low-memory describes the retained index, not the constructor peak. In
+particular, the bundled CaPS implementation owns complete SA/LCP and temporary
+work arrays during construction and exposes borrowed result pointers, so the
+wrapper must copy the final SA before releasing the CaPS object.
 
 The statistics pointer is caller-owned and written during the build. Do not
 share one statistics object across concurrent calls. `threads` controls CaPS
@@ -111,8 +145,9 @@ index.Save("reference.sufidx", save);
 ```
 
 `InspectIndex` validates the outer container and reports kind, backend,
-versions, counts, fingerprint, size, and SA auxiliary fields without exposing
-the private backend type.
+versions, counts, fingerprint, size, construction/stored widths, resource
+profile, LCP encoding, and resident payload breakdown without exposing the
+private backend type.
 
 ## Exact search
 

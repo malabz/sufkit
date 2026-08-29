@@ -22,21 +22,56 @@ min(8192, max(1, symbols/4096), max(1, 128*threads))
 ```
 
 Each build uses a private Parlay scheduler and does not read or modify
-`PARLAY_NUM_THREADS`. When an acceleration needs LCP, sufkit retains the LCP
-already produced by CaPS merge stages rather than running a second Kasai pass.
-ISA and CHILD remain part of the common auxiliary pipeline. With sampling,
-complete CaPS LCP is compacted by taking the interval minimum between adjacent
-retained rows.
+`PARLAY_NUM_THREADS`. CaPS always computes a complete merge-built LCP
+internally. Fast and CHILD construction copy the required native-width rows;
+with sampling, that array is compacted by the interval minimum between
+adjacent retained rows. Low-memory avoids the extra wrapper-side raw-LCP copy
+and constructs byte-coded LCP after the CaPS object has been released. ISA and
+CHILD otherwise remain part of the common auxiliary pipeline.
+
+The Low-memory profile reduces the final common index, not CaPS's construction
+working set. During `construct()`, the vendored implementation owns complete
+SA and LCP arrays, same-width SA/LCP work arrays, and partition metadata that
+includes a `p*(p+1)` table. The wrapper must also copy the final SA before the
+CaPS object can be destroyed because the vendored API exposes only borrowed
+pointers. Consequently, do not infer a low CaPS build peak from a 6--8
+byte/symbol final Low-memory index; measure the constructor phase separately.
 
 The private divsufsort adapter constructs the complete SA, compacts it when
 requested, and returns sampled ISA/LCP phase data to the common builder. This
 avoids rebuilding ISA/LCP after backend dispatch. divsufsort itself remains
 serial; threads apply only to safe auxiliary work.
 
+## Construction and physical storage
+
+The stored backend ID records constructor provenance, not section layout.
+`CoordinateWidth` chooses backend32/backend64; `CoordinateStorageWidth`
+chooses native32, split40, split48, or native64 for the primary SA after
+construction and acts as the preferred auxiliary width. Legal examples include
+divsufsort64 -> native32 and CaPS64 -> split40. An auxiliary one-past marker
+may require an independent promotion. A narrow request is accepted only after
+all logical positions and permutation invariants fit.
+
+| Storage | Layout | Coordinate bytes | Auto policy |
+|---|---|---:|---|
+| native32 | `uint32_t[]` | 4 | Fast and Low-memory when valid |
+| split40 | `low32[] + high8[]` | 5 | Low-memory for positions above `UINT32_MAX` and below `2^40` |
+| split48 | `low32[] + high16[]` | 6 | Low-memory for positions from `2^40` through `2^48-1` |
+| native64 | `uint64_t[]` | 8 | Fast above native32; Low-memory above split48 |
+
+Fast defaults to complete SA+ISA+raw LCP and native random-access storage.
+Low-memory requires K=1, stores SA+byte-coded LCP, and omits persistent ISA,
+CHILD, and PWL. Explicit CHILD/full builds retain raw LCP while constructing
+CHILD; Fast also persists that native representation. The 40/48-bit
+large-reference
+performance envelope is still experimental; this table describes
+representation, not a measured MUMmer4 advantage.
+
 ## Standalone-SA sampling
 
 `SuffixArrayBuildOptions::sampling_rate=K` is orthogonal to constructor,
-coordinate width, ESA acceleration, and PWL lookup. K=1 stores every suffix.
+construction/storage widths, ESA acceleration, and PWL lookup. K=1 stores
+every suffix.
 K>1 retains text positions divisible by K and reduces stored SA/ISA/LCP/CHILD
 rows to `ceil(n/K)`.
 
@@ -72,10 +107,10 @@ not exposed. A template or sampling-density change requires a new backend ID.
 | Suffix-link right-maximal exact match | SA+ISA+LCP | Default SA build and right-maximal exact match auto choice |
 | CHILD/full right-maximal exact match | CHILD combinations | Explicit only |
 | Baseline MEM | SA | Fallback for old/minimal index |
-| LCP MEM | SA+LCP | Auto after suffix-link is unavailable |
-| Suffix-link MEM | SA+ISA+LCP | Default automatic MEM path |
+| LCP MEM | SA+LCP | Automatic MEM path with MUMmer-style query skipping |
+| Suffix-link MEM | SA+ISA+LCP | Explicit MEM path; automatic Fast MAM path |
 | CHILD/full MEM | CHILD combinations | Explicit only |
-| Reference-MAM | Complete SA; optional ESA data | MEM policy; K=1 only |
+| Reference-MAM | Complete SA; optional ESA data | Fast auto uses suffix-link; Low-memory auto uses LCP; K=1 only |
 
 For a sampled SA, all row-based accelerations operate over sampled order.
 Sampled right-maximal and MEM search additionally require `min_length >= K`.

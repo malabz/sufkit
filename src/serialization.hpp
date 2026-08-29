@@ -18,6 +18,10 @@
 
 namespace sufkit::detail {
 
+// Keep the container reader and writer on one version source. Individual
+// index implementations may deliberately write an older compatible format.
+inline constexpr std::uint16_t kCurrentSufidxFormatMinor = 4;
+
 enum class StoredBackend : std::uint8_t {
   kDivsufsort32 = 1,
   kDivsufsort64 = 2,
@@ -60,6 +64,7 @@ struct ContainerSpec {
   std::uint8_t library_major = 0;
   std::uint8_t library_minor = 0;
   std::uint8_t library_patch = 0;
+  SaResourceProfile sa_resource_profile = SaResourceProfile::kFast;
   std::uint64_t sequence_count = 0;
   std::uint64_t total_bases = 0;
   std::uint64_t text_symbols = 0;
@@ -86,11 +91,17 @@ class SectionIStream : public std::istream {
                  const SectionDescriptor& section);
   ~SectionIStream() override;
 
+  // Includes bytes already buffered by the streambuf. Payload decoders use
+  // this before allocating variable-length data from an untrusted section.
+  std::uint64_t RemainingBytes() const noexcept;
+
  private:
   class LimitedBuffer : public std::streambuf {
    public:
     LimitedBuffer(std::ifstream& source, std::uint64_t limit,
                   std::size_t buffer_size);
+
+    std::uint64_t RemainingBytes() const noexcept;
 
    protected:
     int_type underflow() override;

@@ -14,6 +14,7 @@
 #include <fstream>
 #include <iostream>
 #include <iterator>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -64,6 +65,24 @@ void CheckMatchResults(const sufkit::QueryResult& result) {
   CHECK(result.hits[0].sequence_id == 0 && result.hits[0].position == 0);
   CHECK(result.hits[1].sequence_id == 0 && result.hits[1].position == 5);
   CHECK(result.hits[2].sequence_id == 1 && result.hits[2].position == 3);
+}
+
+bool SameQueryResult(const sufkit::QueryResult& left,
+                     const sufkit::QueryResult& right) {
+  if (left.total_hits != right.total_hits ||
+      left.truncated != right.truncated ||
+      left.hits.size() != right.hits.size()) {
+    return false;
+  }
+  for (std::size_t index = 0; index < left.hits.size(); ++index) {
+    const auto& lhs = left.hits[index];
+    const auto& rhs = right.hits[index];
+    if (std::tie(lhs.sequence_id, lhs.position, lhs.length, lhs.strand) !=
+        std::tie(rhs.sequence_id, rhs.position, rhs.length, rhs.strand)) {
+      return false;
+    }
+  }
+  return true;
 }
 
 void TestReferenceAndFasta(const std::filesystem::path& directory) {
@@ -180,14 +199,23 @@ void TestSuffixArray(const std::filesystem::path& directory) {
       {sufkit::SaBackend::kDivsufsort, sufkit::CoordinateWidth::kBits64, 1});
   CHECK(sa32.GetInfo().coordinate_width == 32);
   CHECK(sa64.GetInfo().coordinate_width == 64);
+  CHECK(sa32.GetInfo().stored_coordinate_width == 32);
+  // Construction width is independent of the final resident representation:
+  // a 64-bit constructor may safely down-pack a small index to uint32_t.
+  CHECK(sa64.GetInfo().stored_coordinate_width == 32);
   CHECK(sa32.GetInfo().text_symbols ==
         reference.TotalBases() + reference.SequenceCount() + 1);
-  // ISA follows the SA coordinate width, while this small reference keeps a
-  // 32-bit LCP array in both index variants.
+  CHECK(sa32.GetInfo().sa_bytes == sa32.GetInfo().suffix_count * 4ULL);
+  CHECK(sa64.GetInfo().sa_bytes == sa64.GetInfo().suffix_count * 4ULL);
+  constexpr auto kExpectedLcpEncoding = sufkit::SaLcpEncoding::kRaw;
+  CHECK(sa32.GetInfo().lcp_encoding == kExpectedLcpEncoding);
+  CHECK(sa64.GetInfo().lcp_encoding == kExpectedLcpEncoding);
   CHECK(sa32.GetInfo().auxiliary_bytes ==
-        sa32.GetInfo().suffix_count * (4ULL + 4ULL));
+        sa32.GetInfo().isa_bytes + sa32.GetInfo().lcp_bytes +
+            sa32.GetInfo().child_bytes);
   CHECK(sa64.GetInfo().auxiliary_bytes ==
-        sa64.GetInfo().suffix_count * (8ULL + 4ULL));
+        sa64.GetInfo().isa_bytes + sa64.GetInfo().lcp_bytes +
+            sa64.GetInfo().child_bytes);
 
   const std::vector<std::uint8_t> logical_text{2, 3, 4, 5, 6, 2, 3, 4, 5,
                                                1, 5, 5, 5, 2, 3, 4, 5, 2,
@@ -220,6 +248,14 @@ void TestSuffixArray(const std::filesystem::path& directory) {
   CHECK(sa32.Count("GTTT") == 0);  // would require crossing a contig separator
   CHECK(sa32.Count("GTAC") == 0);  // would require crossing the N in chr1
   CHECK(sa32.Count("AAA", sufkit::StrandMode::kBoth) == 3);
+  const auto invalid_strand = static_cast<sufkit::StrandMode>(255);
+  CheckError(sufkit::ErrorCode::kInvalidInput,
+             [&] { (void)sa32.Count("ACGT", invalid_strand); });
+  CheckError(sufkit::ErrorCode::kInvalidInput, [&] {
+    sufkit::LocateOptions invalid;
+    invalid.strands = invalid_strand;
+    (void)sa32.Locate("ACGT", invalid);
+  });
 
   sufkit::LocateOptions limited;
   limited.max_hits = 1;
@@ -289,12 +325,13 @@ void TestSuffixArray(const std::filesystem::path& directory) {
   auto loaded = sufkit::SuffixArray::Load(path);
   CheckMatchResults(loaded.Locate("ACGT"));
 
-  // Loading a 64-bit SA with 64-bit ISA and 32-bit LCP exercises mixed-width
-  // auxiliary sections without changing their on-disk representation.
+  // The container records the 64-bit constructor independently from the
+  // down-packed 32-bit resident SA representation.
   const auto path64 = directory / "reference.sa64.sufidx";
   sa64.Save(path64);
   auto loaded64 = sufkit::SuffixArray::Load(path64);
   CHECK(loaded64.GetInfo().coordinate_width == 64);
+  CHECK(loaded64.GetInfo().stored_coordinate_width == 32);
   CHECK(loaded64.GetInfo().auxiliary_bytes ==
         sa64.GetInfo().auxiliary_bytes);
   CheckMatchResults(loaded64.Locate("ACGT"));
@@ -648,6 +685,168 @@ void TestFmIndex(const std::filesystem::path& directory) {
   }
 }
 
+void TestSaStorageProfiles(const std::filesystem::path& directory) {
+  const auto reference = MakeReference();
+  const std::array<std::string, 6> patterns{
+      {"A", "ACGT", "AAA", "TTT", "GTTT", "CCCC"}};
+
+  CheckError(sufkit::ErrorCode::kInvalidInput, [&] {
+    auto invalid = sufkit::FastSuffixArrayBuildOptions();
+    invalid.resource_profile = static_cast<sufkit::SaResourceProfile>(255);
+    (void)sufkit::SuffixArray::Build(reference, invalid);
+  });
+  CheckError(sufkit::ErrorCode::kInvalidInput, [&] {
+    auto invalid = sufkit::FastSuffixArrayBuildOptions();
+    invalid.acceleration = static_cast<sufkit::SaAcceleration>(255);
+    (void)sufkit::SuffixArray::Build(reference, invalid);
+  });
+
+  auto fast_options = sufkit::FastSuffixArrayBuildOptions();
+  fast_options.backend = sufkit::SaBackend::kDivsufsort;
+  fast_options.coordinate_width = sufkit::CoordinateWidth::kBits64;
+  auto fast = sufkit::SuffixArray::Build(reference, fast_options);
+  CHECK(fast.GetInfo().coordinate_width == 64);
+  CHECK(fast.GetInfo().stored_coordinate_width == 32);
+  CHECK(fast.GetInfo().sa_resource_profile ==
+        sufkit::SaResourceProfile::kFast);
+  CHECK(fast.GetInfo().format_version == "1.4");
+
+  auto low_options = sufkit::LowMemorySuffixArrayBuildOptions();
+  low_options.backend = sufkit::SaBackend::kDivsufsort;
+  low_options.coordinate_width = sufkit::CoordinateWidth::kBits64;
+  auto low = sufkit::SuffixArray::Build(reference, low_options);
+  CHECK(low.GetInfo().coordinate_width == 64);
+  CHECK(low.GetInfo().stored_coordinate_width == 32);
+  CHECK(low.GetInfo().sa_resource_profile ==
+        sufkit::SaResourceProfile::kLowMemory);
+  CHECK(low.GetInfo().sa_acceleration == sufkit::SaAcceleration::kLcp);
+  CHECK(low.GetInfo().isa_bytes == 0);
+  CHECK(low.GetInfo().child_bytes == 0);
+  CHECK(low.GetInfo().learned_index_bytes == 0);
+  CHECK(low.GetInfo().resident_core_bytes <
+        fast.GetInfo().resident_core_bytes);
+
+  for (const auto& pattern : patterns) {
+    CHECK(fast.Count(pattern) == low.Count(pattern));
+    CHECK(SameQueryResult(fast.Locate(pattern), low.Locate(pattern)));
+  }
+
+  const std::array<sufkit::CoordinateStorageWidth, 4> storage_widths{
+      {sufkit::CoordinateStorageWidth::kBits32,
+       sufkit::CoordinateStorageWidth::kBits40,
+       sufkit::CoordinateStorageWidth::kBits48,
+       sufkit::CoordinateStorageWidth::kBits64}};
+  const std::array<std::uint8_t, 4> expected_widths{{32, 40, 48, 64}};
+  for (std::size_t index = 0; index < storage_widths.size(); ++index) {
+    auto options = sufkit::FastSuffixArrayBuildOptions();
+    options.backend = sufkit::SaBackend::kDivsufsort;
+    options.coordinate_width = sufkit::CoordinateWidth::kBits64;
+    options.storage_width = storage_widths[index];
+    auto candidate = sufkit::SuffixArray::Build(reference, options);
+    const auto info = candidate.GetInfo();
+    CHECK(info.coordinate_width == 64);
+    CHECK(info.stored_coordinate_width == expected_widths[index]);
+    CHECK(info.sa_bytes ==
+          info.suffix_count * (expected_widths[index] / 8ULL));
+    CHECK(info.format_version == "1.4");
+    for (const auto& pattern : patterns) {
+      CHECK(SameQueryResult(candidate.Locate(pattern), fast.Locate(pattern)));
+    }
+
+    const auto path =
+        directory /
+        ("storage-" + std::to_string(expected_widths[index]) + ".sufidx");
+    candidate.Save(path);
+    const auto inspected = sufkit::InspectIndex(path);
+    CHECK(inspected.format_version == "1.4");
+    CHECK(inspected.coordinate_width == 64);
+    CHECK(inspected.stored_coordinate_width == expected_widths[index]);
+    auto loaded = sufkit::SuffixArray::Load(path);
+    CHECK(loaded.GetInfo().stored_coordinate_width == expected_widths[index]);
+    for (const auto& pattern : patterns) {
+      CHECK(SameQueryResult(loaded.Locate(pattern),
+                            candidate.Locate(pattern)));
+    }
+  }
+}
+
+void TestPackedSpanLocateEnumeration() {
+  const auto reference = sufkit::GenomeReference::FromRecords(
+      {{"repeat", "", std::string(700, 'A')}});
+  const std::array<sufkit::CoordinateStorageWidth, 4> storage_widths{
+      {sufkit::CoordinateStorageWidth::kBits32,
+       sufkit::CoordinateStorageWidth::kBits40,
+       sufkit::CoordinateStorageWidth::kBits48,
+       sufkit::CoordinateStorageWidth::kBits64}};
+
+  auto native_options = sufkit::FastSuffixArrayBuildOptions();
+  native_options.backend = sufkit::SaBackend::kDivsufsort;
+  native_options.coordinate_width = sufkit::CoordinateWidth::kBits64;
+  native_options.storage_width =
+      sufkit::CoordinateStorageWidth::kBits32;
+  const auto native = sufkit::SuffixArray::Build(reference, native_options);
+  const std::array<std::optional<std::uint64_t>, 5> limits{
+      {std::nullopt, 0, 1, 10, 600}};
+  std::vector<sufkit::QueryResult> expected;
+  for (const auto limit : limits) {
+    sufkit::LocateOptions locate;
+    locate.max_hits = limit;
+    expected.push_back(native.Locate("AAA", locate));
+  }
+  CHECK(expected.front().total_hits > 512);
+
+  for (const auto storage_width : storage_widths) {
+    auto options = sufkit::FastSuffixArrayBuildOptions();
+    options.backend = sufkit::SaBackend::kDivsufsort;
+    options.coordinate_width = sufkit::CoordinateWidth::kBits64;
+    options.storage_width = storage_width;
+    const auto candidate = sufkit::SuffixArray::Build(reference, options);
+    CHECK(candidate.Count("AAA") == expected.front().total_hits);
+    std::size_t result_index = 0;
+    for (const auto limit : limits) {
+      sufkit::LocateOptions locate;
+      locate.max_hits = limit;
+      CHECK(SameQueryResult(candidate.Locate("AAA", locate),
+                            expected[result_index]));
+      ++result_index;
+    }
+  }
+}
+
+void TestLegacySaFixtures() {
+  const auto fixture_directory =
+      std::filesystem::path(__FILE__).parent_path() / "data";
+  struct LegacyFixture {
+    const char* filename;
+    const char* format;
+    std::uint32_t sampling_rate;
+    sufkit::SaAcceleration acceleration;
+  };
+  const std::array<LegacyFixture, 4> fixtures{
+      {{"legacy-sa-v1.0.fixture", "1.0", 1,
+        sufkit::SaAcceleration::kNone},
+       {"legacy-sa-v1.1.fixture", "1.1", 1,
+        sufkit::SaAcceleration::kFull},
+       {"legacy-sa-v1.2.fixture", "1.2", 1,
+        sufkit::SaAcceleration::kLcpSuffixLink},
+       {"legacy-sa-v1.3.fixture", "1.3", 2,
+        sufkit::SaAcceleration::kFull}}};
+
+  for (const auto& fixture : fixtures) {
+    const auto path = fixture_directory / fixture.filename;
+    CHECK(std::filesystem::is_regular_file(path));
+    const auto inspected = sufkit::InspectIndex(path);
+    CHECK(inspected.format_version == fixture.format);
+    CHECK(inspected.sa_sampling_rate == fixture.sampling_rate);
+    auto loaded = sufkit::SuffixArray::Load(path);
+    CHECK(loaded.GetInfo().format_version == fixture.format);
+    CHECK(loaded.GetInfo().sa_acceleration == fixture.acceleration);
+    CHECK(loaded.SamplingRate() == fixture.sampling_rate);
+    CHECK(loaded.Count("ACGT") == 3);
+    CheckMatchResults(loaded.Locate("ACGT"));
+  }
+}
+
 using RightMaximalTuple =
     std::tuple<std::uint64_t, sufkit::SequenceId, sufkit::Position,
                std::uint64_t, sufkit::Strand>;
@@ -671,7 +870,7 @@ void TestLearnedSa(const std::filesystem::path& directory) {
   CHECK(index.Acceleration() == sufkit::SaAcceleration::kLcpSuffixLink);
   CHECK(index.LookupAcceleration() ==
         sufkit::SaLookupAcceleration::kSaplingPwl);
-  CHECK(index.GetInfo().format_version == "1.2");
+  CHECK(index.GetInfo().format_version == "1.4");
   CHECK(index.GetInfo().learned_k == 4);
   CHECK(index.GetInfo().learned_bucket_bits == 3);
   CHECK(index.GetInfo().learned_index_bytes != 0);
@@ -745,12 +944,15 @@ void TestLearnedSa(const std::filesystem::path& directory) {
     CHECK(left_bytes == right_bytes);
   }
   const auto inspected = sufkit::InspectIndex(path);
-  CHECK(inspected.format_version == "1.2");
+  CHECK(inspected.format_version == "1.4");
   CHECK(inspected.sa_lookup_acceleration ==
         sufkit::SaLookupAcceleration::kSaplingPwl);
   CHECK(inspected.learned_k == 4);
   CHECK(inspected.learned_bucket_bits == 3);
   auto loaded = sufkit::SuffixArray::Load(path);
+  CHECK(index.GetInfo().resident_core_bytes == inspected.resident_core_bytes);
+  CHECK(index.GetInfo().resident_core_bytes ==
+        loaded.GetInfo().resident_core_bytes);
   for (const auto& pattern : patterns) {
     const auto expected =
         index.EqualRange(pattern, sufkit::SaSearchAlgorithm::kBinary);
@@ -1010,8 +1212,14 @@ void TestRightMaximalSearch(const std::filesystem::path& directory) {
   build_options.acceleration = sufkit::SaAcceleration::kFull;
   auto index = sufkit::SuffixArray::Build(reference, build_options);
   CHECK(index.Acceleration() == sufkit::SaAcceleration::kFull);
-  CHECK(index.GetInfo().format_version == "1.1");
+  CHECK(index.GetInfo().format_version == "1.4");
   CHECK(index.GetInfo().auxiliary_bytes != 0);
+
+  CheckError(sufkit::ErrorCode::kInvalidInput, [&] {
+    sufkit::RightMaximalOptions invalid;
+    invalid.strands = static_cast<sufkit::StrandMode>(255);
+    (void)index.FindRightMaximalMatches("GATTACA", invalid);
+  });
 
   sufkit::RightMaximalOptions options;
   options.min_length = 4;
@@ -1138,8 +1346,7 @@ void TestRightMaximalSearch(const std::filesystem::path& directory) {
     built.Save(path);
     const auto inspected = sufkit::InspectIndex(path);
     CHECK(inspected.sa_acceleration == modes[mode_index]);
-    CHECK(inspected.format_version ==
-          (modes[mode_index] == sufkit::SaAcceleration::kNone ? "1.0" : "1.1"));
+    CHECK(inspected.format_version == "1.4");
     auto loaded = sufkit::SuffixArray::Load(path);
     auto baseline_options = options;
     baseline_options.strands = sufkit::StrandMode::kForward;
@@ -1210,6 +1417,9 @@ int main() {
   try {
     TestReferenceAndFasta(directory);
     TestSuffixArray(directory);
+    TestSaStorageProfiles(directory);
+    TestPackedSpanLocateEnumeration();
+    TestLegacySaFixtures();
     TestManyContigCoordinateMapping(directory);
     TestLearnedSa(directory);
     TestFmIndex(directory);

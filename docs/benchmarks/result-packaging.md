@@ -73,20 +73,24 @@ non-zero exit after all diagnostics have been written.
 - Checksums must remain stable. Unexpected statuses and cross-method result
   mismatches block headline generation.
 
-Exact raw rows include backend name/signature, SDSL version, coordinate width,
-SA sampling rate, builder thread count, `query_threads`, and a deterministic
-build/load canary (`canary_total_hits`, `canary_reported_hits`, and
-`canary_checksum`). The headline gate uses these fields to reject mixed
-backend or execution provenance and to compare divsufsort/CaPS query canaries.
-`query_threads` is phase-local: non-query rows record zero and the current
-query workers record one.
+Exact raw rows include backend name/signature, SDSL version, legacy
+construction width, explicit construction/stored coordinate widths, resource
+profile, LCP encoding, SA sampling rate, builder thread count,
+`query_threads`, and a deterministic build/load canary
+(`canary_total_hits`, `canary_reported_hits`, and `canary_checksum`). The
+headline gate uses constructor provenance and execution fields to reject mixed
+artifacts and to compare divsufsort/CaPS query canaries. `query_threads` is
+phase-local: non-query rows record zero and the current query workers record
+one.
 
 Phase RSS is interpreted together with the producer's `peak_rss_scope`.
-Exact and right-maximal workers are forked after the controller has prepared
-the current dataset, so their high-water marks include inherited controller
-dataset pages plus the named build/load/query work. The packager preserves
-that scope; it does not subtract a controller baseline or relabel the value as
-index-only memory.
+Exact and maximal-match phases use clean `fork()`/`exec()` workers. Each worker
+loads or decodes the inputs required by its named phase and does not inherit the
+controller's prepared-dataset heap. The packager preserves the declared scope;
+it does not subtract a baseline or relabel a worker-lifetime high-water mark as
+index-only memory. Publication audits require
+`worker_process_model=clean-exec-phase-v1` and the canonical phase-specific RSS
+scope strings; legacy fork-only or ambiguously labelled rows are rejected.
 
 The tool uses only the Python standard library and accepts additive schema
 extensions. Unknown columns are retained in the workload-specific raw union.
@@ -169,11 +173,12 @@ needed by the visible tables. The `sa32-binary`, `caps32`, and `fm-huff`
 builds must come from the same exact-worker source scope and the same dataset
 fingerprint; their thread settings must be 1, 64, and 1 respectively. When
 both SA build rows expose their required canary hit counts and checksum, those
-values must agree. Backend signature, coordinate width, sampling rate, SDSL
-version, build threads, and query-thread provenance must be stable across all
-three build repetitions. The `exact-build` and `exact-query` metadata must
-agree on seed, scenario, total bases, dataset fingerprint, query-set checksum,
-query count, and query bases. It never writes or removes run artifacts.
+values must agree. Backend signature, construction coordinate width, sampling
+rate, SDSL version, build threads, and query-thread provenance must be stable
+across all three build repetitions. The `exact-build` and `exact-query`
+metadata must agree on seed, scenario, total bases, dataset fingerprint,
+query-set checksum, query count, and query bases. It never writes or removes
+run artifacts.
 
 The `headline_fixed_workload_contract` check also prevents a smoke or quick run
 from being labelled as the fixed headline. Both exact scopes must report

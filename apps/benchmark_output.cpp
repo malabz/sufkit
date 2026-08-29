@@ -249,7 +249,8 @@ void write_result_directory(
                 "learned_k\tlearned_memory_overhead_basis_points\tlearned_bucket_bits\t"
                 "fm_query_modes\tfm_batch_widths\tfm_batch_width_overrides\t"
                 "reference_seconds\tnormalization_seconds\tcompiler\tcompiler_version\t"
-                "cmake_version\tbuild_type\tos\tarchitecture\tcpu_model\tlogical_cpus\n";
+                "cmake_version\tbuild_type\tos\tarchitecture\tcpu_model\tlogical_cpus\t"
+                "worker_process_model\n";
     for (const auto& dataset : datasets) {
         metadata << context.run_id << '\t' << context.timestamp << '\t' << to_string(context.profile) << '\t'
                  << to_string(dataset.scenario) << '\t' << context.seed << '\t' << dataset.name << '\t'
@@ -277,7 +278,8 @@ void write_result_directory(
                  << dataset.normalization_seconds << '\t' << compiler_name() << '\t'
                  << compiler_version() << '\t' << SUFKIT_BENCH_CMAKE_VERSION << '\t'
                  << SUFKIT_BENCH_BUILD_TYPE << '\t' << platform.first << '\t' << platform.second << '\t'
-                 << cpu_model() << '\t' << std::thread::hardware_concurrency() << '\n';
+                 << cpu_model() << '\t' << std::thread::hardware_concurrency()
+                 << "\tclean-exec-phase-v1\n";
     }
 
     builds << "run_id\tdataset\tscenario\tmethod\tbackend\tbackend_signature\tsdsl_version\t"
@@ -288,7 +290,10 @@ void write_result_directory(
               "build_worker_peak_rss_mb_median\t"
               "save_seconds_median\tsave_worker_peak_rss_mb_median\tserialized_bytes\t"
               "allocated_disk_bytes\tlearned_index_bytes\tbits_per_base\t"
-              "load_seconds_median\tload_worker_peak_rss_mb_median\tquery_worker_peak_rss_mb_max\tstatus\n";
+              "load_seconds_median\tload_worker_peak_rss_mb_median\tquery_worker_peak_rss_mb_max\tstatus\t"
+              "construction_coordinate_width\tstored_coordinate_width\tsa_resource_profile\t"
+              "lcp_encoding\tsa_bytes\tisa_bytes\tlcp_bytes\tresident_core_bytes\t"
+              "storage_compaction_seconds_median\n";
     queries << "run_id\tdataset\tscenario\tmethod\tquery_group\tpattern_length\tstrand\toperation\t"
                "max_hits\tquery_count\tskipped_high_frequency_queries\tseconds_median\tseconds_min\tseconds_max\tqps_median\t"
                "nanoseconds_per_query_median\tquery_worker_peak_rss_mb\ttotal_hits\treported_hits\tresult_checksum\t"
@@ -298,7 +303,8 @@ void write_result_directory(
                "prediction_error_max\tlocal_window_rows_p50\tlocal_window_rows_p95\t"
                "local_window_rows_p99\tfull_binary_fallbacks\tstatus\t"
                "fm_query_mode\tfm_batch_width\tquery_bases\tquery_bases_per_second\t"
-               "speedup_vs_fm_huff_scalar\n";
+               "speedup_vs_fm_huff_scalar\tconstruction_coordinate_width\t"
+               "stored_coordinate_width\tsa_resource_profile\tlcp_encoding\n";
     raw << "run_id\tdataset\tscenario\tmethod\tphase\tquery_group\tpattern_length\tstrand\t"
            "operation\tmax_hits\trepetition\tquery_count\tskipped_high_frequency_queries\tseconds\tuser_cpu_seconds\t"
            "system_cpu_seconds\tpeak_rss_mb\tpeak_rss_scope\ttotal_hits\treported_hits\tresult_checksum\tstatus\t"
@@ -312,7 +318,10 @@ void write_result_directory(
            "child_build_seconds\tlearned_index_build_seconds\t"
            "backend\tbackend_signature\tsdsl_version\tcoordinate_width\t"
            "sa_sampling_rate\tcanary_total_hits\tcanary_reported_hits\t"
-           "canary_checksum\tquery_threads\n";
+           "canary_checksum\tquery_threads\tconstruction_coordinate_width\t"
+           "stored_coordinate_width\tsa_resource_profile\tlcp_encoding\t"
+           "sa_bytes\tisa_bytes\tlcp_bytes\tresident_core_bytes\t"
+           "storage_compaction_seconds\n";
     builds << std::fixed << std::setprecision(6);
     queries << std::fixed << std::setprecision(6);
     raw << std::fixed << std::setprecision(6);
@@ -326,7 +335,8 @@ void write_result_directory(
                 << query.id << '\t' << query.source
                 << "\t0\t0\t0\t0\t0\t0\t0\t0\t0\tNA\tNA\t0\t0\tNA\t1\t"
                 << dataset.total_bases << "\t0\t0\t0\t0\t0\t0\t0\t0"
-                << "\tNA\tNA\tNA\t0\t0\t0\t0\t0000000000000000\t0\n";
+                << "\tNA\tNA\tNA\t0\t0\t0\t0\t0000000000000000\t0"
+                << "\t0\t0\tNA\tNA\t0\t0\t0\t0\t0\n";
         }
 
         const auto query_identity = [](const QueryAggregate& value) {
@@ -347,6 +357,11 @@ void write_result_directory(
             const auto build_user = values_for(result.builds, [](const auto& value) { return value.build_user_seconds; });
             const auto build_system = values_for(result.builds, [](const auto& value) { return value.build_system_seconds; });
             const auto sa_build = values_for(result.builds, [](const auto& value) { return value.sa_build_seconds; });
+            const auto storage_compaction = values_for(
+                result.builds,
+                [](const auto& value) {
+                    return value.storage_compaction_seconds;
+                });
             const auto isa_build = values_for(result.builds, [](const auto& value) { return value.isa_build_seconds; });
             const auto lcp_build = values_for(result.builds, [](const auto& value) { return value.lcp_build_seconds; });
             const auto child_build = values_for(result.builds, [](const auto& value) { return value.child_build_seconds; });
@@ -379,7 +394,14 @@ void write_result_directory(
                    << (result.builds.empty() ? 0 : result.builds.front().learned_index_bytes) << '\t'
                    << bits_per_base << '\t' << median(load_seconds) << '\t'
                    << median(load_peak_rss) << '\t' << query_peak_rss << '\t'
-                   << build_status(result) << '\n';
+                   << build_status(result) << '\t'
+                   << static_cast<unsigned>(result.coordinate_width) << '\t'
+                   << static_cast<unsigned>(result.stored_coordinate_width) << '\t'
+                   << ToString(result.sa_resource_profile) << '\t'
+                   << ToString(result.lcp_encoding) << '\t' << result.sa_bytes
+                   << '\t' << result.isa_bytes << '\t' << result.lcp_bytes
+                   << '\t' << result.resident_core_bytes << '\t'
+                   << median(storage_compaction) << '\n';
 
             for (const auto& value : aggregate_queries(result)) {
                 const auto seconds_median = median(value.seconds);
@@ -414,8 +436,13 @@ void write_result_directory(
                         << value.full_binary_fallbacks << '\t' << value.status << '\t'
                         << value.fm_query_mode << '\t' << value.fm_batch_width << '\t'
                         << value.query_bases << '\t' << query_bases_per_second << '\t';
-                if (baseline == huffman_scalar_seconds.end()) queries << "NA\n";
-                else queries << speedup << '\n';
+                if (baseline == huffman_scalar_seconds.end()) queries << "NA";
+                else queries << speedup;
+                queries << '\t' << static_cast<unsigned>(result.coordinate_width)
+                        << '\t'
+                        << static_cast<unsigned>(result.stored_coordinate_width)
+                        << '\t' << ToString(result.sa_resource_profile) << '\t'
+                        << ToString(result.lcp_encoding) << '\n';
             }
 
             std::map<std::uint32_t, const LoadRaw*> save_workers;
@@ -427,7 +454,7 @@ void write_result_directory(
                     << result.method << "\tbuild\tNA\tNA\tNA\tbuild\tNA\t" << value.repetition
                     << "\t0\t0\t" << value.build_seconds << '\t' << value.build_user_seconds << '\t'
                     << value.build_system_seconds << '\t' << value.peak_rss_mb
-                    << "\tbuild_worker_inherited_controller_dataset_plus_reference_plus_build"
+                    << "\tbuild_worker_clean_exec_reference_plus_build"
                     << "\t0\t0\t0000000000000000\t" << value.status
                     << "\tNA\tNA\t0\t0\t0\t0\t0\t0\t0\t0\t0\tNA\tNA\t0\t0\tNA\t"
                     << result.threads << '\t'
@@ -442,7 +469,14 @@ void write_result_directory(
                     << result.canary_reported_hits << '\t'
                     << (result.has_canary
                         ? fingerprint_hex(result.canary_checksum)
-                        : std::string("0000000000000000")) << "\t0\n";
+                        : std::string("0000000000000000")) << "\t0\t"
+                    << static_cast<unsigned>(result.coordinate_width) << '\t'
+                    << static_cast<unsigned>(result.stored_coordinate_width)
+                    << '\t' << ToString(result.sa_resource_profile) << '\t'
+                    << ToString(result.lcp_encoding) << '\t' << result.sa_bytes
+                    << '\t' << result.isa_bytes << '\t' << result.lcp_bytes
+                    << '\t' << result.resident_core_bytes << '\t'
+                    << value.storage_compaction_seconds << '\n';
                 const auto save = save_workers.find(value.repetition);
                 const auto* save_value = save == save_workers.end() ? nullptr : save->second;
                 raw << context.run_id << '\t' << dataset.name << '\t' << to_string(dataset.scenario) << '\t'
@@ -453,7 +487,7 @@ void write_result_directory(
                     << (save_value == nullptr ? 0.0 : save_value->peak_rss_mb) << '\t'
                     << (save_value == nullptr
                         ? "not_applicable"
-                        : "save_worker_load_plus_save_inherited_controller_dataset")
+                        : "save_worker_clean_exec_load_plus_save")
                     << "\t0\t0\t0000000000000000\t" << value.status
                     << "\tNA\tNA\t0\t0\t0\t0\t0\t0\t0\t0\t0\tNA\tNA\t0\t0\tNA\t"
                     << result.threads << '\t'
@@ -466,7 +500,13 @@ void write_result_directory(
                     << result.canary_reported_hits << '\t'
                     << (result.has_canary
                         ? fingerprint_hex(result.canary_checksum)
-                        : std::string("0000000000000000")) << "\t0\n";
+                        : std::string("0000000000000000")) << "\t0\t"
+                    << static_cast<unsigned>(result.coordinate_width) << '\t'
+                    << static_cast<unsigned>(result.stored_coordinate_width)
+                    << '\t' << ToString(result.sa_resource_profile) << '\t'
+                    << ToString(result.lcp_encoding) << '\t' << result.sa_bytes
+                    << '\t' << result.isa_bytes << '\t' << result.lcp_bytes
+                    << '\t' << result.resident_core_bytes << "\t0\n";
             }
             for (const auto& value : result.loads) {
                 if (is_save_worker_result(value)) continue;
@@ -474,7 +514,7 @@ void write_result_directory(
                     << result.method << "\tload\tNA\tNA\tNA\tload\tNA\t" << value.repetition
                     << "\t0\t0\t" << value.seconds << '\t' << value.user_seconds << '\t'
                     << value.system_seconds << '\t' << value.peak_rss_mb
-                    << "\tload_worker_inherited_controller_dataset_plus_load_plus_canary"
+                    << "\tload_worker_clean_exec_load_plus_canary"
                     << "\t0\t0\t0000000000000000\t" << value.status
                     << "\tNA\tNA\t0\t0\t0\t0\t0\t0\t0\t0\t0\tNA\tNA\t0\t0\tNA\t"
                     << result.threads << '\t'
@@ -487,7 +527,13 @@ void write_result_directory(
                     << result.canary_reported_hits << '\t'
                     << (result.has_canary
                         ? fingerprint_hex(result.canary_checksum)
-                        : std::string("0000000000000000")) << "\t0\n";
+                        : std::string("0000000000000000")) << "\t0\t"
+                    << static_cast<unsigned>(result.coordinate_width) << '\t'
+                    << static_cast<unsigned>(result.stored_coordinate_width)
+                    << '\t' << ToString(result.sa_resource_profile) << '\t'
+                    << ToString(result.lcp_encoding) << '\t' << result.sa_bytes
+                    << '\t' << result.isa_bytes << '\t' << result.lcp_bytes
+                    << '\t' << result.resident_core_bytes << "\t0\n";
             }
             for (const auto& value : result.queries) {
                 raw << context.run_id << '\t' << dataset.name << '\t' << to_string(dataset.scenario) << '\t'
@@ -497,9 +543,9 @@ void write_result_directory(
                     << value.skipped_high_frequency_queries << '\t' << value.seconds << '\t'
                     << value.user_seconds << '\t' << value.system_seconds << '\t' << value.peak_rss_mb << '\t'
                     << (value.operation == "count"
-                        ? "count_worker_inherited_controller_dataset_plus_load_plus_query"
+                        ? "count_worker_clean_exec_required_dataset_plus_load_plus_query"
                         : "locate_worker_" + value.max_hits +
-                          "_inherited_controller_dataset_plus_load_plus_query") << '\t'
+                          "_clean_exec_required_dataset_plus_load_plus_query") << '\t'
                     << value.total_hits << '\t' << value.reported_hits << '\t'
                     << fingerprint_hex(value.checksum) << '\t' << value.status << "\tNA\tNA\t"
                     << value.suffix_comparisons << '\t' << value.character_comparisons << '\t'
@@ -522,7 +568,13 @@ void write_result_directory(
                     << result.canary_reported_hits << '\t'
                     << (result.has_canary
                         ? fingerprint_hex(result.canary_checksum)
-                        : std::string("0000000000000000")) << "\t1\n";
+                        : std::string("0000000000000000")) << "\t1\t"
+                    << static_cast<unsigned>(result.coordinate_width) << '\t'
+                    << static_cast<unsigned>(result.stored_coordinate_width)
+                    << '\t' << ToString(result.sa_resource_profile) << '\t'
+                    << ToString(result.lcp_encoding) << '\t' << result.sa_bytes
+                    << '\t' << result.isa_bytes << '\t' << result.lcp_bytes
+                    << '\t' << result.resident_core_bytes << "\t0\n";
             }
         }
     }

@@ -15,15 +15,23 @@ right-only public contract.
   contig-local coordinates;
 - divsufsort32/64 and optional CaPS-SA32/64 construction;
 - complete or text-position sampled standalone suffix arrays;
+- independent SA construction and resident storage widths, including native
+  32/64-bit and split 40/48-bit coordinate layouts;
 - optional ISA, LCP, CHILD, suffix-link reuse, and Sapling-style PWL lookup;
+- Fast SA with raw LCP and Low-memory SA with byte-coded LCP;
 - fixed SDSL Huffman, balanced, and DNA EPR CSA backends;
 - scalar and batched FM count, exact locate, right-maximal compatibility,
   formal MEM, and reference-MAM streaming;
 - CRC-protected, self-contained `.sufidx` persistence and inspection; and
 - `add_subdirectory` and installed `find_package` CMake integration.
 
-Huffman FM and SA+ISA+LCP are the conservative defaults. CHILD, Sapling PWL,
-sampled SA, balanced FM, and EPR FM are explicit choices. The
+Huffman FM and the Fast SA profile (complete SA+ISA+raw LCP) are the
+conservative defaults. The Low-memory profile keeps a complete SA and
+byte-coded LCP while dropping resident ISA, CHILD, and PWL data. Both profiles
+use LCP traversal with MUMmer-style query skipping for automatic MEM search;
+Fast additionally uses its retained ISA for automatic suffix-link MAM search.
+CHILD, Sapling PWL, sampled SA, balanced FM, and EPR FM remain explicit
+choices. The
 [index-selection guide](docs/getting-started/choosing-an-index.md) explains
 their trade-offs.
 
@@ -45,6 +53,18 @@ ctest --preset release --output-on-failure
 ./build/release/sufkit query --index reference.sufidx \
   --pattern ACGTACGT --strand both
 ```
+
+For a standalone SA, construction width and final storage width are separate:
+
+```bash
+./build/release/sufkit build --type sa --input reference.fa.gz \
+  --output reference.sa.sufidx --sa-profile low-memory \
+  --sa-width auto --sa-storage-width auto
+```
+
+This permits a safe 64-bit constructor followed by validated 32/40/48-bit
+storage. Width selection uses the complete logical symbol count (bases,
+contig separators, and sentinel), not the FASTA base count alone.
 
 See the [five-minute quick start](docs/getting-started/quickstart.md) and
 [CLI reference](docs/user-guide/cli-reference.md) for SA construction,
@@ -84,10 +104,16 @@ every other symbol as a hard break.
 Version 0.2.0 is source-incompatible with 0.1.x because public functions and
 enumerators adopted Google-style names without compatibility wrappers. Public
 include paths, the `sufkit::sufkit` target, main CLI interface, enum values,
-and `.sufidx` 1.0–1.3 reading remain stable. See the
+and `.sufidx` 1.0–1.3 reading remain stable. The current source tree adds
+format 1.4 codecs for adaptive SA coordinates and raw/byte-coded LCP. See the
 [migration guide](docs/development/api-naming-migration-0.2.0.md).
+
+Split 40/48-bit layouts are implemented and correctness-tested, but real-scale
+references above `2^32` logical symbols and end-to-end memory/performance
+superiority over MUMmer4 have not yet been validated. Those ranges remain
+experimental; the project does not claim a measured advantage there yet.
 
 [Documentation](docs/README.md) · [中文说明](README.zh-CN.md) ·
 [Contributing](CONTRIBUTING.md) ·
 [Benchmark summary](docs/benchmarks/README.md) ·
-[Representative benchmark results](benchmarks/README.md)
+[Representative benchmark results](https://github.com/malabz/sufkit/blob/main/benchmarks/README.md)

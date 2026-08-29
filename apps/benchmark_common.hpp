@@ -89,6 +89,7 @@ struct BuildRaw {
     double build_user_seconds = 0.0;
     double build_system_seconds = 0.0;
     double sa_build_seconds = 0.0;
+    double storage_compaction_seconds = 0.0;
     double isa_build_seconds = 0.0;
     double lcp_build_seconds = 0.0;
     double child_build_seconds = 0.0;
@@ -156,6 +157,13 @@ struct MethodResult {
     std::string signature;
     std::string sdsl_version;
     std::uint8_t coordinate_width = 0;
+    std::uint8_t stored_coordinate_width = 0;
+    SaResourceProfile sa_resource_profile = SaResourceProfile::kFast;
+    SaLcpEncoding lcp_encoding = SaLcpEncoding::kNone;
+    std::uint64_t sa_bytes = 0;
+    std::uint64_t isa_bytes = 0;
+    std::uint64_t lcp_bytes = 0;
+    std::uint64_t resident_core_bytes = 0;
     std::uint32_t sa_sampling_rate = 1;
     std::uint32_t threads = 1;
     /** Compatibility aggregate: maximum of all phase-worker RSS values. */

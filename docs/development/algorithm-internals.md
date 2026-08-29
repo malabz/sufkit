@@ -12,8 +12,9 @@ even when a third-party API does not.
   exactly one zero sentinel.
 - N, separator, sentinel, query hard breaks, and contig boundaries cannot be
   crossed by a public match.
-- Constructor, coordinate width, sampling, lookup algorithm, batching, and
-  acceleration may change work and layout, never normalized results.
+- Constructor, construction width, storage width, resource profile, sampling,
+  lookup algorithm, batching, and acceleration may change work and layout,
+  never normalized results.
 - Explicit unavailable capabilities fail with `unsupported_backend`; damaged
   persisted data is not silently ignored.
 - Built or loaded indexes are immutable. Const queries need no shared mutable
@@ -62,9 +63,37 @@ divsufsort32 by signed `saidx_t`; otherwise use 64 bits. Explicit backend or
 width violations fail. CaPS subproblems are deterministic from symbols and
 threads and do not affect suffix order.
 
-After any constructor, common order/result tests apply. CaPS may directly
-supply its merge-built LCP; divsufsort may directly supply sampled ISA/LCP.
-These backend phase results must satisfy the same persisted invariants.
+Construction width is not storage width. After construction and optional
+sampling, resolve storage from the complete logical symbol count and profile:
+
+```text
+Fast auto:       native32 if max_position<=UINT32_MAX, else native64
+Low-memory auto: native32 -> split40 -> split48 -> native64
+```
+
+An explicit storage width must represent `symbol_count-1`. Validate every
+coordinate, the complete/sampled permutation, and any ISA inverse relation
+before releasing a wider build representation. Backend ID and outer header
+width continue to describe the constructor, not the codec.
+
+On Linux/WSL, divsufsort64 writes into a page-backed live `int64_t` array.
+Down-packing copies typed values forward into ordinary vector planes and uses
+`madvise(MADV_DONTNEED)` only on fully consumed source pages. This keeps RSS
+near the 8-byte source plane without overlapping object lifetimes. The
+non-POSIX fallback is correct but can temporarily retain source plus target;
+do not apply the Linux peak-memory claim to that fallback.
+
+After any constructor, common order/result tests apply. CaPS supplies its
+native-width merge-built LCP only while a raw row array is needed for CHILD;
+the common non-CHILD path avoids copying that extra plane and builds compact
+LCP after the CaPS object is released. These backend phase results must
+satisfy the same persisted invariants.
+
+CaPS itself still allocates complete SA, complete LCP, same-width SA/LCP work
+arrays, and `p`-dependent partition tables. Because the public CaPS accessors
+return borrowed pointers, the wrapper cannot adopt those allocations and must
+copy the final SA while the object remains alive. Low-memory must therefore be
+described as a final-layout policy, not a low-peak CaPS construction mode.
 
 ## Sampling, ISA, and LCP
 
@@ -82,6 +111,25 @@ CaPS produces complete LCP during merging. When K>1, the LCP between adjacent
 retained rows is the minimum complete LCP over the intervening row interval;
 this equals the common prefix of the retained suffix pair.
 
+Raw LCP uses 32 bits when `text_symbols-1` fits `uint32_t`, otherwise 64. The
+byte-coded alternative has these invariants:
+
+- one primary byte per stored row;
+- values 0..254 are stored directly;
+- 255 marks a long value covered by a text-ordered anchor;
+- each anchor records `(sampled_text_position, LCP_value)` in 32/64 bits;
+- consecutive marked positions whose value decreases by exactly K share the
+  same anchor;
+- a 4096-symbol guide is derived after build/load and is not persisted.
+
+`Exact(row,suffix_position)` must reconstruct the raw LCP value. For
+`AtLeast(...,target<=255)`, the marker proves the predicate without anchor
+lookup. Low-memory retains byte coding so the primary plane never expands to a
+full-width array; Fast retains raw LCP after byte coding failed its query
+regression gate. Validation checks `LCP[0]=0`, every
+decoded adjacent-suffix bound, every anchor's ownership, and generalized
+sampled-run decrement.
+
 Exact sampled recovery searches pattern suffixes for every residue r in
 `[0,K)`, maps each candidate sampled position back by r, and verifies the
 omitted prefix and contig boundary. If pattern length is below K, direct contig
@@ -93,7 +141,8 @@ right to maximality, and rejects duplicate anchors for the same output match.
 
 ## CHILD table
 
-CHILD is built deterministically from LCP with the Abouelhoda-style linear
+CHILD is built deterministically from logical LCP values, independent of raw
+or byte-coded storage, with the Abouelhoda-style linear
 stack procedure for up/down/next-L links. Persisted values use SA coordinate
 width and one out-of-band convention representable by the validated table.
 
@@ -113,8 +162,10 @@ Map a k-mer text position to row with ISA.
 
 Choose `bucket_bits` explicitly or as the largest power-of-two anchor table
 whose serialized size stays within the requested raw-SA basis-point budget.
-Store anchor key (`uint64_t`) and row (SA width). Fill empty buckets with
-neighboring monotonic anchors and append the terminal domain anchor.
+Store anchor key (`uint64_t`) and row using the resolved coordinate codec; the
+row domain includes the terminal one-past anchor and may therefore promote
+independently from SA positions. Fill empty buckets with neighboring monotonic
+anchors and append the terminal domain anchor.
 
 Interpolate between adjacent anchors with checked unsigned arithmetic and a
 wide integer intermediate. Floating point is not part of persisted/query
@@ -243,9 +294,11 @@ reduce work but is never a correctness precondition.
 
 The baseline path searches the T-prefix interval and computes a right LCE per
 candidate row. LCP paths reuse adjacent prefix information to obtain the same
-set; CHILD/full remain explicit. A tuple-level sort/unique is retained as a
-correctness guard. Independent brute-force tests, rather than MUMmer4 source,
-define the public result set.
+set; CHILD/full remain explicit. Anchor/residue ownership guarantees that the
+streaming kernel emits each directional tuple once. Unlimited vector results
+retain a final sort/unique correctness guard; bounded results can therefore
+count exactly while keeping only an N-element heap. Independent brute-force
+tests, rather than MUMmer4 source, define the public result set.
 
 ## Reference-MAM uniqueness
 
@@ -254,9 +307,9 @@ identified, its full matched string must have a complete-SA interval of size
 one across all contigs. Query occurrence count is intentionally ignored. This
 matches MUMmer4 `-mumreference`, not strict MUM semantics.
 
-MEM/MAM do not call SeqPro and add no persisted section. They use the encoded
-reference text and contig metadata already inside `.sufidx`; old 1.0-1.3 SA
-files therefore require no conversion.
+MEM/MAM do not call SeqPro and add no dedicated persisted section. They use the
+encoded reference text and contig metadata already inside `.sufidx`; old
+1.0-1.3 SA files therefore require no conversion.
 
 ## Persistence and backend identities
 
@@ -265,8 +318,10 @@ files therefore require no conversion.
 - The outer container is little-endian, bounds every section, validates CRCs
   and legal combinations, and publishes only a self-validated temporary file.
 - Format 1.3 sampling metadata must agree with row counts, stored suffixes,
-  auxiliaries, and learned anchors. Older supported formats imply their
-  documented defaults.
+  auxiliaries, and learned anchors. Format 1.4 adds independent coordinate/LCP
+  codecs and the resource profile; codec domains, plane sizes, counts, decoded
+  values, and trailing bytes are strictly validated. Older supported formats
+  imply their documented defaults.
 - FM payload loading requires the recorded SDSL 3.0.3 type and version. sufkit
   does not implement alternative C/Occ/LF/rank/select structures.
 - Loading is self-contained and never depends on the original FASTA path.
@@ -280,10 +335,18 @@ selection, and scalar tails. The scalar and SIMD paths must agree on order,
 logical matched length, and every boundary case; no load may cross a validated
 buffer extent.
 
-SA, ISA, CHILD, learned rows, and LCP use private 32/64-bit storage selected by
-their representable domain. Values are promoted to public `uint64_t` only at
-the boundary. Variant dispatch belongs outside typed hot loops. This layout is
-private: serialized widths and bytes remain governed by the format contract.
+SA, ISA, CHILD, and learned rows use private native32, split40, split48, or
+native64 storage selected by their representable domain and profile. Split
+storage is structure-of-arrays (`low32[]` plus `high8[]` or `high16[]`), never
+a padded proxy struct. Random probes decode one pair; sequential consumers use
+`DecodeSpan`. LCP independently uses raw32/raw64 or byte coding. Values are
+promoted to public `uint64_t` only at the boundary, and variant dispatch
+belongs outside typed hot loops.
+
+Fast automatically uses native storage above 32 bits until packed access has
+passed the per-workload regression gate. Low-memory intentionally trades ISA
+suffix-link reuse for narrow coordinates and LCP traversal. Query decode
+workspaces are per call; the immutable index has no adaptive shared cache.
 
 Query workspaces are call-owned. FM batch uses structure-of-arrays state and
 an active-lane list; SA/right-maximal queries use non-owning encoded views and

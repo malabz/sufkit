@@ -1,7 +1,9 @@
 # sufkit documentation
 
-The English pages are the authoritative 0.2.0 documentation. The concise
-[Chinese guide](zh-CN/README.md) covers initial use and index selection.
+The English pages are authoritative for the current source tree. Released
+0.2.0 behavior and unreleased 0.3.0 additions are identified explicitly. The
+concise [Chinese guide](zh-CN/README.md) covers initial use and index
+selection.
 
 ## Users
 
@@ -15,7 +17,7 @@ Then use the maintained guides for:
 
 - [CLI commands](user-guide/cli-reference.md);
 - [C++ workflows](user-guide/cpp-workflows.md);
-- [exact, sampled-SA, and right-maximal search](user-guide/search.md);
+- [exact, sampled-SA, right-maximal, MEM, and MAM search](user-guide/search.md);
 - [persistence and inspection](user-guide/persistence-and-inspection.md); and
 - [troubleshooting](user-guide/troubleshooting.md).
 

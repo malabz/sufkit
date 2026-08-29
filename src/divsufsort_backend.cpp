@@ -26,23 +26,30 @@ DivSufsortBuildResult<Index> BuildDivsufsort(
     bool retain_lcp, bool retain_isa, std::uint32_t requested_threads) {
   DivSufsortBuildResult<Index> result;
   const auto sa_begin = std::chrono::steady_clock::now();
-  result.suffix_array.resize(text.size());
-  int status = 0;
   if constexpr (std::is_same_v<Index, std::int32_t>) {
     if (text.size() >
         static_cast<std::uint64_t>(std::numeric_limits<saidx_t>::max())) {
       throw Error(ErrorCode::kInvalidInput,
                   "reference is too large for divsufsort32");
     }
-    status = divsufsort(reinterpret_cast<const sauchar_t*>(text.data()),
-                        reinterpret_cast<saidx_t*>(result.suffix_array.data()),
-                        static_cast<saidx_t>(text.size()));
   } else {
+    static_assert(std::is_same_v<saidx64_t, std::int64_t>);
     if (text.size() >
         static_cast<std::uint64_t>(std::numeric_limits<saidx64_t>::max())) {
       throw Error(ErrorCode::kInvalidInput,
                   "reference is too large for divsufsort64");
     }
+  }
+
+  // Reject an explicitly too-narrow constructor before attempting a
+  // reference-sized SA allocation.
+  result.suffix_array.resize(text.size());
+  int status = 0;
+  if constexpr (std::is_same_v<Index, std::int32_t>) {
+    status = divsufsort(reinterpret_cast<const sauchar_t*>(text.data()),
+                        reinterpret_cast<saidx_t*>(result.suffix_array.data()),
+                        static_cast<saidx_t>(text.size()));
+  } else {
     status =
         divsufsort64(reinterpret_cast<const sauchar_t*>(text.data()),
                      reinterpret_cast<saidx64_t*>(result.suffix_array.data()),
@@ -84,9 +91,17 @@ DivSufsortBuildResult<Index> BuildDivsufsort(
   } else {
     std::vector<std::thread> workers;
     workers.reserve(static_cast<std::size_t>(thread_count));
+    const auto rows_per_worker =
+        static_cast<std::uint64_t>(count) / thread_count;
+    const auto workers_with_extra_row =
+        static_cast<std::uint64_t>(count) % thread_count;
     for (std::uint64_t worker = 0; worker < thread_count; ++worker) {
-      const auto begin = count * worker / thread_count;
-      const auto end = count * (worker + 1) / thread_count;
+      // Keep every intermediate at or below count; count * worker can wrap
+      // even when the final quotient would still be representable.
+      const auto begin = rows_per_worker * worker +
+                         std::min(worker, workers_with_extra_row);
+      const auto end = begin + rows_per_worker +
+                       (worker < workers_with_extra_row ? 1U : 0U);
       workers.emplace_back([&, begin, end] {
         for (auto row = begin; row < end; ++row) {
           const auto suffix = static_cast<std::uint64_t>(

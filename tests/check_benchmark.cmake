@@ -1,6 +1,149 @@
 if(NOT DEFINED SUFKIT_EXECUTABLE OR NOT DEFINED OUTPUT_ROOT)
     message(FATAL_ERROR "SUFKIT_EXECUTABLE and OUTPUT_ROOT are required")
 endif()
+if(NOT DEFINED SUFKIT_EXPECT_FAST_LCP_ENCODING)
+    set(SUFKIT_EXPECT_FAST_LCP_ENCODING "raw")
+endif()
+if(NOT DEFINED SUFKIT_EXPECT_LOW_LCP_ENCODING)
+    set(SUFKIT_EXPECT_LOW_LCP_ENCODING "byte-coded")
+endif()
+
+cmake_policy(SET CMP0007 NEW)
+
+function(assert_rectangular_tsv path label)
+    file(STRINGS "${path}" lines)
+    if(NOT lines)
+        message(FATAL_ERROR "${label} is empty")
+    endif()
+    list(GET lines 0 header)
+    string(REGEX MATCHALL "\t" header_tabs "${header}")
+    list(LENGTH header_tabs expected_tabs)
+    set(line_number 0)
+    foreach(line IN LISTS lines)
+        math(EXPR line_number "${line_number} + 1")
+        string(REGEX MATCHALL "\t" line_tabs "${line}")
+        list(LENGTH line_tabs actual_tabs)
+        if(NOT actual_tabs EQUAL expected_tabs)
+            message(FATAL_ERROR
+                "${label} line ${line_number} has ${actual_tabs} tabs; expected ${expected_tabs}")
+        endif()
+    endforeach()
+endfunction()
+
+function(assert_exact_storage_mode build_path method construction_width
+         stored_width profile expect_isa)
+    file(STRINGS "${build_path}" build_lines)
+    set(found FALSE)
+    foreach(line IN LISTS build_lines)
+        string(REPLACE "\t" ";" columns "${line}")
+        list(LENGTH columns column_count)
+        if(column_count EQUAL 41)
+            list(GET columns 3 actual_method)
+            if(actual_method STREQUAL "${method}")
+                if(found)
+                    message(FATAL_ERROR
+                        "build_results.tsv contains duplicate ${method} rows")
+                endif()
+                set(found TRUE)
+                list(GET columns 31 status)
+                list(GET columns 32 actual_construction_width)
+                list(GET columns 33 actual_stored_width)
+                list(GET columns 34 actual_profile)
+                list(GET columns 35 lcp_encoding)
+                list(GET columns 37 isa_bytes)
+                if(profile STREQUAL "fast")
+                    set(expected_lcp_encoding
+                        "${SUFKIT_EXPECT_FAST_LCP_ENCODING}")
+                else()
+                    set(expected_lcp_encoding
+                        "${SUFKIT_EXPECT_LOW_LCP_ENCODING}")
+                endif()
+                if(NOT status STREQUAL "ok" OR
+                   NOT actual_construction_width STREQUAL
+                       "${construction_width}" OR
+                   NOT actual_stored_width STREQUAL "${stored_width}" OR
+                   NOT actual_profile STREQUAL "${profile}" OR
+                   NOT lcp_encoding STREQUAL
+                       "${expected_lcp_encoding}")
+                    message(FATAL_ERROR
+                        "unexpected ${method} storage metadata: ${line}")
+                endif()
+                if(expect_isa AND isa_bytes STREQUAL "0")
+                    message(FATAL_ERROR
+                        "${method} fast profile did not retain the ISA")
+                elseif(NOT expect_isa AND NOT isa_bytes STREQUAL "0")
+                    message(FATAL_ERROR
+                        "${method} low-memory profile retained the ISA")
+                endif()
+            endif()
+        endif()
+    endforeach()
+    if(NOT found)
+        message(FATAL_ERROR "build_results.tsv is missing ${method}")
+    endif()
+endfunction()
+
+function(assert_exact_clean_exec_scopes raw_path method)
+    file(STRINGS "${raw_path}" raw_lines)
+    set(saw_build FALSE)
+    set(saw_save FALSE)
+    set(saw_load FALSE)
+    set(saw_count FALSE)
+    set(saw_locate FALSE)
+    foreach(line IN LISTS raw_lines)
+        string(REPLACE "\t" ";" columns "${line}")
+        list(LENGTH columns column_count)
+        if(column_count EQUAL 66)
+            list(GET columns 3 actual_method)
+            if(actual_method STREQUAL "${method}")
+                list(GET columns 4 phase)
+                list(GET columns 8 operation)
+                list(GET columns 17 scope)
+                if(phase STREQUAL "build")
+                    if(NOT scope STREQUAL
+                           "build_worker_clean_exec_reference_plus_build")
+                        message(FATAL_ERROR
+                            "${method} has an invalid build RSS scope: ${scope}")
+                    endif()
+                    set(saw_build TRUE)
+                elseif(phase STREQUAL "save")
+                    if(NOT scope STREQUAL
+                           "save_worker_clean_exec_load_plus_save")
+                        message(FATAL_ERROR
+                            "${method} has an invalid save RSS scope: ${scope}")
+                    endif()
+                    set(saw_save TRUE)
+                elseif(phase STREQUAL "load")
+                    if(NOT scope STREQUAL
+                           "load_worker_clean_exec_load_plus_canary")
+                        message(FATAL_ERROR
+                            "${method} has an invalid load RSS scope: ${scope}")
+                    endif()
+                    set(saw_load TRUE)
+                elseif(phase STREQUAL "query" AND operation STREQUAL "count")
+                    if(NOT scope STREQUAL
+                           "count_worker_clean_exec_required_dataset_plus_load_plus_query")
+                        message(FATAL_ERROR
+                            "${method} has an invalid count RSS scope: ${scope}")
+                    endif()
+                    set(saw_count TRUE)
+                elseif(phase STREQUAL "query" AND operation STREQUAL "locate")
+                    if(NOT scope STREQUAL
+                           "locate_worker_1_clean_exec_required_dataset_plus_load_plus_query")
+                        message(FATAL_ERROR
+                            "${method} has an invalid locate RSS scope: ${scope}")
+                    endif()
+                    set(saw_locate TRUE)
+                endif()
+            endif()
+        endif()
+    endforeach()
+    if(NOT saw_build OR NOT saw_save OR NOT saw_load OR NOT saw_count OR
+       NOT saw_locate)
+        message(FATAL_ERROR
+            "${method} is missing one or more clean-exec benchmark phases")
+    endif()
+endfunction()
 
 set(first "${OUTPUT_ROOT}/first")
 set(second "${OUTPUT_ROOT}/second")
@@ -30,6 +173,63 @@ foreach(output_dir IN ITEMS "${first}" "${second}")
         endif()
     endforeach()
 endforeach()
+
+set(storage_modes_dir "${OUTPUT_ROOT}/storage-modes")
+execute_process(
+    COMMAND "${SUFKIT_EXECUTABLE}" bench
+        --profile smoke
+        --scenarios balanced
+        --methods sa32-fast,sa32-low-memory,sa64-fast,sa64-low-memory,sa64-store32-fast,sa64-store40-low-memory,sa64-store48-low-memory,sa64-store64-fast
+        --pattern-lengths 20
+        --locate-limits 1
+        --build-repetitions 1
+        --query-repetitions 1
+        --warmups 0
+        --output-dir "${storage_modes_dir}"
+    RESULT_VARIABLE storage_modes_status
+    OUTPUT_VARIABLE storage_modes_stdout
+    ERROR_VARIABLE storage_modes_stderr)
+if(NOT storage_modes_status EQUAL 0)
+    message(FATAL_ERROR
+        "storage-mode smoke benchmark failed (${storage_modes_status}):\n"
+        "${storage_modes_stdout}\n${storage_modes_stderr}")
+endif()
+
+foreach(name IN ITEMS run_metadata.tsv build_results.tsv query_results.tsv
+                      raw_repetitions.tsv)
+    assert_rectangular_tsv("${storage_modes_dir}/${name}"
+                           "storage-mode ${name}")
+endforeach()
+
+set(storage_builds "${storage_modes_dir}/build_results.tsv")
+assert_exact_storage_mode("${storage_builds}" sa32-fast 32 32 fast TRUE)
+assert_exact_storage_mode("${storage_builds}" sa32-low-memory 32 32
+                          low-memory FALSE)
+assert_exact_storage_mode("${storage_builds}" sa64-fast 64 32 fast TRUE)
+assert_exact_storage_mode("${storage_builds}" sa64-low-memory 64 32
+                          low-memory FALSE)
+assert_exact_storage_mode("${storage_builds}" sa64-store32-fast 64 32 fast
+                          TRUE)
+assert_exact_storage_mode("${storage_builds}" sa64-store40-low-memory 64 40
+                          low-memory FALSE)
+assert_exact_storage_mode("${storage_builds}" sa64-store48-low-memory 64 48
+                          low-memory FALSE)
+assert_exact_storage_mode("${storage_builds}" sa64-store64-fast 64 64 fast
+                          TRUE)
+
+foreach(method IN ITEMS sa32-fast sa32-low-memory sa64-fast sa64-low-memory
+                        sa64-store32-fast sa64-store40-low-memory
+                        sa64-store48-low-memory sa64-store64-fast)
+    assert_exact_clean_exec_scopes(
+        "${storage_modes_dir}/raw_repetitions.tsv" "${method}")
+endforeach()
+
+file(READ "${storage_modes_dir}/run_metadata.tsv" storage_metadata)
+if(NOT storage_metadata MATCHES "worker_process_model" OR
+   NOT storage_metadata MATCHES "clean-exec-phase-v1")
+    message(FATAL_ERROR
+        "storage-mode metadata does not identify clean-exec workers")
+endif()
 
 set(export_dir "${OUTPUT_ROOT}/export-smoke")
 set(export_reference "${OUTPUT_ROOT}/export-reference.fa")
@@ -83,6 +283,10 @@ if(NOT first_metadata MATCHES "methods\tpattern_lengths\tlocate_limits\tbuild_re
 endif()
 if(NOT first_metadata MATCHES "learned_k\tlearned_memory_overhead_basis_points\tlearned_bucket_bits")
     message(FATAL_ERROR "run_metadata.tsv does not record learned-index parameters")
+endif()
+if(NOT first_metadata MATCHES "worker_process_model" OR
+   NOT first_metadata MATCHES "clean-exec-phase-v1")
+    message(FATAL_ERROR "run_metadata.tsv does not record clean-exec worker provenance")
 endif()
 string(REGEX MATCH "synthetic-smoke-balanced\t([0-9a-f]+)" first_match "${first_metadata}")
 set(first_fingerprint "${CMAKE_MATCH_1}")
@@ -156,11 +360,13 @@ foreach(raw_line IN LISTS raw_lines)
     endif()
 endforeach()
 if(NOT raw_results MATCHES "peak_rss_mb\tpeak_rss_scope" OR
-   NOT raw_results MATCHES "build_worker" OR
-   NOT raw_results MATCHES "save_worker_load_plus_save" OR
-   NOT raw_results MATCHES "load_worker" OR
-   NOT raw_results MATCHES "count_worker" OR
-   NOT raw_results MATCHES "locate_worker_1")
+   NOT raw_results MATCHES "build_worker_clean_exec_reference_plus_build" OR
+   NOT raw_results MATCHES "save_worker_clean_exec_load_plus_save" OR
+   NOT raw_results MATCHES "load_worker_clean_exec_load_plus_canary" OR
+   NOT raw_results MATCHES
+       "count_worker_clean_exec_required_dataset_plus_load_plus_query" OR
+   NOT raw_results MATCHES
+       "locate_worker_1_clean_exec_required_dataset_plus_load_plus_query")
     message(FATAL_ERROR "raw_repetitions.tsv is missing isolated worker RSS scopes")
 endif()
 

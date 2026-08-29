@@ -71,6 +71,44 @@ The normalized-content FNV-1a-64 fingerprint supports deterministic dataset
 identity and learned-model consistency. It is not a cryptographic integrity
 digest.
 
+## SA construction and storage policy
+
+`SuffixArrayBuildOptions::coordinate_width` selects the constructor's
+backend-specific 32/64-bit integer type. It does not prescribe final memory
+layout. divsufsort32 uses a signed coordinate limit; CaPS32 uses unsigned
+coordinates. Both decisions use `text_symbols`, including all separators and
+the sentinel.
+
+`storage_width` independently selects native32, split40, split48, or native64
+resident/persisted SA coordinates and the preferred auxiliary width. An
+explicit width must represent `text_symbols-1`; an auxiliary that needs a
+one-past row marker may promote to the next valid width. Down-packing validates
+every coordinate, the sampled or complete SA permutation, and ISA inverse
+relationships before releasing the wider input.
+
+`resource_profile` governs automatic layout:
+
+- `kFast` preserves the requested acceleration, automatically stores native32
+  when possible and otherwise native64, and defaults to SA+ISA+raw LCP;
+- `kLowMemory` requires a complete SA, forces SA+byte-coded LCP, disables
+  resident ISA/CHILD/PWL, and automatically chooses the narrowest
+  32/40/48/64 storage.
+
+The developer-only raw-LCP override is an A/B benchmark instrument for the
+Low-memory profile. It is unavailable unless benchmarks are enabled and is
+not a third supported resource policy.
+
+`FastSuffixArrayBuildOptions()` and `LowMemorySuffixArrayBuildOptions()` return
+the canonical presets. Public positions and counts stay 64-bit in either
+profile. The resource profile affects representation and automatic algorithm
+availability, never result semantics.
+
+Automatic maximal-match policy is workload-specific. MEM selects LCP plus the
+deterministic MUMmer-style skip when LCP exists, for both profiles. MAM selects
+suffix-link on Fast indexes with ISA+LCP and LCP on Low-memory indexes. CHILD
+and full remain explicit. A caller-supplied MEM algorithm or skip multiplier
+takes precedence over this automatic policy.
+
 ## Ordering and truncation
 
 Exact vector results are ordered by sequence ID, position, length, and strand.
@@ -135,6 +173,20 @@ logical text length and stored row count separate:
 `SuffixAt(row)` addresses `[0,suffix_count)`. Exact `Count`/`Locate` preserve
 complete results through residue recovery; patterns shorter than K use a
 correct per-contig scan. Right-maximal search requires `min_length>=K`.
+
+Low-memory currently requires K=1. Fast remains the profile for sampled SA.
+
+## Index information and memory metrics
+
+For SA indexes, `IndexInfo::coordinate_width` is the construction backend
+width and `stored_coordinate_width` is the physical coordinate layout.
+`sa_resource_profile` and `lcp_encoding` report the persisted policy/codecs.
+
+`text_bytes`, `sa_bytes`, `isa_bytes`, `lcp_bytes`, `child_bytes`, and
+`resident_core_bytes` are logical resident payload sizes. Byte-coded LCP
+separately reports primary, overflow-anchor, and derived-guide bytes. These
+values exclude allocator bookkeeping and process/runtime overhead and must not
+be presented as RSS or PSS.
 
 ## Complexity notes
 

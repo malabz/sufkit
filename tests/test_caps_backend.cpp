@@ -135,6 +135,11 @@ void TestSelectionPolicy() {
   CHECK(sufkit::detail::ResolveSaCoordinateWidth(
             SaBackend::kDivsufsort, sufkit::CoordinateWidth::kAutoSelect,
             static_cast<std::uint64_t>(
+                std::numeric_limits<std::int32_t>::max()) -
+                1) == sufkit::CoordinateWidth::kBits32);
+  CHECK(sufkit::detail::ResolveSaCoordinateWidth(
+            SaBackend::kDivsufsort, sufkit::CoordinateWidth::kAutoSelect,
+            static_cast<std::uint64_t>(
                 std::numeric_limits<std::int32_t>::max())) ==
         sufkit::CoordinateWidth::kBits32);
   CHECK(
@@ -145,6 +150,11 @@ void TestSelectionPolicy() {
   CHECK(sufkit::detail::ResolveSaCoordinateWidth(
             SaBackend::kCaps, sufkit::CoordinateWidth::kAutoSelect,
             static_cast<std::uint64_t>(
+                std::numeric_limits<std::uint32_t>::max()) -
+                1) == sufkit::CoordinateWidth::kBits32);
+  CHECK(sufkit::detail::ResolveSaCoordinateWidth(
+            SaBackend::kCaps, sufkit::CoordinateWidth::kAutoSelect,
+            static_cast<std::uint64_t>(
                 std::numeric_limits<std::uint32_t>::max())) ==
         sufkit::CoordinateWidth::kBits32);
   CHECK(sufkit::detail::ResolveSaCoordinateWidth(
@@ -152,6 +162,27 @@ void TestSelectionPolicy() {
             static_cast<std::uint64_t>(
                 std::numeric_limits<std::uint32_t>::max()) +
                 1) == sufkit::CoordinateWidth::kBits64);
+  CHECK(sufkit::detail::SaConstructionCanRepresent(
+      SaBackend::kDivsufsort, sufkit::CoordinateWidth::kBits32,
+      static_cast<std::uint64_t>(
+          std::numeric_limits<std::int32_t>::max())));
+  CHECK(!sufkit::detail::SaConstructionCanRepresent(
+      SaBackend::kDivsufsort, sufkit::CoordinateWidth::kBits32,
+      static_cast<std::uint64_t>(
+          std::numeric_limits<std::int32_t>::max()) +
+          1U));
+  CHECK(sufkit::detail::SaConstructionCanRepresent(
+      SaBackend::kCaps, sufkit::CoordinateWidth::kBits32,
+      std::numeric_limits<std::uint32_t>::max()));
+  CHECK(!sufkit::detail::SaConstructionCanRepresent(
+      SaBackend::kCaps, sufkit::CoordinateWidth::kBits32,
+      static_cast<std::uint64_t>(
+          std::numeric_limits<std::uint32_t>::max()) +
+          1U));
+  CHECK(!sufkit::detail::SaConstructionCanRepresent(
+      SaBackend::kAutoSelect, sufkit::CoordinateWidth::kBits64, 1));
+  CHECK(!sufkit::detail::SaConstructionCanRepresent(
+      SaBackend::kDivsufsort, sufkit::CoordinateWidth::kAutoSelect, 1));
   CHECK(sufkit::detail::CapsSubproblemCount(16, 1) == 1);
   CHECK(sufkit::detail::CapsSubproblemCount(1ULL << 30, 64) == 8192);
   CHECK(sufkit::detail::CapsSubproblemCount(1ULL << 30, 2) == 256);
@@ -195,6 +226,23 @@ void TestCapsBuilds(const std::filesystem::path& directory) {
   CHECK(caps32_1.Count("ACGTACGT") == div32.Count("ACGTACGT"));
   CHECK(caps64.Locate("GATTACA").total_hits ==
         div32.Locate("GATTACA").total_hits);
+
+  auto low_memory_options = sufkit::LowMemorySuffixArrayBuildOptions();
+  low_memory_options.backend = sufkit::SaBackend::kCaps;
+  low_memory_options.coordinate_width = sufkit::CoordinateWidth::kBits32;
+  low_memory_options.threads = 2;
+  auto low_memory =
+      sufkit::SuffixArray::Build(reference, low_memory_options);
+  CHECK(low_memory.GetInfo().sa_resource_profile ==
+        sufkit::SaResourceProfile::kLowMemory);
+#if SUFKIT_TEST_EXPECT_RAW_LCP
+  CHECK(low_memory.GetInfo().lcp_encoding == sufkit::SaLcpEncoding::kRaw);
+#else
+  CHECK(low_memory.GetInfo().lcp_encoding ==
+        sufkit::SaLcpEncoding::kByteCoded);
+#endif
+  CHECK(low_memory.GetInfo().isa_bytes == 0);
+  CHECK(low_memory.GetInfo().child_bytes == 0);
 
   auto automatic = sufkit::SuffixArray::Build(
       reference, Options(sufkit::SaBackend::kAutoSelect,

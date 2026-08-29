@@ -34,8 +34,10 @@ inputs. Automatic selection already does so.
 
 ### 32-bit input is too large
 
-Use `CoordinateWidth::kAutoSelect`, CLI `--sa-width auto`, or 64-bit storage.
-divsufsort32 uses a signed limit; CaPS32 uses an unsigned limit.
+Use `CoordinateWidth::kAutoSelect`/`kBits64`, or CLI `--sa-width auto|64`, for
+the constructor. divsufsort32 uses a signed limit; CaPS32 uses an unsigned
+limit. Final `storage_width` is independent and may remain narrower after a
+validated 64-bit construction when the largest logical position fits.
 
 ### `threads` appears to have no effect
 

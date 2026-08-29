@@ -76,9 +76,13 @@ remain available. Both thresholds and skip flags are preserved in packaged
 TSV evidence.
 
 Peak RSS must be read with each raw row's `peak_rss_scope`. Exact and
-right-maximal phase workers inherit the controller's current prepared dataset,
-so the reported high-water mark includes that inherited baseline plus the
-named build/load/query work; it is not an index-only allocation delta.
+maximal-match phases now start through `exec()` so they do not inherit the
+controller's previously resident heap. Build workers include reference loading
+and construction, query workers include query loading, index loading, and the
+named operation, and save/load scopes remain separate. MUMmer4's external
+`load+query` scope is still reported separately from sufkit's in-process core
+query time; the scope label, not an unqualified RSS number, defines a fair
+comparison.
 
 The output is intentionally small enough for Git: TSV summaries and raw
 repetition evidence, Markdown, file manifests, and SVG. Generated references,

@@ -31,6 +31,8 @@ set(_sufkit_format_files
     include/sufkit/version.hpp
     src/caps_backend.cpp
     src/caps_backend.hpp
+    src/coordinate_storage.cpp
+    src/coordinate_storage.hpp
     src/divsufsort_backend.cpp
     src/divsufsort_backend.hpp
     src/error.cpp
@@ -38,9 +40,13 @@ set(_sufkit_format_files
     src/genome_reference.cpp
     src/genome_reference_internal.hpp
     src/inspect.cpp
+    src/lcp_storage.cpp
+    src/lcp_storage.hpp
     src/query.cpp
     src/query.hpp
     src/reference_data.hpp
+    src/sa_codec.cpp
+    src/sa_codec.hpp
     src/serialization.cpp
     src/serialization.hpp
     src/suffix_array.cpp
@@ -48,6 +54,10 @@ set(_sufkit_format_files
     apps/app_support.hpp
     apps/sufkit.cpp
     tests/test_caps_backend.cpp
+    tests/test_coordinate_storage.cpp
+    tests/test_lcp_storage.cpp
+    tests/test_mem_mam.cpp
+    tests/test_sa_codec.cpp
     tests/test_sampled_sa.cpp
     tests/test_sufkit.cpp
     examples/add_subdirectory/main.cpp
@@ -86,12 +96,15 @@ add_custom_target(sufkit-format-check
 # clang-tidy, ensuring that each file has a matching compilation database entry.
 set(_sufkit_tidy_files
     src/caps_backend.cpp
+    src/coordinate_storage.cpp
     src/divsufsort_backend.cpp
     src/error.cpp
     src/fm_index.cpp
     src/genome_reference.cpp
     src/inspect.cpp
+    src/lcp_storage.cpp
     src/query.cpp
+    src/sa_codec.cpp
     src/serialization.cpp
     src/suffix_array.cpp)
 if(SUFKIT_BUILD_CLI)

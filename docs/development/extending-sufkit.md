@@ -11,7 +11,8 @@ implementation detail from becoming an incompatible public format.
    an existing permanent backend.
 2. Define availability and auto-selection policy independently of explicit
    selection. Keep routing deterministic and inspectable.
-3. Define supported coordinate widths and exact input-size limits.
+3. Define construction widths and exact input-size limits independently from
+   final coordinate codecs.
 4. Keep third-party headers in private source and record fixed revision,
    license, and patches.
 5. Feed the common encoded text including one sentinel and produce a complete
@@ -22,7 +23,7 @@ implementation detail from becoming an incompatible public format.
 7. Assign permanent stored backend IDs/signatures if constructor provenance is
    persisted. Confirm whether old builds can read the generic payload.
 8. Add availability descriptors, CLI values, inspection, save/load, disabled
-   build behavior, and 32/64-bit tests.
+   build behavior, and construction/storage-width tests.
 9. Differentially compare SA order, exact results, right-maximal exact match results, deterministic
    serialization, and concurrency against divsufsort.
 10. Add an isolated constructor benchmark with time, CPU, peak RSS, checksum,
@@ -33,6 +34,30 @@ implementation detail from becoming an incompatible public format.
 CaPS is the reference example: optional compile-time availability, private
 Parlay scheduler, stable IDs 3/4, generic payload, and a conservative 1 GiB
 auto threshold.
+
+## Extend coordinate or LCP storage
+
+1. Keep constructor provenance (`SaBackend` and `CoordinateWidth`) independent
+   from resident/persisted codec selection.
+2. Use `text_symbols-1` for representability. Include every contig separator
+   and the sentinel in checked symbol-count arithmetic.
+3. Never use a padded packed-coordinate struct. New narrow layouts require
+   explicit contiguous planes and exact serialized plane lengths.
+4. Provide checked scalar access and contiguous-span decoding. Lift variant
+   dispatch outside query hot loops and do not add a shared mutable cache.
+5. Validate every down-packed value and complete/sampled permutation before
+   releasing the wider construction buffer.
+6. Keep Fast conservative: a packed layout must pass the documented query
+   regression gate before automatic selection. Low-memory may choose the
+   narrowest correct layout.
+7. A new persisted codec needs a permanent codec ID, format-minor decision,
+   unknown-codec behavior, exact size checks, corruption fixtures, inspect
+   fields, and legacy-file tests.
+8. LCP encodings must implement exact value reconstruction and threshold
+   queries over the same logical LCP. Compare decoded values, CHILD tables,
+   exact/MEM/MAM results, and save/load checksums against raw LCP.
+9. Report logical payload bytes separately from RSS/PSS and construction peak.
+   Do not claim large-reference or MUMmer4 superiority from formulas alone.
 
 ## Add an FM backend
 

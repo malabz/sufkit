@@ -8,13 +8,16 @@
 #include <climits>
 #include <cstdio>
 #include <cstring>
+#include <fstream>
 #include <limits>
 #include <map>
 #include <optional>
 #include <set>
 #include <tuple>
+#include <type_traits>
 #include <utility>
 
+#include <fcntl.h>
 #include <sys/resource.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -76,6 +79,26 @@ bool is_32bit_sa_method(const std::string& method) {
 
 bool is_caps_method(const std::string& method) {
     return method == "caps32" || method == "caps64";
+}
+
+SaResourceProfile sa_resource_profile_for_method(
+    const std::string& method) {
+    return method.find("low-memory") == std::string::npos
+        ? SaResourceProfile::kFast
+        : SaResourceProfile::kLowMemory;
+}
+
+CoordinateStorageWidth sa_storage_width_for_method(
+    const std::string& method) {
+    if (method.find("store32") != std::string::npos)
+        return CoordinateStorageWidth::kBits32;
+    if (method.find("store40") != std::string::npos)
+        return CoordinateStorageWidth::kBits40;
+    if (method.find("store48") != std::string::npos)
+        return CoordinateStorageWidth::kBits48;
+    if (method.find("store64") != std::string::npos)
+        return CoordinateStorageWidth::kBits64;
+    return CoordinateStorageWidth::kAutoSelect;
 }
 
 std::uint32_t sampling_rate_for_method(const std::string& method) {
@@ -467,6 +490,13 @@ struct WorkerHeader {
     char sdsl_version[32]{};
     char canonical_index[512]{};
     std::uint8_t coordinate_width = 0;
+    std::uint8_t stored_coordinate_width = 0;
+    std::uint8_t sa_resource_profile = 0;
+    std::uint8_t lcp_encoding = 0;
+    std::uint64_t sa_bytes = 0;
+    std::uint64_t isa_bytes = 0;
+    std::uint64_t lcp_bytes = 0;
+    std::uint64_t resident_core_bytes = 0;
     std::uint32_t sa_sampling_rate = 1;
     std::uint32_t threads = 1;
     std::uint8_t has_canary = 0;
@@ -483,7 +513,7 @@ struct BuildWire {
     double build_seconds = 0.0;
     double build_user_seconds = 0.0;
     double build_system_seconds = 0.0;
-    double phase_seconds[5]{};
+    double phase_seconds[6]{};
     double save_seconds = 0.0;
     double peak_rss_mb = 0.0;
     std::uint64_t serialized_bytes = 0;
@@ -523,6 +553,414 @@ struct QueryWire {
     std::uint64_t checksum = 0;
     std::uint64_t search_statistics[15]{};
 };
+
+enum class WorkerPhase : std::uint8_t { build, save, load, query };
+
+struct WorkerRequest {
+    WorkerPhase phase = WorkerPhase::build;
+    std::string method;
+    Dataset dataset;
+    Options options;
+    // Parent-side requests borrow the controller's immutable dataset and
+    // options while serializing. A clean-exec worker owns the decoded copies.
+    const Dataset* parent_dataset = nullptr;
+    const Options* parent_options = nullptr;
+    std::filesystem::path scratch_directory;
+    std::uint32_t repetition = 0;
+    std::filesystem::path canonical_index;
+    bool has_canary = false;
+    std::uint64_t canary_total_hits = 0;
+    std::uint64_t canary_reported_hits = 0;
+    std::uint64_t canary_checksum = 0;
+    bool count_worker = false;
+    LocateLimit locate_limit;
+};
+
+constexpr std::uint64_t kWorkerRequestMagic = 0x315145524b465553ULL;
+constexpr std::uint32_t kWorkerRequestVersion = 1;
+constexpr std::uint64_t kMaximumWorkerCollectionSize = 1ULL << 32U;
+
+template <class Value>
+void write_request_value(std::ostream& output, const Value& value) {
+    static_assert(std::is_trivially_copyable<Value>::value,
+        "benchmark worker request values must be trivially copyable");
+    output.write(reinterpret_cast<const char*>(&value), sizeof(value));
+    if (!output) {
+        throw Error(ErrorCode::kIoError,
+            "cannot write benchmark worker request");
+    }
+}
+
+template <class Value>
+Value read_request_value(std::istream& input, const char* label) {
+    static_assert(std::is_trivially_copyable<Value>::value,
+        "benchmark worker request values must be trivially copyable");
+    Value value{};
+    input.read(reinterpret_cast<char*>(&value), sizeof(value));
+    if (!input) {
+        throw Error(ErrorCode::kBuildFailure,
+            std::string("truncated benchmark worker request: ") + label);
+    }
+    return value;
+}
+
+void write_request_string(std::ostream& output, const std::string& value) {
+    write_request_value(output, static_cast<std::uint64_t>(value.size()));
+    output.write(value.data(), static_cast<std::streamsize>(value.size()));
+    if (!output) {
+        throw Error(ErrorCode::kIoError,
+            "cannot write benchmark worker request string");
+    }
+}
+
+std::string read_request_string(std::istream& input, const char* label) {
+    const auto size = read_request_value<std::uint64_t>(input, label);
+    if (size > kMaximumWorkerCollectionSize ||
+        size > static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max())) {
+        throw Error(ErrorCode::kBuildFailure,
+            std::string("invalid benchmark worker string size: ") + label);
+    }
+    std::string value(static_cast<std::size_t>(size), '\0');
+    input.read(value.data(), static_cast<std::streamsize>(value.size()));
+    if (!input) {
+        throw Error(ErrorCode::kBuildFailure,
+            std::string("truncated benchmark worker request string: ") + label);
+    }
+    return value;
+}
+
+template <class Value, class Writer>
+void write_request_vector(
+    std::ostream& output, const std::vector<Value>& values, Writer&& writer) {
+    write_request_value(output, static_cast<std::uint64_t>(values.size()));
+    for (const auto& value : values) writer(output, value);
+}
+
+template <class Value, class Reader>
+std::vector<Value> read_request_vector(
+    std::istream& input, const char* label, Reader&& reader) {
+    const auto count = read_request_value<std::uint64_t>(input, label);
+    if (count > kMaximumWorkerCollectionSize ||
+        count > static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max())) {
+        throw Error(ErrorCode::kBuildFailure,
+            std::string("invalid benchmark worker collection size: ") + label);
+    }
+    std::vector<Value> values;
+    values.reserve(static_cast<std::size_t>(count));
+    for (std::uint64_t index = 0; index < count; ++index) {
+        values.push_back(reader(input));
+    }
+    return values;
+}
+
+void write_optional_u32(
+    std::ostream& output, const std::optional<std::uint32_t>& value) {
+    write_request_value(output, static_cast<std::uint8_t>(value.has_value()));
+    if (value) write_request_value(output, *value);
+}
+
+std::optional<std::uint32_t> read_optional_u32(
+    std::istream& input, const char* label) {
+    const auto present = read_request_value<std::uint8_t>(input, label);
+    if (present > 1) {
+        throw Error(ErrorCode::kBuildFailure,
+            std::string("invalid benchmark worker optional flag: ") + label);
+    }
+    if (present == 0) return std::nullopt;
+    return read_request_value<std::uint32_t>(input, label);
+}
+
+void write_sequence_record(std::ostream& output, const SequenceRecord& value) {
+    write_request_string(output, value.name);
+    write_request_string(output, value.description);
+    write_request_string(output, value.sequence);
+}
+
+SequenceRecord read_sequence_record(std::istream& input) {
+    SequenceRecord value;
+    value.name = read_request_string(input, "sequence name");
+    value.description = read_request_string(input, "sequence description");
+    value.sequence = read_request_string(input, "sequence bases");
+    return value;
+}
+
+void write_query_case(std::ostream& output, const QueryCase& value) {
+    write_request_string(output, value.id);
+    write_request_string(output, value.sequence);
+    write_request_string(output, value.group);
+    write_request_string(output, value.pattern_length);
+    write_request_string(output, value.source);
+}
+
+QueryCase read_query_case(std::istream& input) {
+    QueryCase value;
+    value.id = read_request_string(input, "query id");
+    value.sequence = read_request_string(input, "query sequence");
+    value.group = read_request_string(input, "query group");
+    value.pattern_length = read_request_string(input, "query pattern length");
+    value.source = read_request_string(input, "query source");
+    return value;
+}
+
+void write_query_group(std::ostream& output, const QueryGroupSpec& value) {
+    write_request_string(output, value.group);
+    write_request_string(output, value.pattern_length);
+}
+
+QueryGroupSpec read_query_group(std::istream& input) {
+    QueryGroupSpec value;
+    value.group = read_request_string(input, "query group name");
+    value.pattern_length = read_request_string(input, "query group length");
+    return value;
+}
+
+void write_dataset(
+    std::ostream& output, const Dataset& value, WorkerPhase phase,
+    const std::string& method) {
+    write_request_string(output, value.name);
+    write_request_value(output, static_cast<std::uint8_t>(value.scenario));
+    const bool query_phase = phase == WorkerPhase::query;
+    const bool needs_records = phase == WorkerPhase::build ||
+        (query_phase && method == "naive");
+    if (needs_records) {
+        write_request_vector(output, value.records, write_sequence_record);
+    } else {
+        write_request_value(output, std::uint64_t{0});
+    }
+    if (query_phase) {
+        write_request_vector(output, value.queries, write_query_case);
+    } else if (phase == WorkerPhase::build || phase == WorkerPhase::load) {
+        const auto canary = std::find_if(
+            value.queries.begin(), value.queries.end(), [](const auto& query) {
+                return query.group == "exact_unique";
+            });
+        const auto selected = canary == value.queries.end()
+            ? value.queries.begin() : canary;
+        if (selected == value.queries.end()) {
+            write_request_value(output, std::uint64_t{0});
+        } else {
+            write_request_value(output, std::uint64_t{1});
+            write_query_case(output, *selected);
+        }
+    } else {
+        write_request_value(output, std::uint64_t{0});
+    }
+    if (query_phase) {
+        write_request_vector(output, value.groups, write_query_group);
+    } else {
+        write_request_value(output, std::uint64_t{0});
+    }
+    write_request_value(output, value.fingerprint);
+    write_request_value(output, value.total_bases);
+    write_request_value(output, value.contigs);
+    write_request_value(output, value.gc_fraction);
+    write_request_value(output, value.ambiguous_fraction);
+    write_request_value(output, value.repeat_fraction);
+    write_request_value(output, value.reference_seconds);
+    write_request_value(output, value.normalization_seconds);
+}
+
+Dataset read_dataset(std::istream& input) {
+    Dataset value;
+    value.name = read_request_string(input, "dataset name");
+    const auto scenario = read_request_value<std::uint8_t>(input, "scenario");
+    if (scenario > static_cast<std::uint8_t>(Scenario::user)) {
+        throw Error(ErrorCode::kBuildFailure,
+            "invalid scenario in benchmark worker request");
+    }
+    value.scenario = static_cast<Scenario>(scenario);
+    value.records = read_request_vector<SequenceRecord>(
+        input, "reference records", read_sequence_record);
+    value.queries = read_request_vector<QueryCase>(
+        input, "queries", read_query_case);
+    value.groups = read_request_vector<QueryGroupSpec>(
+        input, "query groups", read_query_group);
+    value.fingerprint = read_request_value<std::uint64_t>(input, "fingerprint");
+    value.total_bases = read_request_value<std::uint64_t>(input, "total bases");
+    value.contigs = read_request_value<std::uint64_t>(input, "contig count");
+    value.gc_fraction = read_request_value<double>(input, "GC fraction");
+    value.ambiguous_fraction =
+        read_request_value<double>(input, "ambiguous fraction");
+    value.repeat_fraction = read_request_value<double>(input, "repeat fraction");
+    value.reference_seconds =
+        read_request_value<double>(input, "reference seconds");
+    value.normalization_seconds =
+        read_request_value<double>(input, "normalization seconds");
+    return value;
+}
+
+void write_string_vector(
+    std::ostream& output, const std::vector<std::string>& values) {
+    write_request_vector(output, values,
+        [](std::ostream& stream, const std::string& value) {
+            write_request_string(stream, value);
+        });
+}
+
+std::vector<std::string> read_string_vector(
+    std::istream& input, const char* label) {
+    return read_request_vector<std::string>(input, label,
+        [](std::istream& stream) {
+            return read_request_string(stream, "string vector value");
+        });
+}
+
+void write_u32_vector(
+    std::ostream& output, const std::vector<std::uint32_t>& values) {
+    write_request_vector(output, values,
+        [](std::ostream& stream, std::uint32_t value) {
+            write_request_value(stream, value);
+        });
+}
+
+std::vector<std::uint32_t> read_u32_vector(
+    std::istream& input, const char* label) {
+    return read_request_vector<std::uint32_t>(input, label,
+        [](std::istream& stream) {
+            return read_request_value<std::uint32_t>(stream, "u32 vector value");
+        });
+}
+
+void write_options(std::ostream& output, const Options& value) {
+    write_request_value(output, static_cast<std::uint8_t>(value.profile));
+    write_optional_u32(output, value.build_repetitions);
+    write_optional_u32(output, value.query_repetitions);
+    write_optional_u32(output, value.warmups);
+    write_request_value(output, value.sa_threads);
+    write_request_value(output, value.learned_k);
+    write_request_value(output, value.learned_memory_overhead_basis_points);
+    write_optional_u32(output, value.learned_bucket_bits);
+    write_string_vector(output, value.fm_query_modes);
+    write_u32_vector(output, value.fm_batch_widths);
+    write_request_value(output,
+        static_cast<std::uint64_t>(value.fm_batch_width_overrides.size()));
+    for (const auto& [method, widths] : value.fm_batch_width_overrides) {
+        write_request_string(output, method);
+        write_u32_vector(output, widths);
+    }
+}
+
+Options read_options(std::istream& input) {
+    Options value;
+    const auto profile = read_request_value<std::uint8_t>(input, "profile");
+    if (profile > static_cast<std::uint8_t>(Profile::user)) {
+        throw Error(ErrorCode::kBuildFailure,
+            "invalid profile in benchmark worker request");
+    }
+    value.profile = static_cast<Profile>(profile);
+    value.build_repetitions = read_optional_u32(input, "build repetitions");
+    value.query_repetitions = read_optional_u32(input, "query repetitions");
+    value.warmups = read_optional_u32(input, "warmups");
+    value.sa_threads = read_request_value<std::uint32_t>(input, "SA threads");
+    value.learned_k = read_request_value<std::uint32_t>(input, "learned k");
+    value.learned_memory_overhead_basis_points =
+        read_request_value<std::uint32_t>(input, "learned memory basis points");
+    value.learned_bucket_bits =
+        read_optional_u32(input, "learned bucket bits");
+    value.fm_query_modes = read_string_vector(input, "FM query modes");
+    value.fm_batch_widths = read_u32_vector(input, "FM batch widths");
+    const auto override_count =
+        read_request_value<std::uint64_t>(input, "FM override count");
+    if (override_count > kMaximumWorkerCollectionSize) {
+        throw Error(ErrorCode::kBuildFailure,
+            "invalid FM override count in benchmark worker request");
+    }
+    value.fm_batch_width_overrides.clear();
+    for (std::uint64_t index = 0; index < override_count; ++index) {
+        auto method = read_request_string(input, "FM override method");
+        auto widths = read_u32_vector(input, "FM override widths");
+        if (!value.fm_batch_width_overrides.emplace(
+                std::move(method), std::move(widths)).second) {
+            throw Error(ErrorCode::kBuildFailure,
+                "duplicate FM override in benchmark worker request");
+        }
+    }
+    return value;
+}
+
+void write_worker_request(
+    const std::filesystem::path& path, const WorkerRequest& request) {
+    std::ofstream output(path, std::ios::binary | std::ios::trunc);
+    if (!output) {
+        throw Error(ErrorCode::kIoError,
+            "cannot create benchmark worker request: " + path.string());
+    }
+    write_request_value(output, kWorkerRequestMagic);
+    write_request_value(output, kWorkerRequestVersion);
+    write_request_value(output, static_cast<std::uint8_t>(request.phase));
+    write_request_string(output, request.method);
+    write_dataset(output,
+        request.parent_dataset == nullptr ? request.dataset
+                                          : *request.parent_dataset,
+        request.phase, request.method);
+    write_options(output,
+        request.parent_options == nullptr ? request.options
+                                          : *request.parent_options);
+    write_request_string(output, request.scratch_directory.string());
+    write_request_value(output, request.repetition);
+    write_request_string(output, request.canonical_index.string());
+    write_request_value(output, static_cast<std::uint8_t>(request.has_canary));
+    write_request_value(output, request.canary_total_hits);
+    write_request_value(output, request.canary_reported_hits);
+    write_request_value(output, request.canary_checksum);
+    write_request_value(output, static_cast<std::uint8_t>(request.count_worker));
+    write_request_value(output, static_cast<std::uint8_t>(request.locate_limit.all));
+    write_request_value(output, request.locate_limit.value);
+    output.flush();
+    if (!output) {
+        throw Error(ErrorCode::kIoError,
+            "cannot finish benchmark worker request: " + path.string());
+    }
+}
+
+WorkerRequest read_worker_request(const std::filesystem::path& path) {
+    std::ifstream input(path, std::ios::binary);
+    if (!input) {
+        throw Error(ErrorCode::kIoError,
+            "cannot open benchmark worker request: " + path.string());
+    }
+    if (read_request_value<std::uint64_t>(input, "magic") !=
+            kWorkerRequestMagic ||
+        read_request_value<std::uint32_t>(input, "version") !=
+            kWorkerRequestVersion) {
+        throw Error(ErrorCode::kBuildFailure,
+            "unsupported benchmark worker request format");
+    }
+    WorkerRequest request;
+    const auto phase = read_request_value<std::uint8_t>(input, "phase");
+    if (phase > static_cast<std::uint8_t>(WorkerPhase::query)) {
+        throw Error(ErrorCode::kBuildFailure,
+            "invalid benchmark worker phase");
+    }
+    request.phase = static_cast<WorkerPhase>(phase);
+    request.method = read_request_string(input, "method");
+    request.dataset = read_dataset(input);
+    request.options = read_options(input);
+    request.scratch_directory =
+        read_request_string(input, "scratch directory");
+    request.repetition =
+        read_request_value<std::uint32_t>(input, "repetition");
+    request.canonical_index = read_request_string(input, "canonical index");
+    request.has_canary =
+        read_request_value<std::uint8_t>(input, "has canary") != 0;
+    request.canary_total_hits =
+        read_request_value<std::uint64_t>(input, "canary total hits");
+    request.canary_reported_hits =
+        read_request_value<std::uint64_t>(input, "canary reported hits");
+    request.canary_checksum =
+        read_request_value<std::uint64_t>(input, "canary checksum");
+    request.count_worker =
+        read_request_value<std::uint8_t>(input, "count worker") != 0;
+    request.locate_limit.all =
+        read_request_value<std::uint8_t>(input, "locate all") != 0;
+    request.locate_limit.value =
+        read_request_value<std::uint64_t>(input, "locate limit");
+    if (input.peek() != std::char_traits<char>::eof()) {
+        throw Error(ErrorCode::kBuildFailure,
+            "benchmark worker request has trailing bytes");
+    }
+    return request;
+}
 
 template <std::size_t Size>
 void copy_text(char (&destination)[Size], const std::string& source) {
@@ -633,6 +1071,8 @@ MethodResult run_build_worker(
         build_options.backend = is_caps_method(method) ? SaBackend::kCaps : SaBackend::kDivsufsort;
         build_options.coordinate_width = is_32bit_sa_method(method)
             ? CoordinateWidth::kBits32 : CoordinateWidth::kBits64;
+        build_options.storage_width = sa_storage_width_for_method(method);
+        build_options.resource_profile = sa_resource_profile_for_method(method);
         build_options.threads = result.threads;
         build_options.sampling_rate = sampling_rate_for_method(method);
         build_options.acceleration = method == "sa32-none" || method == "sa64-none"
@@ -656,6 +1096,8 @@ MethodResult run_build_worker(
         raw.build_user_seconds = cpu.user;
         raw.build_system_seconds = cpu.system;
         raw.sa_build_seconds = build_statistics.sa_seconds;
+        raw.storage_compaction_seconds =
+            build_statistics.storage_compaction_seconds;
         raw.isa_build_seconds = build_statistics.isa_seconds;
         raw.lcp_build_seconds = build_statistics.lcp_seconds;
         raw.child_build_seconds = build_statistics.child_seconds;
@@ -664,6 +1106,13 @@ MethodResult run_build_worker(
         result.backend = info.backend;
         result.signature = info.backend_signature;
         result.coordinate_width = info.coordinate_width;
+        result.stored_coordinate_width = info.stored_coordinate_width;
+        result.sa_resource_profile = info.sa_resource_profile;
+        result.lcp_encoding = info.lcp_encoding;
+        result.sa_bytes = info.sa_bytes;
+        result.isa_bytes = info.isa_bytes;
+        result.lcp_bytes = info.lcp_bytes;
+        result.resident_core_bytes = info.resident_core_bytes;
         result.sa_sampling_rate = info.sa_sampling_rate;
         raw.learned_index_bytes = info.learned_index_bytes;
         raw.peak_rss_mb = current_process_peak_rss_mb();
@@ -864,6 +1313,14 @@ void write_worker_result(int descriptor, const MethodResult& result, const std::
     copy_text(header.sdsl_version, result.sdsl_version);
     copy_text(header.canonical_index, result.canonical_index.string());
     header.coordinate_width = result.coordinate_width;
+    header.stored_coordinate_width = result.stored_coordinate_width;
+    header.sa_resource_profile =
+        static_cast<std::uint8_t>(result.sa_resource_profile);
+    header.lcp_encoding = static_cast<std::uint8_t>(result.lcp_encoding);
+    header.sa_bytes = result.sa_bytes;
+    header.isa_bytes = result.isa_bytes;
+    header.lcp_bytes = result.lcp_bytes;
+    header.resident_core_bytes = result.resident_core_bytes;
     header.sa_sampling_rate = result.sa_sampling_rate;
     header.threads = result.threads;
     header.has_canary = result.has_canary ? 1 : 0;
@@ -881,10 +1338,11 @@ void write_worker_result(int descriptor, const MethodResult& result, const std::
         wire.build_user_seconds = raw.build_user_seconds;
         wire.build_system_seconds = raw.build_system_seconds;
         wire.phase_seconds[0] = raw.sa_build_seconds;
-        wire.phase_seconds[1] = raw.isa_build_seconds;
-        wire.phase_seconds[2] = raw.lcp_build_seconds;
-        wire.phase_seconds[3] = raw.child_build_seconds;
-        wire.phase_seconds[4] = raw.learned_index_build_seconds;
+        wire.phase_seconds[1] = raw.storage_compaction_seconds;
+        wire.phase_seconds[2] = raw.isa_build_seconds;
+        wire.phase_seconds[3] = raw.lcp_build_seconds;
+        wire.phase_seconds[4] = raw.child_build_seconds;
+        wire.phase_seconds[5] = raw.learned_index_build_seconds;
         wire.save_seconds = raw.save_seconds;
         wire.peak_rss_mb = raw.peak_rss_mb;
         wire.serialized_bytes = raw.serialized_bytes;
@@ -958,6 +1416,15 @@ MethodResult read_worker_result(int descriptor) {
     result.sdsl_version = header.sdsl_version;
     result.canonical_index = header.canonical_index;
     result.coordinate_width = header.coordinate_width;
+    result.stored_coordinate_width = header.stored_coordinate_width;
+    result.sa_resource_profile =
+        static_cast<SaResourceProfile>(header.sa_resource_profile);
+    result.lcp_encoding =
+        static_cast<SaLcpEncoding>(header.lcp_encoding);
+    result.sa_bytes = header.sa_bytes;
+    result.isa_bytes = header.isa_bytes;
+    result.lcp_bytes = header.lcp_bytes;
+    result.resident_core_bytes = header.resident_core_bytes;
     result.sa_sampling_rate = header.sa_sampling_rate;
     result.threads = header.threads;
     result.has_canary = header.has_canary != 0;
@@ -973,10 +1440,11 @@ MethodResult read_worker_result(int descriptor) {
         raw.build_user_seconds = wire.build_user_seconds;
         raw.build_system_seconds = wire.build_system_seconds;
         raw.sa_build_seconds = wire.phase_seconds[0];
-        raw.isa_build_seconds = wire.phase_seconds[1];
-        raw.lcp_build_seconds = wire.phase_seconds[2];
-        raw.child_build_seconds = wire.phase_seconds[3];
-        raw.learned_index_build_seconds = wire.phase_seconds[4];
+        raw.storage_compaction_seconds = wire.phase_seconds[1];
+        raw.isa_build_seconds = wire.phase_seconds[2];
+        raw.lcp_build_seconds = wire.phase_seconds[3];
+        raw.child_build_seconds = wire.phase_seconds[4];
+        raw.learned_index_build_seconds = wire.phase_seconds[5];
         raw.save_seconds = wire.save_seconds;
         raw.peak_rss_mb = wire.peak_rss_mb;
         raw.serialized_bytes = wire.serialized_bytes;
@@ -1129,50 +1597,100 @@ std::string diagnose_mismatch(
     return "aggregate checksum differs, but per-query replay found no coordinate mismatch";
 }
 
-enum class WorkerPhase { build, save, load, query };
+const char* worker_phase_name(WorkerPhase phase) noexcept {
+    switch (phase) {
+    case WorkerPhase::build: return "build";
+    case WorkerPhase::save: return "save";
+    case WorkerPhase::load: return "load";
+    case WorkerPhase::query: return "query";
+    }
+    return "unknown";
+}
 
-template <class Work>
+MethodResult execute_worker_request(const WorkerRequest& request) {
+    switch (request.phase) {
+    case WorkerPhase::build:
+        return run_build_worker(
+            request.method, request.dataset, request.options,
+            request.scratch_directory, request.repetition);
+    case WorkerPhase::save:
+        return run_save_worker(
+            request.method, request.canonical_index,
+            request.scratch_directory, request.repetition);
+    case WorkerPhase::load: {
+        MethodResult build_result;
+        build_result.method = request.method;
+        build_result.canonical_index = request.canonical_index;
+        build_result.has_canary = request.has_canary;
+        build_result.canary_total_hits = request.canary_total_hits;
+        build_result.canary_reported_hits = request.canary_reported_hits;
+        build_result.canary_checksum = request.canary_checksum;
+        return run_load_worker(
+            request.method, request.dataset, build_result,
+            request.repetition);
+    }
+    case WorkerPhase::query:
+        return run_query_worker(
+            request.method, request.dataset, request.options,
+            request.canonical_index, request.count_worker,
+            request.locate_limit);
+    }
+    throw Error(ErrorCode::kBuildFailure,
+        "invalid benchmark worker phase");
+}
+
 MethodResult launch_worker(
     const std::string& method,
     WorkerPhase phase,
-    Work&& work) {
-    int descriptors[2]{};
-    if (pipe(descriptors) != 0) throw Error(ErrorCode::kIoError, "cannot create benchmark worker pipe");
+    WorkerRequest request) {
+    static std::uint64_t request_number = 0;
+    request.phase = phase;
+    request.method = method;
+    const auto stem = ".exact-worker-" + method + "-" +
+        worker_phase_name(phase) + "-" + std::to_string(getpid()) + "-" +
+        std::to_string(request_number++);
+    const auto request_path = request.scratch_directory / (stem + ".request");
+    const auto result_path = request.scratch_directory / (stem + ".result");
+    write_worker_request(request_path, request);
     const auto pid = fork();
     if (pid < 0) {
-        close(descriptors[0]);
-        close(descriptors[1]);
+        std::error_code ignored;
+        std::filesystem::remove(request_path, ignored);
         throw Error(ErrorCode::kIoError, "cannot create benchmark worker process");
     }
     if (pid == 0) {
-        close(descriptors[0]);
-        MethodResult result;
-        std::string error;
-        try {
-            result = work();
-        } catch (const std::exception& exception) {
-            result.method = method;
-            error = exception.what();
-        }
-        write_worker_result(descriptors[1], result, error);
-        close(descriptors[1]);
-        _exit(error.empty() ? 0 : 1);
+        const auto request_argument = request_path.string();
+        const auto result_argument = result_path.string();
+        execl("/proc/self/exe", "sufkit", "__benchmark-worker",
+            request_argument.c_str(), result_argument.c_str(),
+            static_cast<char*>(nullptr));
+        _exit(127);
     }
-    close(descriptors[1]);
-    MethodResult result;
-    std::string receive_error;
-    try {
-        result = read_worker_result(descriptors[0]);
-    } catch (const std::exception& error) {
-        receive_error = error.what();
-    }
-    close(descriptors[0]);
     int status = 0;
     struct rusage usage {};
     const auto waited = wait4(pid, &status, 0, &usage);
-    if (!receive_error.empty()) throw Error(ErrorCode::kBuildFailure, receive_error);
+    MethodResult result;
+    std::string receive_error;
+    const auto descriptor = open(result_path.c_str(), O_RDONLY);
+    if (descriptor < 0) {
+        receive_error = "benchmark clean-exec worker did not produce a result";
+    } else {
+        try {
+            result = read_worker_result(descriptor);
+        } catch (const std::exception& error) {
+            receive_error = error.what();
+        }
+        close(descriptor);
+    }
+    std::error_code ignored;
+    std::filesystem::remove(request_path, ignored);
+    std::filesystem::remove(result_path, ignored);
+    if (!receive_error.empty()) {
+        throw Error(ErrorCode::kBuildFailure, receive_error);
+    }
     if (waited < 0 || !WIFEXITED(status) || WEXITSTATUS(status) != 0) {
-        throw Error(ErrorCode::kBuildFailure, "benchmark worker failed: " + method);
+        throw Error(ErrorCode::kBuildFailure,
+            "benchmark clean-exec worker failed: " + method);
     }
     const auto rss = peak_rss_mb(usage);
     result.peak_rss_mb = rss;
@@ -1210,16 +1728,34 @@ MethodResult run_method_isolated(
         options.build_repetitions.value_or(spec.build_repetitions);
     const auto build_repetitions = method == "naive" ? 1U : requested_build_repetitions;
 
+    const auto make_request = [&] {
+        WorkerRequest request;
+        request.method = method;
+        request.parent_dataset = &dataset;
+        request.parent_options = &options;
+        request.scratch_directory = scratch_directory;
+        return request;
+    };
+
     MethodResult result;
     for (std::uint32_t repetition = 0; repetition < build_repetitions; ++repetition) {
-        auto phase = launch_worker(method, WorkerPhase::build, [&] {
-            return run_build_worker(method, dataset, options, scratch_directory, repetition);
-        });
+        auto request = make_request();
+        request.repetition = repetition;
+        auto phase = launch_worker(
+            method, WorkerPhase::build, std::move(request));
         if (repetition == 0) {
             result = std::move(phase);
         } else {
             if (result.backend != phase.backend || result.signature != phase.signature ||
                 result.coordinate_width != phase.coordinate_width ||
+                result.stored_coordinate_width !=
+                    phase.stored_coordinate_width ||
+                result.sa_resource_profile != phase.sa_resource_profile ||
+                result.lcp_encoding != phase.lcp_encoding ||
+                result.sa_bytes != phase.sa_bytes ||
+                result.isa_bytes != phase.isa_bytes ||
+                result.lcp_bytes != phase.lcp_bytes ||
+                result.resident_core_bytes != phase.resident_core_bytes ||
                 result.sa_sampling_rate != phase.sa_sampling_rate ||
                 result.threads != phase.threads || !same_canary(result, phase)) {
                 throw Error(ErrorCode::kBuildFailure,
@@ -1234,10 +1770,11 @@ MethodResult run_method_isolated(
 
     if (method != "naive") {
         for (std::uint32_t repetition = 0; repetition < requested_build_repetitions; ++repetition) {
-            auto phase = launch_worker(method, WorkerPhase::save, [&] {
-                return run_save_worker(
-                    method, result.canonical_index, scratch_directory, repetition);
-            });
+            auto request = make_request();
+            request.repetition = repetition;
+            request.canonical_index = result.canonical_index;
+            auto phase = launch_worker(
+                method, WorkerPhase::save, std::move(request));
             if (phase.loads.size() != 1 || phase.loads.front().status != kSaveWorkerStatus) {
                 throw Error(ErrorCode::kBuildFailure,
                     "isolated save worker returned an invalid result");
@@ -1258,18 +1795,26 @@ MethodResult run_method_isolated(
 
     const auto load_repetitions = method == "naive" ? 1U : requested_build_repetitions;
     for (std::uint32_t repetition = 0; repetition < load_repetitions; ++repetition) {
-        auto phase = launch_worker(method, WorkerPhase::load, [&] {
-            return run_load_worker(method, dataset, result, repetition);
-        });
+        auto request = make_request();
+        request.repetition = repetition;
+        request.canonical_index = result.canonical_index;
+        request.has_canary = result.has_canary;
+        request.canary_total_hits = result.canary_total_hits;
+        request.canary_reported_hits = result.canary_reported_hits;
+        request.canary_checksum = result.canary_checksum;
+        auto phase = launch_worker(
+            method, WorkerPhase::load, std::move(request));
         result.peak_rss_mb = std::max(result.peak_rss_mb, phase.peak_rss_mb);
         result.loads.insert(result.loads.end(), phase.loads.begin(), phase.loads.end());
     }
 
     LocateLimit unused_limit;
-    auto count_phase = launch_worker(method, WorkerPhase::query, [&] {
-        return run_query_worker(
-            method, dataset, options, result.canonical_index, true, unused_limit);
-    });
+    auto count_request = make_request();
+    count_request.canonical_index = result.canonical_index;
+    count_request.count_worker = true;
+    count_request.locate_limit = unused_limit;
+    auto count_phase = launch_worker(
+        method, WorkerPhase::query, std::move(count_request));
     result.peak_rss_mb = std::max(result.peak_rss_mb, count_phase.peak_rss_mb);
     result.queries.insert(
         result.queries.end(), count_phase.queries.begin(), count_phase.queries.end());
@@ -1279,10 +1824,12 @@ MethodResult run_method_isolated(
             options.fm_query_modes.end();
     if (locate_enabled) {
         for (const auto& limit : options.locate_limits) {
-            auto locate_phase = launch_worker(method, WorkerPhase::query, [&] {
-                return run_query_worker(
-                    method, dataset, options, result.canonical_index, false, limit);
-            });
+            auto request = make_request();
+            request.canonical_index = result.canonical_index;
+            request.count_worker = false;
+            request.locate_limit = limit;
+            auto locate_phase = launch_worker(
+                method, WorkerPhase::query, std::move(request));
             result.peak_rss_mb = std::max(result.peak_rss_mb, locate_phase.peak_rss_mb);
             result.queries.insert(
                 result.queries.end(), locate_phase.queries.begin(), locate_phase.queries.end());
@@ -1394,4 +1941,38 @@ void validate_results(
     }
 }
 
+int run_clean_exec_worker(const std::vector<std::string>& arguments) {
+    if (arguments.size() != 2) {
+        throw Error(ErrorCode::kInvalidInput,
+            "internal benchmark worker requires request and result paths");
+    }
+    const std::filesystem::path request_path = arguments[0];
+    const std::filesystem::path result_path = arguments[1];
+    MethodResult result;
+    std::string error;
+    try {
+        const auto request = read_worker_request(request_path);
+        result = execute_worker_request(request);
+    } catch (const std::exception& exception) {
+        error = exception.what();
+    }
+    const auto descriptor = open(
+        result_path.c_str(), O_WRONLY | O_CREAT | O_EXCL, 0600);
+    if (descriptor < 0) {
+        throw Error(ErrorCode::kIoError,
+            "cannot create benchmark worker result: " + result_path.string());
+    }
+    write_worker_result(descriptor, result, error);
+    close(descriptor);
+    return error.empty() ? 0 : 1;
+}
+
 } // namespace sufkit::app::bench
+
+namespace sufkit::app {
+
+int run_benchmark_worker(const std::vector<std::string>& arguments) {
+    return bench::run_clean_exec_worker(arguments);
+}
+
+} // namespace sufkit::app

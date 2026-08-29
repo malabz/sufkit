@@ -27,7 +27,7 @@ ctest --preset release --output-on-failure
   --pattern ACGTACGT --strand both --max-hits 100
 ```
 
-构建默认 `SA+ISA+LCP` 并搜索 right-maximal exact match：
+构建默认 Fast `SA+ISA+raw LCP` 并搜索 right-maximal exact match：
 
 ```bash
 ./build/release/sufkit build --type sa \
@@ -36,6 +36,21 @@ ctest --preset release --output-on-failure
 ./build/release/sufkit right-maximal --index reference.sa.sufidx \
   --query queries.fa.gz --min-length 20 --strand both
 ```
+
+构建完整但更省常驻内存的 SA：
+
+```bash
+./build/release/sufkit build --type sa \
+  --input reference.fa.gz --output reference.low-memory.sufidx \
+  --sa-profile low-memory --sa-width auto --sa-storage-width auto
+
+./build/release/sufkit inspect --index reference.low-memory.sufidx
+```
+
+Low-memory 保留 SA+byte-coded LCP，不保留 ISA、CHILD 或 PWL；exact、
+right-maximal、MEM 和完整 SA 上的 reference-MAM 仍可使用，但自动查询路径
+由 suffix-link 改为 LCP。`inspect` 会分别显示构建宽度、最终存储宽度、LCP
+编码和各结构的常驻字节数。
 
 需要正式双侧极大 MEM 或 reference 中唯一的 MAM 时：
 

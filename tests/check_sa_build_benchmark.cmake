@@ -41,11 +41,34 @@ file(READ "${OUTPUT_ROOT}/raw_repetitions.tsv" raw)
 if(NOT metadata MATCHES "reference_read_seconds\tnormalization_seconds")
     message(FATAL_ERROR "SA build metadata is missing reference/normalization timing")
 endif()
+if(NOT metadata MATCHES "worker_process_model" OR
+   NOT metadata MATCHES "clean-exec-phase-v1")
+    message(FATAL_ERROR "SA build metadata is missing the clean-exec worker model")
+endif()
 foreach(metric IN ITEMS sa_seconds isa_seconds lcp_seconds child_seconds
                         build_peak_rss_mb save_peak_rss_mb load_peak_rss_mb
-                        serialized_bytes allocated_disk_bytes bits_per_base)
+                        serialized_bytes allocated_disk_bytes bits_per_base
+                        construction_coordinate_width stored_coordinate_width
+                        sa_resource_profile lcp_encoding
+                        storage_compaction_seconds build_peak_rss_scope
+                        save_peak_rss_scope load_peak_rss_scope)
     if(NOT raw MATCHES "${metric}")
         message(FATAL_ERROR "SA build raw results are missing ${metric}")
+    endif()
+endforeach()
+foreach(metric IN ITEMS construction_coordinate_width stored_coordinate_width
+                        sa_resource_profile lcp_encoding
+                        storage_compaction_seconds_median build_peak_rss_scope
+                        save_peak_rss_scope load_peak_rss_scope)
+    if(NOT summary MATCHES "${metric}")
+        message(FATAL_ERROR "SA build summary is missing ${metric}")
+    endif()
+endforeach()
+foreach(scope IN ITEMS clean_exec_build_worker_until_index_ready
+                       clean_exec_save_worker_including_source_load
+                       clean_exec_load_worker_until_index_ready)
+    if(NOT raw MATCHES "${scope}" OR NOT summary MATCHES "${scope}")
+        message(FATAL_ERROR "SA build results are missing clean-exec scope ${scope}")
     endif()
 endforeach()
 foreach(method IN ITEMS div32 div64 caps32 caps64)

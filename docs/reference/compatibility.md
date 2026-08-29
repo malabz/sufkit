@@ -20,24 +20,27 @@ no-silent-fallback contract remain unchanged.
 
 ## `.sufidx` compatibility
 
-The Unreleased MEM/reference-MAM APIs add no sections or identifiers. Existing
-1.0-1.3 standalone SA files can run the baseline path; stored ISA/LCP/CHILD/PWL
-data enables the corresponding accelerations. Reference-MAM requires a
-complete SA. FM payloads and behavior are unchanged.
+The Unreleased MEM/reference-MAM APIs add no sections or identifiers. The
+adaptive-storage work adds format 1.4 section codecs while preserving section
+and backend IDs. Existing 1.0-1.3 standalone SA files retain their legacy
+32/64-bit interpretation and can run the same supported searches.
 
-| 0.2.0 reader | 1.0 | 1.1 | 1.2 | 1.3 |
-|---|---:|---:|---:|---:|
-| SA | Yes | Yes | Yes | Yes |
-| FM | Yes | Header minor accepted; no SA-only sections | Header minor accepted; no SA-only sections | Header minor accepted; no SA-only sections |
+| Reader | 1.0 | 1.1 | 1.2 | 1.3 | 1.4 |
+|---|---:|---:|---:|---:|---:|
+| Released 0.2.0 | Yes | Yes | Yes | Yes | No |
+| Current source-tree SA | Yes | Yes | Yes | Yes | Yes |
+| Current source-tree FM | Yes | Header-only compatibility | Header-only compatibility | Header-only compatibility | Header-only compatibility; writer remains 1.0 |
 
-Output selection:
+Current source-tree output selection:
 
-- SA only: 1.0;
-- SA plus ISA/LCP/CHILD: 1.1;
-- any SA with a learned section: 1.2;
-- any SA with sampling rate greater than one: 1.3, including sampled learned
-  and ESA combinations;
+- all newly saved standalone SAs: 1.4, with explicit coordinate and LCP
+  codecs plus resource profile;
 - FM alternatives: 1.0 outer layout, backend identity in the existing byte.
+
+Format 1.4 keeps `coordinate_width` as construction provenance and records
+physical width in each coordinate section. Loading 1.0-1.3 infers storage from
+the legacy backend width; it does not rewrite a file unless the caller saves a
+new index.
 
 Readers reject a newer major or unsupported minor. Unknown required sections,
 backend IDs, normalization IDs, or illegal section combinations are not

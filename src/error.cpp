@@ -9,6 +9,20 @@ Error::Error(ErrorCode code, const std::string& message)
 
 ErrorCode Error::Code() const noexcept { return code_; }
 
+SuffixArrayBuildOptions FastSuffixArrayBuildOptions() {
+  return SuffixArrayBuildOptions{};
+}
+
+SuffixArrayBuildOptions LowMemorySuffixArrayBuildOptions() {
+  SuffixArrayBuildOptions options;
+  options.resource_profile = SaResourceProfile::kLowMemory;
+  options.storage_width = CoordinateStorageWidth::kAutoSelect;
+  options.sampling_rate = 1;
+  options.acceleration = SaAcceleration::kLcp;
+  options.learned_index.enabled = false;
+  return options;
+}
+
 const char* ToString(IndexKind value) noexcept {
   switch (value) {
     case IndexKind::kSuffixArray:
@@ -27,6 +41,44 @@ const char* ToString(SaBackend value) noexcept {
       return "divsufsort";
     case SaBackend::kCaps:
       return "caps";
+  }
+  return "unknown";
+}
+
+const char* ToString(CoordinateStorageWidth value) noexcept {
+  switch (value) {
+    case CoordinateStorageWidth::kAutoSelect:
+      return "auto";
+    case CoordinateStorageWidth::kBits32:
+      return "32";
+    case CoordinateStorageWidth::kBits40:
+      return "40";
+    case CoordinateStorageWidth::kBits48:
+      return "48";
+    case CoordinateStorageWidth::kBits64:
+      return "64";
+  }
+  return "unknown";
+}
+
+const char* ToString(SaResourceProfile value) noexcept {
+  switch (value) {
+    case SaResourceProfile::kFast:
+      return "fast";
+    case SaResourceProfile::kLowMemory:
+      return "low-memory";
+  }
+  return "unknown";
+}
+
+const char* ToString(SaLcpEncoding value) noexcept {
+  switch (value) {
+    case SaLcpEncoding::kNone:
+      return "none";
+    case SaLcpEncoding::kRaw:
+      return "raw";
+    case SaLcpEncoding::kByteCoded:
+      return "byte-coded";
   }
   return "unknown";
 }

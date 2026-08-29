@@ -73,7 +73,11 @@ std::vector<std::string> parse_methods(const std::string& text) {
         "sa64-sampled-k2", "sa64-sampled-k4", "sa64-sampled-k8",
         "fm", "fm-huff", "fm-balanced", "fm-epr", "caps32", "caps64",
         "sa32-binary", "sa32-lcp-binary", "sa32-sapling", "sa32-child",
-        "sa64-binary", "sa64-lcp-binary"};
+        "sa64-binary", "sa64-lcp-binary",
+        "sa32-fast", "sa32-low-memory", "sa64-fast",
+        "sa64-low-memory", "sa64-store32-fast",
+        "sa64-store40-low-memory", "sa64-store48-low-memory",
+        "sa64-store64-fast"};
     auto methods = split_csv(text, "--methods");
     for (const auto& method : methods) {
         if (supported.count(method) == 0) {
@@ -458,7 +462,10 @@ void print_help() {
         "fm-epr,caps32,caps64,sa32-binary,sa32-lcp-binary,sa32-sapling,sa32-child,"
         "sa64-binary,sa64-lcp-binary,\n"
         "            sa32-sampled-k2,sa32-sampled-k4,sa32-sampled-k8,\n"
-        "            sa64-sampled-k2,sa64-sampled-k4,sa64-sampled-k8\n"
+        "            sa64-sampled-k2,sa64-sampled-k4,sa64-sampled-k8,\n"
+        "            sa32-fast,sa32-low-memory,sa64-fast,sa64-low-memory,\n"
+        "            sa64-store32-fast,sa64-store40-low-memory,\n"
+        "            sa64-store48-low-memory,sa64-store64-fast\n"
         "  --fm-query-modes scalar,batch --fm-batch-widths 1,4,8,16,32\n"
         "  --fm-batch-widths-for METHOD:WIDTH1,WIDTH2  Per-FM-method override; repeatable\n"
         "  --sa-threads N   Thread count for private caps32/caps64 benchmark methods\n"
@@ -475,8 +482,14 @@ void print_help() {
         "            right-maximal-suffix-link-binary,right-maximal-suffix-link-sapling,mummer4\n"
         "  --min-lengths 20,50,100 [--mummer4 PATH]\n"
         "  --learned-k 20 --learned-memory-bp 100 [--learned-bucket-bits N]\n"
-        "  MEM methods: mem-baseline,mem-lcp,mem-child,mem-suffix-link,mem-full,mummer4\n"
-        "  MAM methods: mam-baseline,mam-lcp,mam-child,mam-suffix-link,mam-full,mummer4\n"
+        "  MEM methods: mem-baseline,mem-lcp,mem-child,mem-suffix-link,mem-full,\n"
+        "               mem-auto-fast,mem-auto-low-memory,\n"
+        "               mem-suffix-link-fast,mem-lcp-fast-auto-skip,\n"
+        "               mem-lcp-fast-skip1,mem-suffix-link-fast-auto-skip,\n"
+        "               mem-lcp-low-memory,mummer4\n"
+        "  MAM methods: mam-baseline,mam-lcp,mam-child,mam-suffix-link,mam-full,\n"
+        "               mam-auto-fast,mam-auto-low-memory,\n"
+        "               mam-suffix-link-fast,mam-lcp-low-memory,mummer4\n"
         "  or --workload right-maximal|mem|mam --reference REF.fa[.gz] [--queries Q.fa[.gz]]\n";
 }
 

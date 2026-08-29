@@ -19,7 +19,7 @@ template <class Index>
 struct CapsBuildResult {
   std::vector<Index> suffix_array;
   // CaPS can expose the complete adjacent-suffix LCP during construction.
-  std::vector<std::uint64_t> lcp;
+  std::vector<Index> lcp;
 };
 
 inline SaBackend ResolveSaBackend(SaBackend requested,
@@ -48,6 +48,36 @@ inline CoordinateWidth ResolveSaCoordinateWidth(
                                std::numeric_limits<std::int32_t>::max());
   return text_symbols <= limit ? CoordinateWidth::kBits32
                                : CoordinateWidth::kBits64;
+}
+
+inline std::uint64_t MaximumSaConstructionTextSymbols(
+    SaBackend backend, CoordinateWidth width) noexcept {
+  if (width == CoordinateWidth::kBits32) {
+    if (backend == SaBackend::kCaps) {
+      return std::numeric_limits<std::uint32_t>::max();
+    }
+    if (backend == SaBackend::kDivsufsort) {
+      return static_cast<std::uint64_t>(
+          std::numeric_limits<std::int32_t>::max());
+    }
+  }
+  if (width == CoordinateWidth::kBits64) {
+    if (backend == SaBackend::kCaps) {
+      return std::numeric_limits<std::uint64_t>::max();
+    }
+    if (backend == SaBackend::kDivsufsort) {
+      return static_cast<std::uint64_t>(
+          std::numeric_limits<std::int64_t>::max());
+    }
+  }
+  return 0;
+}
+
+inline bool SaConstructionCanRepresent(SaBackend backend,
+                                       CoordinateWidth width,
+                                       std::uint64_t text_symbols) noexcept {
+  const auto limit = MaximumSaConstructionTextSymbols(backend, width);
+  return limit != 0 && text_symbols != 0 && text_symbols <= limit;
 }
 
 inline std::uint64_t CapsSubproblemCount(std::uint64_t text_symbols,

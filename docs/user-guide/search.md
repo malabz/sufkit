@@ -75,7 +75,8 @@ The main public values are:
 - `SuffixArrayBuildOptions::sampling_rate` and `--sa-sampling-rate K`;
 - `SuffixArray::SamplingRate()`;
 - `IndexInfo::sa_sampling_rate` and `IndexInfo::suffix_count`;
-- format 1.3 persistence when `K>1`.
+- sampling metadata introduced in format 1.3; current saves use 1.4 codecs,
+  and legacy sampled 1.3 files remain readable.
 
 ISA, LCP, CHILD, and PWL operate in the stored sampled-row domain. The learned
 model budget is relative to the sampled SA payload. Sampling is a final-index
@@ -127,10 +128,13 @@ the same normalized match set as the complete layout.
 | `kSuffixLink` | SA+ISA+LCP | Reuse the interval after deleting one query character |
 | `kFull` | SA+ISA+LCP+CHILD | Suffix-link reuse plus explicit CHILD navigation |
 
-All modes must return the same normalized set. `kAutoSelect` chooses
-suffix-link, then LCP, then baseline according to stored data; it does not
-automatically choose CHILD or full. `lookup_algorithm` independently controls
-root initialization and suffix-link fallback.
+All modes must return the same normalized set. Automatic selection is
+workload-specific: MEM uses LCP with MUMmer-style query-anchor skipping when
+LCP is present, otherwise baseline; reference-MAM uses suffix-link when
+ISA+LCP is present, then LCP, then baseline. It never automatically chooses
+CHILD or full. `lookup_algorithm` independently controls root initialization
+and suffix-link fallback. An explicit suffix-link MEM request remains a
+skip-one ablation unless `skip_multiplier` is supplied.
 
 ### Streaming and bounded results
 

@@ -15,10 +15,13 @@
 #include <vector>
 
 #include "caps_backend.hpp"
+#include "coordinate_storage.hpp"
 #include "divsufsort_backend.hpp"
 #include "genome_reference_internal.hpp"
+#include "lcp_storage.hpp"
 #include "query.hpp"
 #include "reference_data.hpp"
+#include "sa_codec.hpp"
 #include "sequence_compare.hpp"
 #include "serialization.hpp"
 #include "suffix_link_diagnostics.hpp"
@@ -28,63 +31,182 @@ namespace sufkit {
 namespace {
 
 using Sa32 = std::vector<std::int32_t>;
-using Sa64 = std::vector<std::int64_t>;
+using Sa64 = detail::DivSufsort64Buffer;
 using CapsSa32 = std::vector<std::uint32_t>;
 using CapsSa64 = std::vector<std::uint64_t>;
-using SaStorage = std::variant<Sa32, Sa64, CapsSa32, CapsSa64>;
+using Coordinate40 = detail::Coordinate40Storage;
+using Coordinate48 = detail::Coordinate48Storage;
+using RawSaStorage = std::variant<Sa32, Sa64, CapsSa32, CapsSa64>;
+using SaStorage = detail::CoordinateStorage;
 
 using Coordinate32 = std::vector<std::uint32_t>;
 using Coordinate64 = std::vector<std::uint64_t>;
-using CoordinateStorage = std::variant<Coordinate32, Coordinate64>;
+using RawCoordinateStorage = std::variant<Coordinate32, Coordinate64>;
+using CoordinateStorage = detail::CoordinateStorage;
 using BuildClock = std::chrono::steady_clock;
 
+#if defined(SUFKIT_INTERNAL_FORCE_RAW_LCP)
+inline constexpr bool kForceRawLcpForDeveloperBenchmark = true;
+#else
+inline constexpr bool kForceRawLcpForDeveloperBenchmark = false;
+#endif
+
+std::uint64_t SaValue(const SaStorage& storage, std::uint64_t row);
+
+template <class Values>
+inline constexpr bool kIsPackedCoordinateStorage =
+    std::is_same_v<std::decay_t<Values>, Coordinate40> ||
+    std::is_same_v<std::decay_t<Values>, Coordinate48>;
+
 struct CoordinateView {
-  const void* data = nullptr;
+  const void* low = nullptr;
+  const void* high = nullptr;
   std::size_t size = 0;
-  bool is_64_bit = false;
+  CoordinateStorageWidth width = CoordinateStorageWidth::kBits32;
 
   std::uint64_t operator[](std::size_t index) const noexcept {
-    return is_64_bit
-               ? static_cast<const std::uint64_t*>(data)[index]
-               : static_cast<const std::uint32_t*>(data)[index];
+    switch (width) {
+      case CoordinateStorageWidth::kBits32:
+        return static_cast<const std::uint32_t*>(low)[index];
+      case CoordinateStorageWidth::kBits40:
+        return static_cast<const std::uint32_t*>(low)[index] |
+               (static_cast<std::uint64_t>(
+                    static_cast<const std::uint8_t*>(high)[index])
+                << 32U);
+      case CoordinateStorageWidth::kBits48:
+        return static_cast<const std::uint32_t*>(low)[index] |
+               (static_cast<std::uint64_t>(
+                    static_cast<const std::uint16_t*>(high)[index])
+                << 32U);
+      case CoordinateStorageWidth::kBits64:
+        return static_cast<const std::uint64_t*>(low)[index];
+      case CoordinateStorageWidth::kAutoSelect:
+        break;
+    }
+    return 0;
   }
 };
 
-CoordinateView ViewCoordinates(const CoordinateStorage& storage) noexcept {
-  return std::visit(
-      [](const auto& values) {
-        using Value = typename std::decay_t<decltype(values)>::value_type;
-        return CoordinateView{values.data(), values.size(),
-                              sizeof(Value) == sizeof(std::uint64_t)};
-      },
-      storage);
+// Resolve the immutable LCP representation once per query. Raw values and the
+// common (<255) byte-coded case then use direct pointer loads; only an actual
+// overflow marker enters the anchor decoder in LcpStorage.
+struct LcpAccess {
+  const detail::LcpStorage* storage = nullptr;
+  const std::uint32_t* raw32 = nullptr;
+  const std::uint64_t* raw64 = nullptr;
+  const std::uint8_t* primary = nullptr;
+
+  std::uint64_t Exact(std::size_t row,
+                      std::uint64_t suffix_position) const {
+    if (raw32 != nullptr) {
+      return raw32[row];
+    }
+    if (raw64 != nullptr) {
+      return raw64[row];
+    }
+    if (primary != nullptr &&
+        primary[row] < detail::LcpStorage::kByteLimit) {
+      return primary[row];
+    }
+    return storage->Exact(row, suffix_position);
+  }
+
+  bool AtLeast(std::size_t row, std::uint64_t suffix_position,
+               std::uint64_t target) const {
+    if (raw32 != nullptr) {
+      return raw32[row] >= target;
+    }
+    if (raw64 != nullptr) {
+      return raw64[row] >= target;
+    }
+    if (primary != nullptr) {
+      const auto value = primary[row];
+      if (value < detail::LcpStorage::kByteLimit) {
+        return value >= target;
+      }
+      if (target <= detail::LcpStorage::kByteLimit) {
+        return true;
+      }
+    }
+    return storage->AtLeast(row, suffix_position, target);
+  }
+};
+
+struct LcpView {
+  LcpAccess access;
+  const SaStorage* suffix_array = nullptr;
+  std::size_t row_count = 0;
+
+  std::size_t size() const noexcept { return row_count; }
+
+  std::uint64_t operator[](std::size_t row) const {
+    return access.Exact(row, SaValue(*suffix_array, row));
+  }
+};
+
+template <class SaVector>
+struct TypedLcpView {
+  LcpAccess access;
+  const SaVector* suffix_array = nullptr;
+
+  std::uint64_t operator[](std::size_t row) const {
+    return access.Exact(
+        row, static_cast<std::uint64_t>((*suffix_array)[row]));
+  }
+
+  bool AtLeast(std::size_t row, std::uint64_t target) const {
+    return access.AtLeast(
+        row, static_cast<std::uint64_t>((*suffix_array)[row]), target);
+  }
+};
+
+LcpAccess MakeLcpAccess(const detail::LcpStorage& storage) noexcept {
+  LcpAccess result;
+  result.storage = &storage;
+  if (const auto* raw32 = storage.Raw32Values()) {
+    result.raw32 = raw32->data();
+  } else if (const auto* raw64 = storage.Raw64Values()) {
+    result.raw64 = raw64->data();
+  } else if (const auto* primary = storage.BytePrimary()) {
+    result.primary = primary->data();
+  }
+  return result;
 }
 
-std::uint64_t CoordinateSize(const CoordinateStorage& storage) noexcept {
-  return std::visit(
+CoordinateView ViewCoordinates(const CoordinateStorage& storage) noexcept {
+  return storage.Visit(
       [](const auto& values) {
-        return static_cast<std::uint64_t>(values.size());
-      },
-      storage);
+        using Values = std::decay_t<decltype(values)>;
+        if constexpr (std::is_same_v<Values, Coordinate40>) {
+          return CoordinateView{values.low.data(), values.high.data(),
+                                values.size(),
+                                CoordinateStorageWidth::kBits40};
+        } else if constexpr (std::is_same_v<Values, Coordinate48>) {
+          return CoordinateView{values.low.data(), values.high.data(),
+                                values.size(),
+                                CoordinateStorageWidth::kBits48};
+        } else {
+          using Value = typename Values::value_type;
+          return CoordinateView{
+              values.data(), nullptr, values.size(),
+              sizeof(Value) == sizeof(std::uint64_t)
+                  ? CoordinateStorageWidth::kBits64
+                  : CoordinateStorageWidth::kBits32};
+        }
+      });
 }
 
 bool CoordinatesEmpty(const CoordinateStorage& storage) noexcept {
-  return std::visit([](const auto& values) { return values.empty(); }, storage);
+  return storage.Empty();
 }
 
 std::uint64_t CoordinateBytes(const CoordinateStorage& storage) noexcept {
-  return std::visit(
-      [](const auto& values) {
-        return static_cast<std::uint64_t>(values.size()) *
-               sizeof(typename std::decay_t<decltype(values)>::value_type);
-      },
-      storage);
+  return storage.Bytes();
 }
 
-CoordinateStorage CompactCoordinates(std::vector<std::uint64_t>&& values,
-                                     std::uint8_t width,
-                                     ErrorCode error_code,
-                                     const char* label) {
+RawCoordinateStorage CompactRawCoordinates(
+    std::vector<std::uint64_t>&& values, std::uint8_t width,
+    ErrorCode error_code, const char* label) {
   if (width == 64) {
     return Coordinate64(std::move(values));
   }
@@ -103,7 +225,25 @@ CoordinateStorage CompactCoordinates(std::vector<std::uint64_t>&& values,
     }
     compact[index] = static_cast<std::uint32_t>(values[index]);
   }
-  return CoordinateStorage(std::move(compact));
+  return compact;
+}
+
+RawCoordinateStorage CompactRawCoordinates(
+    std::vector<std::uint32_t>&& values, std::uint8_t width,
+    ErrorCode error_code, const char* label) {
+  if (width == 32) {
+    return Coordinate32(std::move(values));
+  }
+  if (width != 64) {
+    throw Error(error_code, std::string("invalid ") + label + " width");
+  }
+  Coordinate64 expanded;
+  try {
+    expanded.assign(values.begin(), values.end());
+  } catch (const std::bad_alloc&) {
+    throw Error(error_code, std::string("cannot allocate ") + label);
+  }
+  return expanded;
 }
 
 constexpr std::array<std::uint8_t, 256> MakeRightMaximalEncodingTable() {
@@ -325,29 +465,35 @@ template <class SaVector>
 SuffixRange RangeFor(const std::vector<std::uint8_t>& text,
                      const SaVector& suffix_array, EncodedView pattern,
                      SaSearchStatistics* statistics = nullptr) {
-  const auto lower = std::lower_bound(
-      suffix_array.begin(), suffix_array.end(), 0, [&](const auto suffix, int) {
-        if (!statistics) {
-          return CompareSuffixPattern(text, static_cast<std::uint64_t>(suffix),
-                                      pattern) < 0;
-        }
-        return CompareSuffixPatternLcp(text, static_cast<std::uint64_t>(suffix),
-                                       pattern, 0, statistics)
-                   .order < 0;
-      });
-  const auto upper = std::upper_bound(
-      lower, suffix_array.end(), 0, [&](int, const auto suffix) {
-        if (!statistics) {
-          return CompareSuffixPattern(text, static_cast<std::uint64_t>(suffix),
-                                      pattern) > 0;
-        }
-        return CompareSuffixPatternLcp(text, static_cast<std::uint64_t>(suffix),
-                                       pattern, 0, statistics)
-                   .order > 0;
-      });
-  return {
-      static_cast<std::uint64_t>(std::distance(suffix_array.begin(), lower)),
-      static_cast<std::uint64_t>(std::distance(suffix_array.begin(), upper))};
+  const auto compare = [&](std::uint64_t row) {
+    const auto suffix = static_cast<std::uint64_t>(
+        suffix_array[static_cast<std::size_t>(row)]);
+    return statistics
+               ? CompareSuffixPatternLcp(text, suffix, pattern, 0, statistics)
+                     .order
+               : CompareSuffixPattern(text, suffix, pattern);
+  };
+  std::uint64_t begin = 0;
+  std::uint64_t end = suffix_array.size();
+  while (begin < end) {
+    const auto middle = begin + (end - begin) / 2;
+    if (compare(middle) < 0) {
+      begin = middle + 1;
+    } else {
+      end = middle;
+    }
+  }
+  const auto lower = begin;
+  end = suffix_array.size();
+  while (begin < end) {
+    const auto middle = begin + (end - begin) / 2;
+    if (compare(middle) <= 0) {
+      begin = middle + 1;
+    } else {
+      end = middle;
+    }
+  }
+  return {lower, begin};
 }
 
 template <class SaVector>
@@ -474,22 +620,123 @@ std::uint64_t GallopingBoundaryFor(const std::vector<std::uint8_t>& text,
 }
 
 std::uint64_t SaValue(const SaStorage& storage, std::uint64_t row) {
-  return std::visit(
-      [row](const auto& suffix_array) -> std::uint64_t {
-        if (row >= suffix_array.size()) {
-          throw Error(ErrorCode::kInvalidInput,
-                      "suffix-array row is out of range");
-        }
-        return static_cast<std::uint64_t>(
-            suffix_array[static_cast<std::size_t>(row)]);
-      },
-      storage);
+  return storage.At(row);
 }
 
 std::uint64_t SaSize(const SaStorage& storage) noexcept {
-  return std::visit(
+  return storage.Size();
+}
+
+CoordinateStorageWidth SaStoredWidth(const SaStorage& storage) noexcept {
+  return storage.Width();
+}
+
+std::uint64_t SaBytes(const SaStorage& storage) noexcept {
+  return storage.Bytes();
+}
+
+CoordinateStorageWidth ResolveProfileStorageWidth(
+    CoordinateStorageWidth requested, SaResourceProfile profile,
+    std::uint64_t symbol_count) {
+  if (profile != SaResourceProfile::kFast &&
+      profile != SaResourceProfile::kLowMemory) {
+    throw Error(ErrorCode::kInvalidInput,
+                "invalid suffix-array resource profile");
+  }
+  if (requested != CoordinateStorageWidth::kAutoSelect) {
+    return detail::ResolveCoordinateStorageWidth(requested, symbol_count);
+  }
+  const auto narrowest = detail::SelectCoordinateStorageWidth(symbol_count);
+  if (profile == SaResourceProfile::kFast &&
+      narrowest != CoordinateStorageWidth::kBits32) {
+    return CoordinateStorageWidth::kBits64;
+  }
+  return narrowest;
+}
+
+CoordinateStorageWidth ResolveAuxiliaryStorageWidth(
+    CoordinateStorageWidth preferred, std::uint64_t symbol_count) {
+  if (symbol_count - 1U <= detail::MaxCoordinateForWidth(preferred)) {
+    return preferred;
+  }
+  return detail::SelectCoordinateStorageWidth(symbol_count);
+}
+
+template <class Source>
+std::uint64_t CheckedSaValue(const Source& source, std::size_t index,
+                             std::uint64_t text_size,
+                             std::uint32_t sampling_rate) {
+  using Value = std::decay_t<decltype(source[index])>;
+  if constexpr (std::is_integral_v<Value> && std::is_signed_v<Value>) {
+    if (source[index] < 0) {
+      throw Error(ErrorCode::kBuildFailure,
+                  "suffix array contains a negative position");
+    }
+  }
+  const auto value = static_cast<std::uint64_t>(source[index]);
+  if (value >= text_size || value % sampling_rate != 0) {
+    throw Error(ErrorCode::kBuildFailure,
+                "suffix array contains an invalid sampled position");
+  }
+  return value;
+}
+
+SaStorage RepackSuffixArray(RawSaStorage&& storage,
+                            CoordinateStorageWidth width,
+                            std::uint64_t text_size,
+                            std::uint32_t sampling_rate) {
+  const auto count = std::visit(
       [](const auto& values) {
         return static_cast<std::uint64_t>(values.size());
+      },
+      storage);
+  const auto expected_count =
+      text_size == 0 ? 0 : 1 + (text_size - 1) / sampling_rate;
+  if (count != expected_count) {
+    throw Error(ErrorCode::kBuildFailure,
+                "suffix-array length disagrees with sampling metadata");
+  }
+  std::vector<bool> seen(static_cast<std::size_t>(count), false);
+  const auto validate = [&](std::uint64_t value) {
+    const auto sample = value / sampling_rate;
+    if (sample >= count || seen[static_cast<std::size_t>(sample)]) {
+      throw Error(ErrorCode::kBuildFailure,
+                  "suffix array is not a sampled permutation");
+    }
+    seen[static_cast<std::size_t>(sample)] = true;
+  };
+
+  return std::visit(
+      [&](auto& source) -> SaStorage {
+        using Source = std::decay_t<decltype(source)>;
+        for (std::size_t index = 0; index < source.size(); ++index) {
+          validate(CheckedSaValue(source, index, text_size, sampling_rate));
+        }
+        // The sampled-permutation bitmap is no longer needed once every row
+        // is validated. Release it before a 64-bit result allocates the
+        // split40/split48 high plane, preserving the 8N+high down-pack peak.
+        std::vector<bool>{}.swap(seen);
+        if constexpr (std::is_same_v<Source, CapsSa32>) {
+          return SaStorage::FromUInt32(std::move(source), width, text_size,
+                                      ErrorCode::kBuildFailure,
+                                      "suffix array");
+        } else if constexpr (std::is_same_v<Source, CapsSa64>) {
+          return SaStorage::FromUInt64(std::move(source), width, text_size,
+                                      ErrorCode::kBuildFailure,
+                                      "suffix array");
+        } else if constexpr (std::is_same_v<Source, Sa32>) {
+          CapsSa32 values(source.size());
+          for (std::size_t index = 0; index < source.size(); ++index) {
+            values[index] = static_cast<std::uint32_t>(source[index]);
+          }
+          return SaStorage::FromUInt32(std::move(values), width, text_size,
+                                      ErrorCode::kBuildFailure,
+                                      "suffix array");
+        } else {
+          return SaStorage::FromDivSufsort64(
+              std::move(source), width, text_size, ErrorCode::kBuildFailure,
+              "suffix array");
+        }
       },
       storage);
 }
@@ -544,12 +791,12 @@ void SampleSaLcpInPlace(SaVector& values, LcpVector& lcp,
   lcp.shrink_to_fit();
 }
 
-void SampleSa(SaStorage& storage, std::uint32_t sampling_rate) {
+void SampleSa(RawSaStorage& storage, std::uint32_t sampling_rate) {
   std::visit([&](auto& values) { SampleSaInPlace(values, sampling_rate); },
              storage);
 }
 
-void SampleSaLcp(SaStorage& storage, CoordinateStorage& lcp,
+void SampleSaLcp(RawSaStorage& storage, RawCoordinateStorage& lcp,
                  std::uint32_t sampling_rate) {
   std::visit(
       [&](auto& values, auto& lcp_values) {
@@ -583,9 +830,15 @@ std::vector<Coordinate> BuildIsaFor(const SaVector& sa,
   }
   std::vector<std::thread> workers;
   workers.reserve(static_cast<std::size_t>(thread_count));
+  const auto rows_per_worker = count / thread_count;
+  const auto workers_with_extra_row = count % thread_count;
   for (std::uint64_t worker = 0; worker < thread_count; ++worker) {
-    const auto begin = count * worker / thread_count;
-    const auto end = count * (worker + 1) / thread_count;
+    // Quotient/remainder partitioning avoids overflowing count * worker for
+    // very large coordinate domains and still covers [0, count) exactly.
+    const auto begin = rows_per_worker * worker +
+                       std::min(worker, workers_with_extra_row);
+    const auto end = begin + rows_per_worker +
+                     (worker < workers_with_extra_row ? 1U : 0U);
     workers.emplace_back([&, begin, end] {
       for (auto row = begin; row < end; ++row) {
         const auto suffix = static_cast<std::uint64_t>(
@@ -604,21 +857,25 @@ std::vector<Coordinate> BuildIsaFor(const SaVector& sa,
 CoordinateStorage BuildIsa(const SaStorage& sa, std::uint64_t text_size,
                            std::uint32_t sampling_rate,
                            std::uint32_t requested_threads,
-                           std::uint8_t coordinate_width) {
-  return std::visit(
+                           CoordinateStorageWidth storage_width) {
+  const auto count = sa.Size();
+  const bool source_fits_32 =
+      count - 1U <= std::numeric_limits<std::uint32_t>::max();
+  return sa.Visit(
       [&](const auto& values) -> CoordinateStorage {
-        if (coordinate_width == 32) {
-          return BuildIsaFor<std::uint32_t>(values, text_size, sampling_rate,
-                                            requested_threads);
+        if (source_fits_32) {
+          auto isa = BuildIsaFor<std::uint32_t>(
+              values, text_size, sampling_rate, requested_threads);
+          return CoordinateStorage::FromUInt32(
+              std::move(isa), storage_width, count,
+              ErrorCode::kBuildFailure, "inverse suffix array");
         }
-        if (coordinate_width == 64) {
-          return BuildIsaFor<std::uint64_t>(values, text_size, sampling_rate,
-                                            requested_threads);
-        }
-        throw Error(ErrorCode::kBuildFailure,
-                    "invalid inverse suffix-array width");
-      },
-      sa);
+        auto isa = BuildIsaFor<std::uint64_t>(
+            values, text_size, sampling_rate, requested_threads);
+        return CoordinateStorage::FromUInt64(
+            std::move(isa), storage_width, count,
+            ErrorCode::kBuildFailure, "inverse suffix array");
+      });
 }
 
 template <class LcpCoordinate, class SaVector, class IsaVector>
@@ -654,24 +911,94 @@ std::vector<LcpCoordinate> BuildLcpFor(
   return lcp;
 }
 
-CoordinateStorage BuildLcp(const std::vector<std::uint8_t>& text,
-                           const SaStorage& sa,
-                           const CoordinateStorage& isa,
-                           std::uint32_t sampling_rate,
-                           std::uint8_t lcp_width) {
-  return std::visit(
-      [&](const auto& sa_values, const auto& isa_values) -> CoordinateStorage {
-        if (lcp_width == 32) {
-          return BuildLcpFor<std::uint32_t>(text, sa_values, isa_values,
-                                            sampling_rate);
-        }
-        if (lcp_width == 64) {
-          return BuildLcpFor<std::uint64_t>(text, sa_values, isa_values,
-                                            sampling_rate);
-        }
-        throw Error(ErrorCode::kBuildFailure, "invalid LCP width");
+RawCoordinateStorage BuildLcp(const std::vector<std::uint8_t>& text,
+                              const SaStorage& sa,
+                              const CoordinateStorage& isa,
+                              std::uint32_t sampling_rate,
+                              std::uint8_t lcp_width) {
+  return sa.Visit([&](const auto& sa_values) {
+    return isa.Visit(
+        [&](const auto& isa_values) -> RawCoordinateStorage {
+          if (lcp_width == 32) {
+            return BuildLcpFor<std::uint32_t>(text, sa_values, isa_values,
+                                              sampling_rate);
+          }
+          if (lcp_width == 64) {
+            return BuildLcpFor<std::uint64_t>(text, sa_values, isa_values,
+                                              sampling_rate);
+          }
+          throw Error(ErrorCode::kBuildFailure, "invalid LCP width");
+        });
+  });
+}
+
+detail::LcpStorage BuildByteCodedLcpDirect(
+    const std::vector<std::uint8_t>& text, const SaStorage& sa,
+    const CoordinateStorage& isa, std::uint32_t sampling_rate,
+    std::uint8_t lcp_width) {
+  return sa.Visit([&](const auto& sa_values) {
+    return isa.Visit([&](const auto& isa_values) {
+      return detail::LcpStorage::BuildByteCodedDirect(
+          text.data(), text.size(), detail::IntegerArrayView(sa_values),
+          detail::IntegerArrayView(isa_values), sampling_rate, lcp_width,
+          ErrorCode::kBuildFailure);
+    });
+  });
+}
+
+LcpView ViewLcp(const detail::LcpStorage& lcp,
+                const SaStorage& suffix_array) noexcept {
+  return LcpView{MakeLcpAccess(lcp), &suffix_array,
+                 static_cast<std::size_t>(lcp.Size())};
+}
+
+detail::LcpStorage FinalizeLcpStorage(RawCoordinateStorage&& raw_lcp,
+                                      const CoordinateStorage& isa,
+                                      std::uint32_t sampling_rate,
+                                      std::uint8_t lcp_width,
+                                      std::uint64_t text_symbols,
+                                      bool require_byte_coded,
+                                      bool require_raw) {
+  if (std::visit([](const auto& values) { return values.empty(); }, raw_lcp)) {
+    return {};
+  }
+  const auto retain_raw = [&]() -> detail::LcpStorage {
+    return std::visit(
+        [&](auto& values) -> detail::LcpStorage {
+          using Values = std::decay_t<decltype(values)>;
+          if constexpr (std::is_same_v<Values, Coordinate32>) {
+            return detail::LcpStorage::FromRaw32(
+                std::move(values), sampling_rate, ErrorCode::kBuildFailure);
+          } else {
+            return detail::LcpStorage::FromRaw64(
+                std::move(values), sampling_rate, ErrorCode::kBuildFailure);
+          }
+        },
+        raw_lcp);
+  };
+  if (require_raw) {
+    return retain_raw();
+  }
+  detail::LcpStorage byte_coded = std::visit(
+      [&](const auto& lcp_values) {
+        return isa.Visit([&](const auto& isa_values) {
+          return detail::LcpStorage::BuildByteCoded(
+              detail::IntegerArrayView(lcp_values),
+              detail::IntegerArrayView(isa_values), sampling_rate, lcp_width,
+              text_symbols, ErrorCode::kBuildFailure);
+        });
       },
-      sa, isa);
+      raw_lcp);
+  const auto raw_bytes = std::visit(
+      [](const auto& values) {
+        return static_cast<std::uint64_t>(values.size()) *
+               sizeof(typename std::decay_t<decltype(values)>::value_type);
+      },
+      raw_lcp);
+  if (require_byte_coded || byte_coded.SerializedDataBytes() < raw_bytes) {
+    return byte_coded;
+  }
+  return retain_raw();
 }
 
 struct LearnedSaIndex {
@@ -685,10 +1012,17 @@ struct LearnedSaIndex {
 
   bool Empty() const noexcept { return anchor_x.empty(); }
 
-  std::uint64_t SerializedBytes(std::uint8_t coordinate_width) const noexcept {
-    const auto row_bytes = static_cast<std::uint64_t>(coordinate_width / 8);
-    return 36ULL +
+  std::uint64_t SerializedBytes() const noexcept {
+    const auto row_bytes =
+        static_cast<std::uint64_t>(anchor_y.Width()) / 8U;
+    constexpr std::uint64_t kCoordinateCodecHeaderBytes = 56;
+    return 36ULL + kCoordinateCodecHeaderBytes +
            static_cast<std::uint64_t>(anchor_x.size()) * (8ULL + row_bytes);
+  }
+
+  std::uint64_t ResidentBytes() const noexcept {
+    return static_cast<std::uint64_t>(anchor_x.size()) * 8ULL +
+           anchor_y.Bytes();
   }
 
   std::uint64_t KeyFor(EncodedView pattern) const {
@@ -736,7 +1070,7 @@ struct LearnedSaIndex {
 };
 
 std::uint32_t ChooseBucketBits(std::uint64_t suffix_count,
-                               std::uint8_t coordinate_width,
+                               CoordinateStorageWidth storage_width,
                                const LearnedSaOptions& options) {
   if (options.k == 0 || options.k > 31) {
     throw Error(ErrorCode::kInvalidInput, "learned SA k must be in [1,31]");
@@ -754,7 +1088,7 @@ std::uint32_t ChooseBucketBits(std::uint64_t suffix_count,
                 "learned SA memory budget must be greater than zero");
   }
   const auto coordinate_bytes =
-      static_cast<std::uint64_t>(coordinate_width / 8);
+      static_cast<std::uint64_t>(storage_width) / 8U;
   const auto sa_bytes =
       static_cast<WideUnsigned>(suffix_count) * coordinate_bytes;
   const auto budget = static_cast<std::uint64_t>(std::min<WideUnsigned>(
@@ -782,30 +1116,35 @@ LearnedSaIndex BuildLearnedIndex(const detail::ReferenceData& reference,
                                  const SaStorage& suffix_array,
                                  const CoordinateStorage& isa,
                                  std::uint32_t sampling_rate,
-                                 std::uint8_t coordinate_width,
+                                 CoordinateStorageWidth storage_width,
                                  const LearnedSaOptions& options) {
   LearnedSaIndex model;
   model.k = options.k;
   const auto suffix_count = SaSize(suffix_array);
-  model.bucket_bits = ChooseBucketBits(suffix_count, coordinate_width, options);
+  if (suffix_count == std::numeric_limits<std::uint64_t>::max()) {
+    throw Error(ErrorCode::kBuildFailure,
+                "learned SA coordinate domain overflows");
+  }
+  const auto model_width = ResolveAuxiliaryStorageWidth(
+      storage_width, suffix_count + 1U);
+  model.bucket_bits = ChooseBucketBits(suffix_count, model_width, options);
   model.memory_overhead_basis_points = options.memory_overhead_basis_points;
   const auto bucket_count = 1ULL << model.bucket_bits;
-  const auto coordinate_max_size =
-      coordinate_width == 32 ? Coordinate32().max_size()
-                             : Coordinate64().max_size();
+  const auto coordinate_max_size = Coordinate64().max_size();
   if (bucket_count > coordinate_max_size - 1) {
     throw Error(ErrorCode::kInvalidInput,
                 "learned SA bucket count is too large");
   }
+  RawCoordinateStorage raw_anchor_y = Coordinate32{};
   try {
     model.anchor_x.assign(static_cast<std::size_t>(bucket_count + 1),
                           std::numeric_limits<std::uint64_t>::max());
-    if (coordinate_width == 32) {
-      model.anchor_y = Coordinate32(
+    if (model_width == CoordinateStorageWidth::kBits32) {
+      raw_anchor_y = Coordinate32(
           static_cast<std::size_t>(bucket_count + 1),
           static_cast<std::uint32_t>(suffix_count));
     } else {
-      model.anchor_y = Coordinate64(
+      raw_anchor_y = Coordinate64(
           static_cast<std::size_t>(bucket_count + 1), suffix_count);
     }
   } catch (const std::bad_alloc&) {
@@ -909,7 +1248,22 @@ LearnedSaIndex BuildLearnedIndex(const detail::ReferenceData& reference,
           }
         }
       },
-      model.anchor_y);
+      raw_anchor_y);
+  model.anchor_y = std::visit(
+      [&](auto& values) -> CoordinateStorage {
+        using Values = std::decay_t<decltype(values)>;
+        const auto domain = suffix_count + 1U;
+        if constexpr (std::is_same_v<Values, Coordinate32>) {
+          return CoordinateStorage::FromUInt32(
+              std::move(values), model_width, domain,
+              ErrorCode::kBuildFailure, "learned SA anchors");
+        } else {
+          return CoordinateStorage::FromUInt64(
+              std::move(values), model_width, domain,
+              ErrorCode::kBuildFailure, "learned SA anchors");
+        }
+      },
+      raw_anchor_y);
   return model;
 }
 
@@ -973,19 +1327,71 @@ std::vector<ChildCoordinate> BuildChildFor(const LcpVector& lcp) {
   return child;
 }
 
-CoordinateStorage BuildChild(const CoordinateStorage& lcp,
-                             std::uint8_t coordinate_width) {
+CoordinateStorage BuildChild(const RawCoordinateStorage& lcp,
+                             CoordinateStorageWidth storage_width) {
   return std::visit(
       [&](const auto& lcp_values) -> CoordinateStorage {
-        if (coordinate_width == 32) {
-          return BuildChildFor<std::uint32_t>(lcp_values);
+        const auto count = static_cast<std::uint64_t>(lcp_values.size());
+        if (count == std::numeric_limits<std::uint64_t>::max()) {
+          throw Error(ErrorCode::kBuildFailure,
+                      "CHILD coordinate domain overflows");
         }
-        if (coordinate_width == 64) {
-          return BuildChildFor<std::uint64_t>(lcp_values);
+        if (count <= std::numeric_limits<std::uint32_t>::max()) {
+          auto child = BuildChildFor<std::uint32_t>(lcp_values);
+          const auto domain = static_cast<std::uint64_t>(child.size()) + 1U;
+          return CoordinateStorage::FromUInt32(
+              std::move(child), storage_width, domain,
+              ErrorCode::kBuildFailure, "CHILD");
         }
-        throw Error(ErrorCode::kBuildFailure, "invalid CHILD width");
+        auto child = BuildChildFor<std::uint64_t>(lcp_values);
+        const auto domain = static_cast<std::uint64_t>(child.size()) + 1U;
+        return CoordinateStorage::FromUInt64(
+            std::move(child), storage_width, domain,
+            ErrorCode::kBuildFailure, "CHILD");
       },
       lcp);
+}
+
+CoordinateStorage BuildChild(const detail::LcpStorage& lcp,
+                             const SaStorage& suffix_array,
+                             CoordinateStorageWidth storage_width,
+                             ErrorCode error_code) {
+  const auto values = ViewLcp(lcp, suffix_array);
+  if (lcp.Size() == std::numeric_limits<std::uint64_t>::max()) {
+    throw Error(error_code, "CHILD coordinate domain overflows");
+  }
+  if (lcp.Size() <= std::numeric_limits<std::uint32_t>::max()) {
+    auto child = BuildChildFor<std::uint32_t>(values);
+    const auto domain = static_cast<std::uint64_t>(child.size()) + 1U;
+    return CoordinateStorage::FromUInt32(
+        std::move(child), storage_width, domain, error_code, "CHILD");
+  }
+  auto child = BuildChildFor<std::uint64_t>(values);
+  const auto domain = static_cast<std::uint64_t>(child.size()) + 1U;
+  return CoordinateStorage::FromUInt64(
+      std::move(child), storage_width, domain, error_code, "CHILD");
+}
+
+bool CoordinatesEqual(const CoordinateStorage& left,
+                      const CoordinateStorage& right) {
+  if (left.Size() != right.Size()) {
+    return false;
+  }
+  for (std::uint64_t index = 0; index < left.Size(); ++index) {
+    if (left.At(index) != right.At(index)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+void ValidateLcpAgainstSuffixArray(const detail::LcpStorage& lcp,
+                                   const SaStorage& suffix_array,
+                                   std::uint64_t text_symbols) {
+  suffix_array.Visit([&](const auto& values) {
+    lcp.Validate(detail::IntegerArrayView(values), text_symbols,
+                 ErrorCode::kCorruptIndex);
+  });
 }
 
 std::vector<std::uint8_t> EncodeRightMaximalQuery(std::string_view query) {
@@ -1034,6 +1440,43 @@ bool MamMatchLess(const MamMatch& left, const MamMatch& right) {
                   right.reference_position, right.length, right.strand);
 }
 
+bool MemMatchEqual(const MemMatch& left, const MemMatch& right) {
+  return std::tie(left.query_position, left.sequence_id,
+                  left.reference_position, left.length, left.strand) ==
+         std::tie(right.query_position, right.sequence_id,
+                  right.reference_position, right.length, right.strand);
+}
+
+bool MamMatchEqual(const MamMatch& left, const MamMatch& right) {
+  return std::tie(left.query_position, left.sequence_id,
+                  left.reference_position, left.length, left.strand) ==
+         std::tie(right.query_position, right.sequence_id,
+                  right.reference_position, right.length, right.strand);
+}
+
+void ValidateStrandMode(StrandMode strands) {
+  switch (strands) {
+    case StrandMode::kForward:
+    case StrandMode::kReverseComplement:
+    case StrandMode::kBoth:
+      return;
+  }
+  throw Error(ErrorCode::kInvalidInput, "invalid suffix-array strand mode");
+}
+
+void ValidateSaAcceleration(SaAcceleration acceleration) {
+  switch (acceleration) {
+    case SaAcceleration::kNone:
+    case SaAcceleration::kLcp:
+    case SaAcceleration::kLcpChild:
+    case SaAcceleration::kLcpSuffixLink:
+    case SaAcceleration::kFull:
+      return;
+  }
+  throw Error(ErrorCode::kInvalidInput,
+              "invalid suffix-array acceleration");
+}
+
 RightMaximalSearchAlgorithm AsRightMaximalAlgorithm(
     MemSearchAlgorithm algorithm) {
   static_assert(static_cast<std::uint8_t>(MemSearchAlgorithm::kFull) ==
@@ -1043,6 +1486,7 @@ RightMaximalSearchAlgorithm AsRightMaximalAlgorithm(
 }
 
 void PrepareMemSearch(const MemOptions& options) {
+  ValidateStrandMode(options.strands);
   if (options.min_length == 0) {
     throw Error(ErrorCode::kInvalidInput,
                 "MEM minimum length must be greater than zero");
@@ -1054,6 +1498,7 @@ void PrepareMemSearch(const MemOptions& options) {
 }
 
 void PrepareMamSearch(const MamOptions& options) {
+  ValidateStrandMode(options.strands);
   if (options.min_length == 0) {
     throw Error(ErrorCode::kInvalidInput,
                 "reference-MAM minimum length must be greater than zero");
@@ -1061,6 +1506,7 @@ void PrepareMamSearch(const MamOptions& options) {
 }
 
 void PrepareRightMaximalSearch(const RightMaximalOptions& options) {
+  ValidateStrandMode(options.strands);
   if (options.min_length == 0) {
     throw Error(
         ErrorCode::kInvalidInput,
@@ -1079,11 +1525,7 @@ IndexInfo BuiltInfo(const detail::ReferenceData& data,
                     const LearnedSaIndex& learned) {
   IndexInfo info;
   info.kind = IndexKind::kSuffixArray;
-  info.format_version =
-      sampling_rate > 1 ? "1.3"
-      : !learned.Empty()
-          ? "1.2"
-          : (acceleration == SaAcceleration::kNone ? "1.0" : "1.1");
+  info.format_version = "1.4";
   info.library_version = SUFKIT_VERSION_STRING;
   info.backend = detail::StoredBackendName(backend);
   info.backend_signature = detail::StoredBackendSignature(backend);
@@ -1099,7 +1541,7 @@ IndexInfo BuiltInfo(const detail::ReferenceData& data,
   info.auxiliary_bytes = auxiliary_bytes;
   if (!learned.Empty()) {
     info.sa_lookup_acceleration = SaLookupAcceleration::kSaplingPwl;
-    info.learned_index_bytes = learned.SerializedBytes(width);
+    info.learned_index_bytes = learned.SerializedBytes();
     info.learned_k = learned.k;
     info.learned_bucket_bits = learned.bucket_bits;
     info.learned_memory_overhead_basis_points =
@@ -1225,7 +1667,13 @@ void ReadIntegerPayload(std::istream& input, Values& values,
 
 void WriteLearnedIndex(std::ostream& output, const LearnedSaIndex& model,
                        std::uint8_t coordinate_width,
-                       std::uint64_t fingerprint) {
+                       std::uint64_t fingerprint,
+                       std::uint64_t suffix_count) {
+  if (suffix_count == std::numeric_limits<std::uint64_t>::max()) {
+    throw Error(ErrorCode::kBuildFailure,
+                "learned SA coordinate domain overflows");
+  }
+  coordinate_width = static_cast<std::uint8_t>(model.anchor_y.Width());
   detail::WriteU32(output, LearnedSaIndex::kModelId);
   detail::WriteU32(output, model.k);
   detail::WriteU32(output, model.bucket_bits);
@@ -1234,12 +1682,8 @@ void WriteLearnedIndex(std::ostream& output, const LearnedSaIndex& model,
   detail::WriteU64(output, model.anchor_x.size());
   detail::WriteU64(output, fingerprint);
   WriteIntegerPayload(output, model.anchor_x, 64, "learned SA anchor keys");
-  std::visit(
-      [&](const auto& rows) {
-        WriteIntegerPayload(output, rows, coordinate_width,
-                            "learned SA anchor rows");
-      },
-      model.anchor_y);
+  detail::WriteCoordinateSectionV14(output, model.anchor_y,
+                                    suffix_count + 1U);
   if (!output) {
     throw Error(ErrorCode::kIoError, "failed to write learned SA index");
   }
@@ -1247,6 +1691,10 @@ void WriteLearnedIndex(std::ostream& output, const LearnedSaIndex& model,
 
 LearnedSaIndex ReadLearnedIndex(const detail::ParsedContainer& container,
                                 std::uint64_t suffix_count) {
+  if (suffix_count == std::numeric_limits<std::uint64_t>::max()) {
+    throw Error(ErrorCode::kCorruptIndex,
+                "learned SA coordinate domain overflows");
+  }
   auto input =
       detail::OpenSectionStream(container, detail::SectionType::kLearnedSa);
   if (detail::ReadU32(*input, "learned SA model ID") !=
@@ -1265,28 +1713,61 @@ LearnedSaIndex ReadLearnedIndex(const detail::ParsedContainer& container,
   const auto fingerprint = detail::ReadU64(*input, "learned SA fingerprint");
   if (container.spec.format_minor < 2 || model.k == 0 || model.k > 31 ||
       model.bucket_bits > 2U * model.k || model.bucket_bits > 31 ||
-      coordinate_width != container.spec.coordinate_width ||
+      (container.spec.format_minor < 4 &&
+       coordinate_width != container.spec.coordinate_width) ||
+      (container.spec.format_minor < 4 && coordinate_width != 32 &&
+       coordinate_width != 64) ||
+      (container.spec.format_minor >= 4 && coordinate_width != 32 &&
+       coordinate_width != 40 && coordinate_width != 48 &&
+       coordinate_width != 64) ||
       anchor_count != (1ULL << model.bucket_bits) + 1 ||
       fingerprint != container.spec.fingerprint ||
-      anchor_count > (coordinate_width == 32 ? Coordinate32().max_size()
-                                             : Coordinate64().max_size())) {
+      anchor_count > Coordinate64().max_size()) {
     throw Error(ErrorCode::kCorruptIndex, "invalid learned SA header");
   }
   model.anchor_x.resize(static_cast<std::size_t>(anchor_count));
-  if (coordinate_width == 32) {
-    model.anchor_y = Coordinate32(static_cast<std::size_t>(anchor_count));
-  } else {
-    model.anchor_y = Coordinate64(static_cast<std::size_t>(anchor_count));
-  }
   ReadIntegerPayload(*input, model.anchor_x, 64,
                      "learned SA anchor keys");
-  std::visit(
-      [&](auto& rows) {
-        ReadIntegerPayload(*input, rows,
-                           static_cast<std::uint8_t>(coordinate_width),
-                           "learned SA anchor rows");
-      },
-      model.anchor_y);
+  const auto anchor_domain = suffix_count + 1U;
+  if (container.spec.format_minor >= 4) {
+    model.anchor_y = detail::ReadCoordinateSectionV14(
+        *input, anchor_count, anchor_domain, "learned SA anchors");
+    if (static_cast<std::uint8_t>(model.anchor_y.Width()) !=
+        coordinate_width) {
+      throw Error(ErrorCode::kCorruptIndex,
+                  "learned SA coordinate codec disagrees with its header");
+    }
+  } else {
+    RawCoordinateStorage raw_anchor_y =
+        coordinate_width == 32
+            ? RawCoordinateStorage(
+                  Coordinate32(static_cast<std::size_t>(anchor_count)))
+            : RawCoordinateStorage(
+                  Coordinate64(static_cast<std::size_t>(anchor_count)));
+    std::visit(
+        [&](auto& rows) {
+          ReadIntegerPayload(*input, rows,
+                             static_cast<std::uint8_t>(coordinate_width),
+                             "learned SA anchor rows");
+        },
+        raw_anchor_y);
+    model.anchor_y = std::visit(
+        [&](auto& rows) -> CoordinateStorage {
+          using Rows = std::decay_t<decltype(rows)>;
+          if constexpr (std::is_same_v<Rows, Coordinate32>) {
+            return CoordinateStorage::FromUInt32(
+                std::move(rows), CoordinateStorageWidth::kBits32,
+                anchor_domain, ErrorCode::kCorruptIndex,
+                "learned SA anchors");
+          } else {
+            return CoordinateStorage::FromUInt64(
+                std::move(rows), CoordinateStorageWidth::kBits64,
+                anchor_domain, ErrorCode::kCorruptIndex,
+                "learned SA anchors");
+          }
+        },
+        raw_anchor_y);
+  }
   if (input->peek() != std::char_traits<char>::eof()) {
     throw Error(ErrorCode::kCorruptIndex,
                 "learned SA section has trailing bytes");
@@ -1307,22 +1788,7 @@ LearnedSaIndex ReadLearnedIndex(const detail::ParsedContainer& container,
   return model;
 }
 
-void WriteIntegerVector(std::ostream& output,
-                        const CoordinateStorage& storage,
-                        std::uint8_t width) {
-  detail::WriteU64(output, CoordinateSize(storage));
-  output.put(static_cast<char>(width));
-  std::visit(
-      [&](const auto& values) {
-        WriteIntegerPayload(output, values, width, "auxiliary index data");
-      },
-      storage);
-  if (!output) {
-    throw Error(ErrorCode::kIoError, "failed to write auxiliary index data");
-  }
-}
-
-CoordinateStorage ReadIntegerVector(
+RawCoordinateStorage ReadLegacyIntegerVector(
     const detail::ParsedContainer& container, detail::SectionType type,
     std::uint64_t expected_count, std::uint8_t expected_width,
     const char* label) {
@@ -1335,20 +1801,44 @@ CoordinateStorage ReadIntegerVector(
     throw Error(ErrorCode::kCorruptIndex,
                 std::string("invalid ") + label + " header");
   }
-  CoordinateStorage storage =
+  RawCoordinateStorage raw_storage =
       expected_width == 32
-          ? CoordinateStorage(Coordinate32(static_cast<std::size_t>(count)))
-          : CoordinateStorage(Coordinate64(static_cast<std::size_t>(count)));
+          ? RawCoordinateStorage(
+                Coordinate32(static_cast<std::size_t>(count)))
+          : RawCoordinateStorage(
+                Coordinate64(static_cast<std::size_t>(count)));
   std::visit(
       [&](auto& values) {
         ReadIntegerPayload(*input, values, expected_width, label);
       },
-      storage);
+      raw_storage);
   if (input->peek() != std::char_traits<char>::eof()) {
     throw Error(ErrorCode::kCorruptIndex,
                 std::string(label) + " section has trailing bytes");
   }
-  return storage;
+  return raw_storage;
+}
+
+CoordinateStorage ReadLegacyCoordinateVector(
+    const detail::ParsedContainer& container, detail::SectionType type,
+    std::uint64_t expected_count, std::uint8_t expected_width,
+    std::uint64_t symbol_count, const char* label) {
+  auto raw_storage = ReadLegacyIntegerVector(
+      container, type, expected_count, expected_width, label);
+  return std::visit(
+      [&](auto& values) -> CoordinateStorage {
+        using Values = std::decay_t<decltype(values)>;
+        if constexpr (std::is_same_v<Values, Coordinate32>) {
+          return CoordinateStorage::FromUInt32(
+              std::move(values), CoordinateStorageWidth::kBits32,
+              symbol_count, ErrorCode::kCorruptIndex, label);
+        } else {
+          return CoordinateStorage::FromUInt64(
+              std::move(values), CoordinateStorageWidth::kBits64,
+              symbol_count, ErrorCode::kCorruptIndex, label);
+        }
+      },
+      raw_storage);
 }
 
 }  // namespace
@@ -1358,7 +1848,8 @@ struct SuffixArray::Impl {
   std::vector<std::uint8_t> text;
   SaStorage suffix_array;
   CoordinateStorage isa;
-  CoordinateStorage lcp;
+  detail::LcpStorage lcp;
+  LcpAccess lcp_access;
   CoordinateStorage child;
   LearnedSaIndex learned;
   SaAcceleration acceleration = SaAcceleration::kNone;
@@ -1367,28 +1858,28 @@ struct SuffixArray::Impl {
   IndexInfo index_info;
 
   bool HasIsa() const noexcept { return !CoordinatesEmpty(isa); }
-  bool HasLcp() const noexcept { return !CoordinatesEmpty(lcp); }
+  bool HasLcp() const noexcept { return !lcp.Empty(); }
   bool HasChild() const noexcept { return !CoordinatesEmpty(child); }
   bool HasLearned() const noexcept { return !learned.Empty(); }
 
+  void RefreshLcpAccess() noexcept { lcp_access = MakeLcpAccess(lcp); }
+
   SuffixRange BinaryRange(EncodedView pattern,
                           SaSearchStatistics* statistics = nullptr) const {
-    return std::visit(
+    return suffix_array.Visit(
         [&](const auto& values) {
           return RangeFor(text, values, pattern, statistics);
-        },
-        suffix_array);
+        });
   }
 
   SuffixRange LcpBinaryRange(EncodedView pattern,
                              SaSearchStatistics* statistics = nullptr) const {
-    return std::visit(
+    return suffix_array.Visit(
         [&](const auto& values) {
           return LcpRangeFor(text, values, pattern,
                              {0, static_cast<std::uint64_t>(values.size())},
                              statistics);
-        },
-        suffix_array);
+        });
   }
 
   SuffixRange LearnedRange(EncodedView pattern,
@@ -1408,7 +1899,7 @@ struct SuffixArray::Impl {
     const EncodedView prefix(pattern.data, learned.k);
     const auto prediction =
         learned.Predict(learned.KeyFor(prefix), SaSize(suffix_array));
-    const auto prefix_range = std::visit(
+    const auto prefix_range = suffix_array.Visit(
         [&](const auto& values) {
           const SuffixRange whole{0, static_cast<std::uint64_t>(values.size())};
           const auto lower = GallopingBoundaryFor(
@@ -1417,8 +1908,7 @@ struct SuffixArray::Impl {
               GallopingBoundaryFor(text, values, prefix, {lower, whole.end},
                                    prediction, true, statistics);
           return SuffixRange{lower, upper};
-        },
-        suffix_array);
+        });
     if (statistics) {
       const auto error = prediction > prefix_range.begin
                              ? prediction - prefix_range.begin
@@ -1431,11 +1921,10 @@ struct SuffixArray::Impl {
     if (prefix_range.Empty() || pattern.size() == learned.k) {
       return prefix_range;
     }
-    return std::visit(
+    return suffix_array.Visit(
         [&](const auto& values) {
           return LcpRangeFor(text, values, pattern, prefix_range, statistics);
-        },
-        suffix_array);
+        });
   }
 
   std::uint8_t SymbolAt(std::uint64_t row, std::uint64_t depth) const {
@@ -1481,7 +1970,8 @@ struct SuffixArray::Impl {
     }
     const auto none = rows;
     const auto child_values = ViewCoordinates(child);
-    const auto lcp_values = ViewCoordinates(lcp);
+    const LcpView lcp_values{lcp_access, &suffix_array,
+                            static_cast<std::size_t>(lcp.Size())};
     auto boundary = child_values[static_cast<std::size_t>(range.end - 1)];
     if (boundary == none || boundary <= range.begin || boundary >= range.end) {
       boundary = child_values[static_cast<std::size_t>(range.begin)];
@@ -1612,16 +2102,66 @@ struct SuffixArray::Impl {
     return result;
   }
 
+  bool IsReferencePrefixUnique(std::uint64_t row, std::uint64_t global,
+                               std::uint64_t length) const {
+    if (!HasLcp()) {
+      const EncodedView pattern(
+          text.data() + static_cast<std::size_t>(global),
+          static_cast<std::size_t>(length));
+      return BinaryRange(pattern).Size() == 1;
+    }
+
+    // All suffixes sharing a prefix form one contiguous SA interval. A prefix
+    // at `row` is therefore unique exactly when neither adjacent suffix has
+    // an LCP at least as long. This replaces a full equal-range lookup per MAM
+    // candidate with at most two compressed-LCP probes.
+    if (row > 0 && lcp_access.AtLeast(row, global, length)) {
+      return false;
+    }
+    const auto rows = SaSize(suffix_array);
+    if (row + 1 < rows) {
+      const auto next_global = SaValue(suffix_array, row + 1);
+      if (lcp_access.AtLeast(row + 1, next_global, length)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
   template <class Callback>
   void ForEachStoredRow(SuffixRange interval, Callback&& callback) const {
-    std::visit(
+    // Native coordinates remain a single direct-pointer walk. Packed
+    // coordinates are decoded in bounded blocks so locate and maximal-match
+    // enumeration do not pay two plane loads throughout the surrounding hot
+    // loop or allocate storage proportional to the match interval.
+    const auto stored_width = suffix_array.Width();
+    if (stored_width == CoordinateStorageWidth::kBits40 ||
+        stored_width == CoordinateStorageWidth::kBits48) {
+      constexpr std::uint64_t kDecodeRows = 256;
+      std::array<std::uint64_t, kDecodeRows> decoded{};
+      for (std::uint64_t begin = interval.begin; begin < interval.end;) {
+        const auto count = std::min(kDecodeRows, interval.end - begin);
+        suffix_array.DecodeSpan(begin, count, decoded.data());
+        for (std::uint64_t offset = 0; offset < count; ++offset) {
+          callback(begin + offset,
+                   decoded[static_cast<std::size_t>(offset)]);
+        }
+        begin += count;
+      }
+      return;
+    }
+    suffix_array.Visit(
         [&](const auto& values) {
-          for (std::uint64_t row = interval.begin; row < interval.end; ++row) {
-            callback(row, static_cast<std::uint64_t>(
-                              values[static_cast<std::size_t>(row)]));
+          using Values = std::decay_t<decltype(values)>;
+          if constexpr (!kIsPackedCoordinateStorage<Values>) {
+            const auto* current =
+                values.data() + static_cast<std::size_t>(interval.begin);
+            for (std::uint64_t row = interval.begin; row < interval.end;
+                 ++row, ++current) {
+              callback(row, static_cast<std::uint64_t>(*current));
+            }
           }
-        },
-        suffix_array);
+        });
   }
 
   template <class Callback>
@@ -1774,6 +2314,25 @@ struct SuffixArray::Impl {
     return requested;
   }
 
+  RightMaximalSearchAlgorithm ResolveMemAlgorithm(
+      MemSearchAlgorithm requested) const {
+    const auto algorithm = AsRightMaximalAlgorithm(requested);
+    if (algorithm != RightMaximalSearchAlgorithm::kAutoSelect) {
+      return ResolveAlgorithm(algorithm);
+    }
+    // Sparse query anchors make LCP traversal consistently faster for MEMs.
+    // Retained ISA remains valuable for MAM and explicit suffix-link queries.
+    return HasLcp() ? RightMaximalSearchAlgorithm::kLcp
+                    : RightMaximalSearchAlgorithm::kBaseline;
+  }
+
+  RightMaximalSearchAlgorithm ResolveMamAlgorithm(
+      MemSearchAlgorithm requested) const {
+    // MAM examines adjacent query positions for reference uniqueness, where
+    // ISA+LCP interval reuse remains the strongest available automatic path.
+    return ResolveAlgorithm(AsRightMaximalAlgorithm(requested));
+  }
+
   template <class SaVector, class IsaVector, class LcpVector>
   SuffixRange SuffixLinkIntervalFor(
       const SaVector& sa_values, const IsaVector& isa_values,
@@ -1829,16 +2388,14 @@ struct SuffixArray::Impl {
       const auto scan_begin = BuildClock::now();
       while (left > 0) {
         ++left_rows;
-        if (static_cast<std::uint64_t>(
-                lcp_values[static_cast<std::size_t>(left)]) < target) {
+        if (!lcp_values.AtLeast(static_cast<std::size_t>(left), target)) {
           break;
         }
         --left;
       }
       while (right < sa_size) {
         ++right_rows;
-        if (static_cast<std::uint64_t>(
-                lcp_values[static_cast<std::size_t>(right)]) < target) {
+        if (!lcp_values.AtLeast(static_cast<std::size_t>(right), target)) {
           break;
         }
         ++right;
@@ -1851,13 +2408,11 @@ struct SuffixArray::Impl {
     } else {
 #endif
       while (left > 0 &&
-             static_cast<std::uint64_t>(
-                 lcp_values[static_cast<std::size_t>(left)]) >= target) {
+             lcp_values.AtLeast(static_cast<std::size_t>(left), target)) {
         --left;
       }
       while (right < sa_size &&
-             static_cast<std::uint64_t>(
-                 lcp_values[static_cast<std::size_t>(right)]) >= target) {
+             lcp_values.AtLeast(static_cast<std::size_t>(right), target)) {
         ++right;
       }
 #if defined(SUFKIT_ENABLE_SUFFIX_LINK_DIAGNOSTICS)
@@ -1873,13 +2428,15 @@ struct SuffixArray::Impl {
                                  detail::SuffixLinkScanSink* scan_sink) const {
     // Coordinate width is selected once before the potentially long LCP scan,
     // so the hot loop contains no per-row 32/64-bit branch.
-    return std::visit(
-        [&](const auto& sa_values, const auto& isa_values,
-            const auto& lcp_values) {
-          return SuffixLinkIntervalFor(sa_values, isa_values, lcp_values,
-                                       previous, depth, shift, scan_sink);
-        },
-        suffix_array, isa, lcp);
+    return suffix_array.Visit([&](const auto& sa_values) {
+      return isa.Visit(
+          [&](const auto& isa_values) {
+            const TypedLcpView<std::decay_t<decltype(sa_values)>> lcp_values{
+                lcp_access, &sa_values};
+            return SuffixLinkIntervalFor(sa_values, isa_values, lcp_values,
+                                         previous, depth, shift, scan_sink);
+          });
+    });
   }
 
   template <class Callback>
@@ -1890,7 +2447,8 @@ struct SuffixArray::Impl {
                           SaSearchAlgorithm lookup_algorithm,
                           RightMaximalSearchStatistics* statistics,
                           Callback& callback) const {
-    const auto lcp_values = ViewCoordinates(lcp);
+    const LcpView lcp_values{lcp_access, &suffix_array,
+                            static_cast<std::size_t>(lcp.Size())};
     detail::SuffixLinkScanSink* scan_sink = nullptr;
 #if defined(SUFKIT_ENABLE_SUFFIX_LINK_DIAGNOSTICS)
     scan_sink = detail::CurrentSuffixLinkScanSink();
@@ -2018,8 +2576,9 @@ struct SuffixArray::Impl {
               strand == Strand::kReverseComplement
                   ? original_query_length - (query_position + length)
                   : static_cast<std::uint64_t>(query_position);
-          callback(
-              {mapped->first, mapped->second, output_position, length, strand});
+          callback(row, global, interval.Size() == 1,
+                   RightMaximalMatch{mapped->first, mapped->second,
+                                     output_position, length, strand});
         });
       }
       run_begin = run_end;
@@ -2175,9 +2734,11 @@ struct SuffixArray::Impl {
     const auto enumerate = [&](const std::vector<std::uint8_t>& value,
                                Strand strand) {
       if (sampling_rate == 1) {
+        auto emit = [&](std::uint64_t, std::uint64_t, bool,
+                        const RightMaximalMatch& match) { callback(match); };
         EnumerateOneStrand(value, encoded.size(), strand, options.min_length,
                            algorithm, options.lookup_algorithm,
-                           options.statistics, callback);
+                           options.statistics, emit);
       } else {
         EnumerateSparseOneStrand(
             value, encoded.size(), strand, options.min_length, algorithm,
@@ -2241,7 +2802,8 @@ struct SuffixArray::Impl {
     const auto window =
         static_cast<std::uint64_t>(skip_multiplier) * sampling_rate;
     const auto anchor_length = options.min_length - window + 1;
-    const auto lcp_values = ViewCoordinates(lcp);
+    const LcpView lcp_values{lcp_access, &suffix_array,
+                            static_cast<std::size_t>(lcp.Size())};
     detail::SuffixLinkScanSink* scan_sink = nullptr;
 #if defined(SUFKIT_ENABLE_SUFFIX_LINK_DIAGNOSTICS)
     scan_sink = detail::CurrentSuffixLinkScanSink();
@@ -2419,27 +2981,30 @@ struct SuffixArray::Impl {
       throw Error(ErrorCode::kUnsupportedBackend,
                   "reference-MAM search requires a complete suffix array");
     }
-    MemOptions mem;
-    mem.min_length = options.min_length;
-    mem.strands = options.strands;
-    mem.algorithm = static_cast<MemSearchAlgorithm>(algorithm);
-    mem.lookup_algorithm = options.lookup_algorithm;
-    mem.skip_multiplier = 1;
-    auto filter = [&](const MemMatch& match) {
-      const auto sequence_id = static_cast<std::size_t>(match.sequence_id);
-      const auto global = reference.contig_starts[sequence_id] +
-                          match.reference_position;
-      const EncodedView pattern(
-          text.data() + static_cast<std::size_t>(global),
-          static_cast<std::size_t>(match.length));
-      const auto lookup = HasLcp() ? SaSearchAlgorithm::kLcpBinary
-                                   : SaSearchAlgorithm::kBinary;
-      if (Range(pattern, lookup, nullptr).Size() == 1) {
+    const auto enumerate = [&](const std::vector<std::uint8_t>& value,
+                               Strand strand) {
+      auto filter = [&](std::uint64_t row, std::uint64_t global,
+                        bool minimum_prefix_is_unique,
+                        const RightMaximalMatch& match) {
+        if (!minimum_prefix_is_unique &&
+            !IsReferencePrefixUnique(row, global, match.length)) {
+          return;
+        }
         callback(MamMatch{match.sequence_id, match.reference_position,
                           match.query_position, match.length, match.strand});
-      }
+      };
+      EnumerateOneStrand(value, encoded.size(), strand, options.min_length,
+                         algorithm, options.lookup_algorithm, nullptr, filter);
     };
-    EnumerateEncodedMem(encoded, mem, algorithm, filter);
+    if (options.strands == StrandMode::kForward ||
+        options.strands == StrandMode::kBoth) {
+      enumerate(encoded, Strand::kForward);
+    }
+    if (options.strands == StrandMode::kReverseComplement ||
+        options.strands == StrandMode::kBoth) {
+      const auto reverse = ReverseComplementRightMaximal(encoded);
+      enumerate(reverse, Strand::kReverseComplement);
+    }
   }
 };
 
@@ -2458,6 +3023,7 @@ SuffixArray SuffixArray::Build(const GenomeReference& reference,
     throw Error(ErrorCode::kInvalidInput,
                 "SA sampling rate must be greater than zero");
   }
+  ValidateSaAcceleration(options.acceleration);
   if (options.statistics) {
     *options.statistics = {};
   }
@@ -2489,16 +3055,50 @@ SuffixArray SuffixArray::Build(const GenomeReference& reference,
   }
   const CoordinateWidth width = detail::ResolveSaCoordinateWidth(
       backend, options.coordinate_width, impl->text.size());
-  const auto coordinate_width = static_cast<std::uint8_t>(width);
+  if (!detail::SaConstructionCanRepresent(backend, width,
+                                          impl->text.size())) {
+    throw Error(ErrorCode::kInvalidInput,
+                "reference exceeds the requested SA construction width");
+  }
+  const auto stored_width = ResolveProfileStorageWidth(
+      options.storage_width, options.resource_profile, impl->text.size());
+  SaAcceleration effective_acceleration = options.acceleration;
+  bool learned_enabled = options.learned_index.enabled;
+  if (options.resource_profile == SaResourceProfile::kLowMemory) {
+    if (options.sampling_rate != 1) {
+      throw Error(ErrorCode::kInvalidInput,
+                  "low-memory profile requires a complete suffix array");
+    }
+    // The profile is authoritative: temporary ISA may build compressed LCP,
+    // but no ISA, CHILD, or learned model remains resident afterward.
+    effective_acceleration = SaAcceleration::kLcp;
+    learned_enabled = false;
+  }
   const auto lcp_width = static_cast<std::uint8_t>(
-      impl->text.size() <= std::numeric_limits<std::uint32_t>::max() ? 32
-                                                                    : 64);
+      impl->text.size() - 1U <=
+              std::numeric_limits<std::uint32_t>::max()
+          ? 32
+          : 64);
   const auto sa_begin = BuildClock::now();
-  const bool retain_lcp = options.acceleration != SaAcceleration::kNone;
+  const bool retain_lcp = effective_acceleration != SaAcceleration::kNone;
   const bool retain_isa =
-      options.acceleration == SaAcceleration::kLcpSuffixLink ||
-      options.acceleration == SaAcceleration::kFull;
-  std::vector<std::uint64_t> backend_isa;
+      effective_acceleration == SaAcceleration::kLcpSuffixLink ||
+      effective_acceleration == SaAcceleration::kFull;
+  const bool needs_child =
+      effective_acceleration == SaAcceleration::kLcpChild ||
+      effective_acceleration == SaAcceleration::kFull;
+  // Byte-coded LCP reduces the Low-memory resident set substantially, but the
+  // pinned quick A/B did not satisfy Fast's <=3% per-workload regression
+  // gate. Fast therefore keeps native raw LCP; the private override also lets
+  // maintainers compare a raw Low-memory build from the same source revision.
+  const bool persist_raw_lcp =
+      retain_lcp &&
+      (options.resource_profile == SaResourceProfile::kFast ||
+       kForceRawLcpForDeveloperBenchmark);
+  const bool needs_raw_lcp =
+      retain_lcp && (needs_child || persist_raw_lcp);
+  RawCoordinateStorage raw_lcp;
+  RawSaStorage built_sa = Sa32{};
   bool backend_reports_phases = false;
   if (backend == SaBackend::kCaps && width == CoordinateWidth::kBits32) {
     if (impl->text.size() >
@@ -2506,48 +3106,50 @@ SuffixArray SuffixArray::Build(const GenomeReference& reference,
       throw Error(ErrorCode::kInvalidInput,
                   "reference is too large for CaPS-SA uint32_t");
     }
-    auto built = detail::BuildCaps32(impl->text, options.threads, retain_lcp);
-    impl->suffix_array = std::move(built.suffix_array);
-    impl->lcp = CompactCoordinates(std::move(built.lcp), lcp_width,
-                                   ErrorCode::kBuildFailure, "LCP");
+    auto built =
+        detail::BuildCaps32(impl->text, options.threads, needs_raw_lcp);
+    built_sa = std::move(built.suffix_array);
+    raw_lcp = CompactRawCoordinates(std::move(built.lcp), lcp_width,
+                                    ErrorCode::kBuildFailure, "LCP");
     impl->backend = detail::StoredBackend::kCaps32;
   } else if (backend == SaBackend::kCaps && width == CoordinateWidth::kBits64) {
-    auto built = detail::BuildCaps64(impl->text, options.threads, retain_lcp);
-    impl->suffix_array = std::move(built.suffix_array);
-    impl->lcp = CompactCoordinates(std::move(built.lcp), lcp_width,
-                                   ErrorCode::kBuildFailure, "LCP");
+    auto built =
+        detail::BuildCaps64(impl->text, options.threads, needs_raw_lcp);
+    built_sa = std::move(built.suffix_array);
+    raw_lcp = CompactRawCoordinates(std::move(built.lcp), lcp_width,
+                                    ErrorCode::kBuildFailure, "LCP");
     impl->backend = detail::StoredBackend::kCaps64;
   } else if (backend == SaBackend::kDivsufsort &&
              width == CoordinateWidth::kBits32) {
-    auto built =
-        detail::BuildDivsufsort32(impl->text, options.sampling_rate, retain_lcp,
-                                  retain_isa, options.threads);
+    // Rebuild ISA directly in its resolved resident width after SA repacking.
+    // The adapter still creates a private ISA when raw LCP is requested, but
+    // does not carry that 8-byte coordinate plane into compact ISA
+    // construction.
+    auto built = detail::BuildDivsufsort32(
+        impl->text, options.sampling_rate, needs_raw_lcp, false,
+        options.threads);
     if (options.statistics) {
       options.statistics->sa_seconds = built.sa_seconds;
-      options.statistics->isa_seconds = built.isa_seconds;
       options.statistics->lcp_seconds = built.lcp_seconds;
     }
     backend_reports_phases = true;
-    impl->suffix_array = std::move(built.suffix_array);
-    impl->lcp = CompactCoordinates(std::move(built.lcp), lcp_width,
-                                   ErrorCode::kBuildFailure, "LCP");
-    backend_isa = std::move(built.isa);
+    built_sa = std::move(built.suffix_array);
+    raw_lcp = CompactRawCoordinates(std::move(built.lcp), lcp_width,
+                                    ErrorCode::kBuildFailure, "LCP");
     impl->backend = detail::StoredBackend::kDivsufsort32;
   } else if (backend == SaBackend::kDivsufsort &&
              width == CoordinateWidth::kBits64) {
-    auto built =
-        detail::BuildDivsufsort64(impl->text, options.sampling_rate, retain_lcp,
-                                  retain_isa, options.threads);
+    auto built = detail::BuildDivsufsort64(
+        impl->text, options.sampling_rate, needs_raw_lcp, false,
+        options.threads);
     if (options.statistics) {
       options.statistics->sa_seconds = built.sa_seconds;
-      options.statistics->isa_seconds = built.isa_seconds;
       options.statistics->lcp_seconds = built.lcp_seconds;
     }
     backend_reports_phases = true;
-    impl->suffix_array = std::move(built.suffix_array);
-    impl->lcp = CompactCoordinates(std::move(built.lcp), lcp_width,
-                                   ErrorCode::kBuildFailure, "LCP");
-    backend_isa = std::move(built.isa);
+    built_sa = std::move(built.suffix_array);
+    raw_lcp = CompactRawCoordinates(std::move(built.lcp), lcp_width,
+                                    ErrorCode::kBuildFailure, "LCP");
     impl->backend = detail::StoredBackend::kDivsufsort64;
   } else {
     throw Error(ErrorCode::kInvalidInput,
@@ -2557,72 +3159,139 @@ SuffixArray SuffixArray::Build(const GenomeReference& reference,
   if (backend == SaBackend::kCaps && impl->sampling_rate > 1) {
     // CaPS supplies complete-SA LCP. Sampling must reduce intervening LCP
     // values by interval minimum so adjacent retained suffixes remain valid.
-    if (impl->HasLcp()) {
-      SampleSaLcp(impl->suffix_array, impl->lcp, impl->sampling_rate);
+    if (!std::visit([](const auto& values) { return values.empty(); },
+                    raw_lcp)) {
+      SampleSaLcp(built_sa, raw_lcp, impl->sampling_rate);
     } else {
-      SampleSa(impl->suffix_array, impl->sampling_rate);
+      SampleSa(built_sa, impl->sampling_rate);
     }
   }
   if (options.statistics && !backend_reports_phases) {
     options.statistics->sa_seconds = BuildElapsed(sa_begin);
   }
 
-  impl->acceleration = options.acceleration;
-  CoordinateStorage temporary_isa = CompactCoordinates(
-      std::move(backend_isa), coordinate_width, ErrorCode::kBuildFailure,
-      "inverse suffix array");
-  if (((retain_lcp && !impl->HasLcp()) || retain_isa ||
-       options.learned_index.enabled) &&
+  const auto storage_compaction_begin = BuildClock::now();
+  impl->suffix_array = RepackSuffixArray(
+      std::move(built_sa), stored_width, impl->text.size(),
+      impl->sampling_rate);
+  if (options.statistics) {
+    options.statistics->storage_compaction_seconds =
+        BuildElapsed(storage_compaction_begin);
+  }
+  impl->acceleration = effective_acceleration;
+  const auto isa_domain = SaSize(impl->suffix_array);
+  const bool native_isa_fits_32 =
+      isa_domain - 1U <= std::numeric_limits<std::uint32_t>::max();
+  const auto temporary_isa_width =
+      retain_isa
+          ? ResolveAuxiliaryStorageWidth(stored_width, isa_domain)
+          : (native_isa_fits_32 ? CoordinateStorageWidth::kBits32
+                                : CoordinateStorageWidth::kBits64);
+  auto child_storage_width = stored_width;
+  if (needs_child) {
+    if (isa_domain == std::numeric_limits<std::uint64_t>::max()) {
+      throw Error(ErrorCode::kInvalidInput,
+                  "CHILD coordinate domain overflows");
+    }
+    child_storage_width =
+        ResolveAuxiliaryStorageWidth(stored_width, isa_domain + 1U);
+  }
+  CoordinateStorage temporary_isa;
+  if ((retain_lcp || retain_isa || learned_enabled) &&
       CoordinatesEmpty(temporary_isa)) {
     const auto begin = BuildClock::now();
     temporary_isa = BuildIsa(impl->suffix_array, impl->text.size(),
                              impl->sampling_rate, options.threads,
-                             coordinate_width);
+                             temporary_isa_width);
     if (options.statistics) {
       options.statistics->isa_seconds = BuildElapsed(begin);
     }
   }
   if (retain_lcp) {
-    if (!impl->HasLcp()) {
+    const bool has_raw_lcp = !std::visit(
+        [](const auto& values) { return values.empty(); }, raw_lcp);
+    if (!has_raw_lcp && !needs_child) {
       const auto lcp_begin = BuildClock::now();
-      impl->lcp = BuildLcp(impl->text, impl->suffix_array, temporary_isa,
-                           impl->sampling_rate, lcp_width);
+      impl->lcp = BuildByteCodedLcpDirect(
+          impl->text, impl->suffix_array, temporary_isa,
+          impl->sampling_rate, lcp_width);
       if (options.statistics) {
         options.statistics->lcp_seconds = BuildElapsed(lcp_begin);
       }
+    } else {
+      if (!has_raw_lcp) {
+        const auto lcp_begin = BuildClock::now();
+        raw_lcp = BuildLcp(impl->text, impl->suffix_array, temporary_isa,
+                           impl->sampling_rate, lcp_width);
+        if (options.statistics) {
+          options.statistics->lcp_seconds = BuildElapsed(lcp_begin);
+        }
+      }
+      if (needs_child) {
+        const auto child_begin = BuildClock::now();
+        impl->child = BuildChild(raw_lcp, child_storage_width);
+        if (options.statistics) {
+          options.statistics->child_seconds = BuildElapsed(child_begin);
+        }
+      }
+      impl->lcp = FinalizeLcpStorage(
+          std::move(raw_lcp), temporary_isa, impl->sampling_rate, lcp_width,
+          impl->text.size(), !persist_raw_lcp, persist_raw_lcp);
     }
     if (retain_isa) {
-      // LCP construction is the final temporary consumer. Move ISA into the
+      // LCP compression is the final temporary consumer. Move ISA into the
       // immutable index instead of retaining a second full-size copy.
       impl->isa = std::move(temporary_isa);
     }
-    if (options.acceleration == SaAcceleration::kLcpChild ||
-        options.acceleration == SaAcceleration::kFull) {
-      const auto child_begin = BuildClock::now();
-      impl->child = BuildChild(impl->lcp, coordinate_width);
-      if (options.statistics) {
-        options.statistics->child_seconds = BuildElapsed(child_begin);
-      }
-    }
   }
-  if (options.learned_index.enabled) {
+  if (learned_enabled) {
     const auto learned_begin = BuildClock::now();
     const auto& learned_isa = retain_isa ? impl->isa : temporary_isa;
     impl->learned = BuildLearnedIndex(
         impl->reference, impl->text, impl->suffix_array, learned_isa,
-        impl->sampling_rate,
-        static_cast<std::uint8_t>(width), options.learned_index);
+        impl->sampling_rate, stored_width, options.learned_index);
     if (options.statistics) {
       options.statistics->learned_index_seconds = BuildElapsed(learned_begin);
     }
   }
+  impl->RefreshLcpAccess();
   const auto aux_bytes = CoordinateBytes(impl->isa) +
-                         CoordinateBytes(impl->lcp) +
+                         impl->lcp.ResidentBytes() +
                          CoordinateBytes(impl->child);
   impl->index_info = BuiltInfo(
       impl->reference, impl->backend, static_cast<std::uint8_t>(width),
       impl->text.size(), SaSize(impl->suffix_array), impl->sampling_rate,
       impl->acceleration, aux_bytes, impl->learned);
+  impl->index_info.stored_coordinate_width =
+      static_cast<std::uint8_t>(SaStoredWidth(impl->suffix_array));
+  impl->index_info.sa_resource_profile = options.resource_profile;
+  impl->index_info.lcp_encoding =
+      !impl->HasLcp()
+          ? SaLcpEncoding::kNone
+          : (impl->lcp.Encoding() == detail::LcpEncoding::kRaw32 ||
+                     impl->lcp.Encoding() == detail::LcpEncoding::kRaw64
+                 ? SaLcpEncoding::kRaw
+                 : SaLcpEncoding::kByteCoded);
+  impl->index_info.text_bytes = impl->text.size();
+  impl->index_info.sa_bytes = SaBytes(impl->suffix_array);
+  impl->index_info.isa_bytes = CoordinateBytes(impl->isa);
+  impl->index_info.lcp_bytes = impl->lcp.ResidentBytes();
+  impl->index_info.lcp_primary_bytes =
+      impl->lcp.BytePrimary()
+          ? static_cast<std::uint64_t>(impl->lcp.BytePrimary()->size())
+          : 0;
+  impl->index_info.lcp_overflow_anchors = impl->lcp.AnchorCount();
+  impl->index_info.lcp_overflow_bytes =
+      impl->index_info.lcp_encoding == SaLcpEncoding::kByteCoded
+          ? impl->lcp.SerializedDataBytes() -
+                impl->index_info.lcp_primary_bytes
+          : 0;
+  impl->index_info.lcp_guide_bytes = impl->lcp.GuideBytes();
+  impl->index_info.child_bytes = CoordinateBytes(impl->child);
+  impl->index_info.resident_core_bytes =
+      impl->index_info.text_bytes + impl->index_info.sa_bytes +
+      impl->index_info.isa_bytes + impl->index_info.lcp_bytes +
+      impl->index_info.child_bytes + impl->learned.ResidentBytes();
   return SuffixArray(std::move(impl));
 }
 
@@ -2649,6 +3318,7 @@ std::uint64_t SuffixArray::Count(std::string_view pattern,
 std::uint64_t SuffixArray::Count(std::string_view pattern, StrandMode strands,
                                  SaSearchAlgorithm algorithm,
                                  SaSearchStatistics* statistics) const {
+  ValidateStrandMode(strands);
   const auto encoded = detail::EncodePattern(pattern);
   if (strands == StrandMode::kForward) {
     return impl_->ExactCount(encoded, algorithm, statistics);
@@ -2673,6 +3343,7 @@ QueryResult SuffixArray::Locate(std::string_view pattern,
                                 const LocateOptions& options,
                                 SaSearchAlgorithm algorithm,
                                 SaSearchStatistics* statistics) const {
+  ValidateStrandMode(options.strands);
   const auto encoded = detail::EncodePattern(pattern);
   std::vector<GlobalMatch> matches;
   bool heap_active = false;
@@ -2776,8 +3447,7 @@ void SuffixArray::ForEachMem(std::string_view query,
     throw Error(ErrorCode::kInvalidInput, "MEM callback must not be empty");
   }
   const auto encoded = EncodeRightMaximalQuery(query);
-  const auto algorithm =
-      impl_->ResolveAlgorithm(AsRightMaximalAlgorithm(options.algorithm));
+  const auto algorithm = impl_->ResolveMemAlgorithm(options.algorithm);
   impl_->EnumerateEncodedMem(encoded, options, algorithm, callback);
 }
 
@@ -2786,27 +3456,49 @@ MemResult SuffixArray::FindMems(
     std::optional<std::uint64_t> max_matches) const {
   PrepareMemSearch(options);
   const auto encoded = EncodeRightMaximalQuery(query);
-  const auto algorithm =
-      impl_->ResolveAlgorithm(AsRightMaximalAlgorithm(options.algorithm));
+  const auto algorithm = impl_->ResolveMemAlgorithm(options.algorithm);
   MemResult result;
-  auto collect = [&](const MemMatch& match) { result.matches.push_back(match); };
+  if (!max_matches) {
+    auto collect = [&](const MemMatch& match) {
+      result.matches.push_back(match);
+    };
+    impl_->EnumerateEncodedMem(encoded, options, algorithm, collect);
+    std::sort(result.matches.begin(), result.matches.end(), MemMatchLess);
+    result.matches.erase(
+        std::unique(result.matches.begin(), result.matches.end(),
+                    MemMatchEqual),
+        result.matches.end());
+    result.total_matches = result.matches.size();
+    return result;
+  }
+
+  const auto retain = *max_matches;
+  bool heap_active = false;
+  auto collect = [&](const MemMatch& match) {
+    // Every MEM has one anchor/residue owner. The streaming kernel therefore
+    // emits each directional tuple once, making this an exact count without a
+    // result-sized deduplication set.
+    ++result.total_matches;
+    if (retain == 0) {
+      return;
+    }
+    if (!heap_active && result.matches.size() < retain) {
+      result.matches.push_back(match);
+      return;
+    }
+    if (!heap_active) {
+      std::make_heap(result.matches.begin(), result.matches.end(), MemMatchLess);
+      heap_active = true;
+    }
+    if (MemMatchLess(match, result.matches.front())) {
+      std::pop_heap(result.matches.begin(), result.matches.end(), MemMatchLess);
+      result.matches.back() = match;
+      std::push_heap(result.matches.begin(), result.matches.end(),
+                     MemMatchLess);
+    }
+  };
   impl_->EnumerateEncodedMem(encoded, options, algorithm, collect);
   std::sort(result.matches.begin(), result.matches.end(), MemMatchLess);
-  result.matches.erase(
-      std::unique(result.matches.begin(), result.matches.end(),
-                  [](const MemMatch& left, const MemMatch& right) {
-                    return std::tie(left.query_position, left.sequence_id,
-                                    left.reference_position, left.length,
-                                    left.strand) ==
-                           std::tie(right.query_position, right.sequence_id,
-                                    right.reference_position, right.length,
-                                    right.strand);
-                  }),
-      result.matches.end());
-  result.total_matches = result.matches.size();
-  if (max_matches && result.matches.size() > *max_matches) {
-    result.matches.resize(static_cast<std::size_t>(*max_matches));
-  }
   result.truncated = result.matches.size() < result.total_matches;
   return result;
 }
@@ -2820,8 +3512,7 @@ void SuffixArray::ForEachMam(std::string_view query,
                 "reference-MAM callback must not be empty");
   }
   const auto encoded = EncodeRightMaximalQuery(query);
-  const auto algorithm =
-      impl_->ResolveAlgorithm(AsRightMaximalAlgorithm(options.algorithm));
+  const auto algorithm = impl_->ResolveMamAlgorithm(options.algorithm);
   impl_->EnumerateEncodedMam(encoded, options, algorithm, callback);
 }
 
@@ -2830,27 +3521,48 @@ MamResult SuffixArray::FindMams(
     std::optional<std::uint64_t> max_matches) const {
   PrepareMamSearch(options);
   const auto encoded = EncodeRightMaximalQuery(query);
-  const auto algorithm =
-      impl_->ResolveAlgorithm(AsRightMaximalAlgorithm(options.algorithm));
+  const auto algorithm = impl_->ResolveMamAlgorithm(options.algorithm);
   MamResult result;
-  auto collect = [&](const MamMatch& match) { result.matches.push_back(match); };
+  if (!max_matches) {
+    auto collect = [&](const MamMatch& match) {
+      result.matches.push_back(match);
+    };
+    impl_->EnumerateEncodedMam(encoded, options, algorithm, collect);
+    std::sort(result.matches.begin(), result.matches.end(), MamMatchLess);
+    result.matches.erase(
+        std::unique(result.matches.begin(), result.matches.end(),
+                    MamMatchEqual),
+        result.matches.end());
+    result.total_matches = result.matches.size();
+    return result;
+  }
+
+  const auto retain = *max_matches;
+  bool heap_active = false;
+  auto collect = [&](const MamMatch& match) {
+    // Complete-SA query positions and SA rows form a unique owner for every
+    // directional reference-MAM tuple.
+    ++result.total_matches;
+    if (retain == 0) {
+      return;
+    }
+    if (!heap_active && result.matches.size() < retain) {
+      result.matches.push_back(match);
+      return;
+    }
+    if (!heap_active) {
+      std::make_heap(result.matches.begin(), result.matches.end(), MamMatchLess);
+      heap_active = true;
+    }
+    if (MamMatchLess(match, result.matches.front())) {
+      std::pop_heap(result.matches.begin(), result.matches.end(), MamMatchLess);
+      result.matches.back() = match;
+      std::push_heap(result.matches.begin(), result.matches.end(),
+                     MamMatchLess);
+    }
+  };
   impl_->EnumerateEncodedMam(encoded, options, algorithm, collect);
   std::sort(result.matches.begin(), result.matches.end(), MamMatchLess);
-  result.matches.erase(
-      std::unique(result.matches.begin(), result.matches.end(),
-                  [](const MamMatch& left, const MamMatch& right) {
-                    return std::tie(left.query_position, left.sequence_id,
-                                    left.reference_position, left.length,
-                                    left.strand) ==
-                           std::tie(right.query_position, right.sequence_id,
-                                    right.reference_position, right.length,
-                                    right.strand);
-                  }),
-      result.matches.end());
-  result.total_matches = result.matches.size();
-  if (max_matches && result.matches.size() > *max_matches) {
-    result.matches.resize(static_cast<std::size_t>(*max_matches));
-  }
   result.truncated = result.matches.size() < result.total_matches;
   return result;
 }
@@ -2885,14 +3597,11 @@ IndexInfo SuffixArray::GetInfo() const { return impl_->index_info; }
 void SuffixArray::Save(const std::filesystem::path& path,
                        const SaveOptions& options) const {
   detail::ContainerSpec spec;
-  spec.format_minor =
-      impl_->sampling_rate > 1 ? 3
-      : impl_->HasLearned()
-          ? 2
-          : (impl_->acceleration == SaAcceleration::kNone ? 0 : 1);
+  spec.format_minor = 4;
   spec.kind = IndexKind::kSuffixArray;
   spec.backend = impl_->backend;
   spec.coordinate_width = impl_->index_info.coordinate_width;
+  spec.sa_resource_profile = impl_->index_info.sa_resource_profile;
   spec.sequence_count = impl_->reference.sequences.size();
   spec.total_bases = impl_->reference.total_bases;
   spec.text_symbols = impl_->text.size();
@@ -2907,48 +3616,37 @@ void SuffixArray::Save(const std::filesystem::path& path,
        [&](std::ostream& out) {
          out.write(reinterpret_cast<const char*>(impl_->text.data()),
                    static_cast<std::streamsize>(impl_->text.size()));
-       }},
+      }},
       {detail::SectionType::kSuffixArray, [&](std::ostream& out) {
-         std::visit(
-             [&](const auto& values) {
-               detail::WriteU64(out, values.size());
-               WriteIntegerPayload(
-                   out, values,
-                   static_cast<std::uint8_t>(sizeof(typename std::decay_t<
-                                                      decltype(values)>::
-                                                      value_type) *
-                                             8),
-                   "suffix-array values");
-             },
-             impl_->suffix_array);
+         detail::WriteCoordinateSectionV14(out, impl_->suffix_array,
+                                           impl_->text.size());
        }}};
   if (impl_->HasIsa()) {
     writers.push_back(
         {detail::SectionType::kInverseSuffixArray, [&](std::ostream& out) {
-           WriteIntegerVector(out, impl_->isa, spec.coordinate_width);
+           detail::WriteCoordinateSectionV14(
+               out, impl_->isa, SaSize(impl_->suffix_array));
          }});
   }
   if (impl_->HasLcp()) {
     writers.push_back({detail::SectionType::kLcp, [&](std::ostream& out) {
-                         WriteIntegerVector(
-                             out, impl_->lcp,
-                             impl_->text.size() <=
-                                     std::numeric_limits<std::uint32_t>::max()
-                                 ? 32
-                                 : 64);
+                         detail::WriteLcpSectionV14(out, impl_->lcp,
+                                                    impl_->text.size());
                        }});
   }
   if (impl_->HasChild()) {
     writers.push_back({detail::SectionType::kChild, [&](std::ostream& out) {
-                         WriteIntegerVector(out, impl_->child,
-                                            spec.coordinate_width);
+                         detail::WriteCoordinateSectionV14(
+                             out, impl_->child,
+                             SaSize(impl_->suffix_array) + 1U);
                        }});
   }
   if (impl_->HasLearned()) {
     writers.push_back({detail::SectionType::kLearnedSa, [&](std::ostream& out) {
                          WriteLearnedIndex(out, impl_->learned,
                                            spec.coordinate_width,
-                                           impl_->reference.fingerprint);
+                                           impl_->reference.fingerprint,
+                                           SaSize(impl_->suffix_array));
                        }});
   }
   if (impl_->sampling_rate > 1) {
@@ -2974,6 +3672,11 @@ SuffixArray SuffixArray::Load(const std::filesystem::path& path) {
     throw Error(ErrorCode::kUnsupportedBackend,
                 "unsupported suffix-array payload");
   }
+  // Validate section combinations and exact codec payload sizes before any
+  // genome-scale allocation. A codec header is untrusted even after its CRC
+  // has been verified because a deliberately constructed corrupt file can
+  // carry a matching checksum.
+  auto container_info = detail::IndexInfoFromContainer(container);
   auto impl = std::make_unique<Impl>();
   impl->reference = detail::ReadMetadata(container);
   impl->backend = container.spec.backend;
@@ -3034,15 +3737,8 @@ SuffixArray SuffixArray::Load(const std::filesystem::path& path) {
       throw Error(ErrorCode::kCorruptIndex, "invalid sampled SA metadata");
     }
   }
-  auto sa_input =
-      detail::OpenSectionStream(container, detail::SectionType::kSuffixArray);
-  const auto count = detail::ReadU64(*sa_input, "suffix-array length");
-  const auto expected_count =
+  const auto count =
       SampledSuffixCount(impl->text.size(), impl->sampling_rate);
-  if (count != expected_count) {
-    throw Error(ErrorCode::kCorruptIndex,
-                "suffix-array length does not match sampling metadata");
-  }
   std::vector<bool> seen(static_cast<std::size_t>(count), false);
   const auto accept_position = [&](std::uint64_t raw) {
     if (raw >= impl->text.size() || raw % impl->sampling_rate != 0) {
@@ -3059,44 +3755,75 @@ SuffixArray SuffixArray::Load(const std::filesystem::path& path) {
   const bool backend_is_32 =
       container.spec.backend == detail::StoredBackend::kDivsufsort32 ||
       container.spec.backend == detail::StoredBackend::kCaps32;
+  const auto expected_construction_width =
+      static_cast<std::uint8_t>(backend_is_32 ? 32 : 64);
+  if (container.spec.coordinate_width != expected_construction_width) {
+    throw Error(ErrorCode::kCorruptIndex,
+                "suffix-array backend and construction width disagree");
+  }
   const bool backend_is_caps =
       container.spec.backend == detail::StoredBackend::kCaps32 ||
       container.spec.backend == detail::StoredBackend::kCaps64;
-  if (backend_is_32) {
-    if (container.spec.coordinate_width != 32) {
-      throw Error(ErrorCode::kCorruptIndex,
-                  "invalid 32-bit suffix-array coordinate width");
-    }
-    if (backend_is_caps) {
-      impl->suffix_array = CapsSa32(static_cast<std::size_t>(count));
-    } else {
-      impl->suffix_array = Sa32(static_cast<std::size_t>(count));
+  const auto construction_backend =
+      backend_is_caps ? SaBackend::kCaps : SaBackend::kDivsufsort;
+  const auto construction_width =
+      backend_is_32 ? CoordinateWidth::kBits32 : CoordinateWidth::kBits64;
+  if (!detail::SaConstructionCanRepresent(
+          construction_backend, construction_width, impl->text.size())) {
+    throw Error(ErrorCode::kCorruptIndex,
+                "suffix-array text exceeds its recorded constructor width");
+  }
+  auto sa_input =
+      detail::OpenSectionStream(container, detail::SectionType::kSuffixArray);
+  if (container.spec.format_minor >= 4) {
+    impl->suffix_array = detail::ReadCoordinateSectionV14(
+        *sa_input, count, impl->text.size(), "suffix array");
+    for (std::uint64_t row = 0; row < count; ++row) {
+      accept_position(SaValue(impl->suffix_array, row));
     }
   } else {
-    if (container.spec.coordinate_width != 64) {
+    const auto recorded_count =
+        detail::ReadU64(*sa_input, "suffix-array length");
+    if (recorded_count != count) {
       throw Error(ErrorCode::kCorruptIndex,
-                  "invalid 64-bit suffix-array coordinate width");
+                  "suffix-array length does not match sampling metadata");
     }
-    if (backend_is_caps) {
-      impl->suffix_array = CapsSa64(static_cast<std::size_t>(count));
-    } else {
-      impl->suffix_array = Sa64(static_cast<std::size_t>(count));
+    RawCoordinateStorage legacy_sa =
+        expected_construction_width == 32
+            ? RawCoordinateStorage(
+                  Coordinate32(static_cast<std::size_t>(count)))
+            : RawCoordinateStorage(
+                  Coordinate64(static_cast<std::size_t>(count)));
+    std::visit(
+        [&](auto& values) {
+          ReadIntegerPayload(*sa_input, values,
+                             expected_construction_width,
+                             "suffix-array values",
+                             [&](std::uint64_t, std::uint64_t raw) {
+                               accept_position(raw);
+                             });
+        },
+        legacy_sa);
+    if (sa_input->peek() != std::char_traits<char>::eof()) {
+      throw Error(ErrorCode::kCorruptIndex,
+                  "suffix-array section has trailing bytes");
     }
-  }
-  std::visit(
-      [&](auto& values) {
-        using Value = typename std::decay_t<decltype(values)>::value_type;
-        constexpr auto width =
-            static_cast<std::uint8_t>(sizeof(Value) * 8);
-        ReadIntegerPayload(*sa_input, values, width, "suffix-array values",
-                           [&](std::uint64_t, std::uint64_t raw) {
-                             accept_position(raw);
-                           });
-      },
-      impl->suffix_array);
-  if (sa_input->peek() != std::char_traits<char>::eof()) {
-    throw Error(ErrorCode::kCorruptIndex,
-                "suffix-array section has trailing bytes");
+    impl->suffix_array = std::visit(
+        [&](auto& values) -> SaStorage {
+          using Values = std::decay_t<decltype(values)>;
+          if constexpr (std::is_same_v<Values, Coordinate32>) {
+            return SaStorage::FromUInt32(
+                std::move(values), CoordinateStorageWidth::kBits32,
+                impl->text.size(), ErrorCode::kCorruptIndex,
+                "suffix array");
+          } else {
+            return SaStorage::FromUInt64(
+                std::move(values), CoordinateStorageWidth::kBits64,
+                impl->text.size(), ErrorCode::kCorruptIndex,
+                "suffix array");
+          }
+        },
+        legacy_sa);
   }
 
   const bool has_isa = has_section(detail::SectionType::kInverseSuffixArray);
@@ -3127,9 +3854,16 @@ SuffixArray SuffixArray::Load(const std::filesystem::path& path) {
                 "learned SA data requires sufidx format 1.2");
   }
   if (has_isa) {
-    impl->isa = ReadIntegerVector(
-        container, detail::SectionType::kInverseSuffixArray, count,
-        container.spec.coordinate_width, "inverse suffix array");
+    if (container.spec.format_minor >= 4) {
+      auto input = detail::OpenSectionStream(
+          container, detail::SectionType::kInverseSuffixArray);
+      impl->isa = detail::ReadCoordinateSectionV14(
+          *input, count, count, "inverse suffix array");
+    } else {
+      impl->isa = ReadLegacyCoordinateVector(
+          container, detail::SectionType::kInverseSuffixArray, count,
+          container.spec.coordinate_width, count, "inverse suffix array");
+    }
     const auto isa_values = ViewCoordinates(impl->isa);
     for (std::uint64_t position = 0; position < count; ++position) {
       const auto row = isa_values[static_cast<std::size_t>(position)];
@@ -3141,39 +3875,59 @@ SuffixArray SuffixArray::Load(const std::filesystem::path& path) {
     }
   }
   if (has_lcp) {
-    const auto lcp_width = static_cast<std::uint8_t>(
-        container.spec.text_symbols <=
-                std::numeric_limits<std::uint32_t>::max()
-            ? 32
-            : 64);
-    impl->lcp = ReadIntegerVector(container, detail::SectionType::kLcp, count,
-                                  lcp_width, "LCP");
-    const auto lcp_values = ViewCoordinates(impl->lcp);
-    if (lcp_values.size == 0 || lcp_values[0] != 0) {
-      throw Error(ErrorCode::kCorruptIndex, "LCP[0] must be zero");
+    if (container.spec.format_minor >= 4) {
+      auto input =
+          detail::OpenSectionStream(container, detail::SectionType::kLcp);
+      impl->lcp = detail::ReadLcpSectionV14(
+          *input, count, impl->sampling_rate, impl->text.size());
+    } else {
+      const auto lcp_width = static_cast<std::uint8_t>(
+          container.spec.text_symbols <=
+                  std::numeric_limits<std::uint32_t>::max()
+              ? 32
+              : 64);
+      auto raw_lcp = ReadLegacyIntegerVector(
+          container, detail::SectionType::kLcp, count, lcp_width, "LCP");
+      impl->lcp = std::visit(
+          [&](auto& values) -> detail::LcpStorage {
+            using Values = std::decay_t<decltype(values)>;
+            if constexpr (std::is_same_v<Values, Coordinate32>) {
+              return detail::LcpStorage::FromRaw32(
+                  std::move(values), impl->sampling_rate,
+                  ErrorCode::kCorruptIndex);
+            } else {
+              return detail::LcpStorage::FromRaw64(
+                  std::move(values), impl->sampling_rate,
+                  ErrorCode::kCorruptIndex);
+            }
+          },
+          raw_lcp);
     }
-    for (std::uint64_t row = 1; row < count; ++row) {
-      const auto suffix = SaValue(impl->suffix_array, row);
-      const auto previous = SaValue(impl->suffix_array, row - 1);
-      if (lcp_values[static_cast<std::size_t>(row)] >
-          std::min(impl->text.size() - suffix, impl->text.size() - previous)) {
-        throw Error(ErrorCode::kCorruptIndex,
-                    "LCP value exceeds suffix bounds");
-      }
-    }
+    ValidateLcpAgainstSuffixArray(impl->lcp, impl->suffix_array,
+                                  impl->text.size());
   }
+  impl->RefreshLcpAccess();
   if (has_child) {
-    impl->child =
-        ReadIntegerVector(container, detail::SectionType::kChild, count,
-                          container.spec.coordinate_width, "CHILD");
+    if (container.spec.format_minor >= 4) {
+      auto input =
+          detail::OpenSectionStream(container, detail::SectionType::kChild);
+      impl->child = detail::ReadCoordinateSectionV14(
+          *input, count, count + 1U, "CHILD");
+    } else {
+      impl->child = ReadLegacyCoordinateVector(
+          container, detail::SectionType::kChild, count,
+          container.spec.coordinate_width, count + 1U, "CHILD");
+    }
     const auto child_values = ViewCoordinates(impl->child);
     for (std::size_t index = 0; index < child_values.size; ++index) {
       if (child_values[index] > count) {
         throw Error(ErrorCode::kCorruptIndex, "CHILD index is out of range");
       }
     }
-    if (impl->child !=
-        BuildChild(impl->lcp, container.spec.coordinate_width)) {
+    const auto rebuilt_child = BuildChild(
+        impl->lcp, impl->suffix_array, impl->child.Width(),
+        ErrorCode::kCorruptIndex);
+    if (!CoordinatesEqual(impl->child, rebuilt_child)) {
       throw Error(ErrorCode::kCorruptIndex,
                   "CHILD table is inconsistent with LCP");
     }
@@ -3181,7 +3935,7 @@ SuffixArray SuffixArray::Load(const std::filesystem::path& path) {
   if (has_learned) {
     impl->learned = ReadLearnedIndex(container, count);
   }
-  impl->index_info = detail::IndexInfoFromContainer(container);
+  impl->index_info = std::move(container_info);
   if (impl->index_info.sa_sampling_rate != impl->sampling_rate ||
       impl->index_info.suffix_count != count) {
     throw Error(ErrorCode::kCorruptIndex,
@@ -3189,17 +3943,46 @@ SuffixArray SuffixArray::Load(const std::filesystem::path& path) {
   }
   impl->index_info.sa_acceleration = impl->acceleration;
   impl->index_info.auxiliary_bytes = CoordinateBytes(impl->isa) +
-                                     CoordinateBytes(impl->lcp) +
+                                     impl->lcp.ResidentBytes() +
                                      CoordinateBytes(impl->child);
+  impl->index_info.stored_coordinate_width =
+      static_cast<std::uint8_t>(impl->suffix_array.Width());
+  impl->index_info.lcp_encoding =
+      !has_lcp
+          ? SaLcpEncoding::kNone
+          : (impl->lcp.Encoding() == detail::LcpEncoding::kRaw32 ||
+                     impl->lcp.Encoding() == detail::LcpEncoding::kRaw64
+                 ? SaLcpEncoding::kRaw
+                 : SaLcpEncoding::kByteCoded);
+  impl->index_info.text_bytes = impl->text.size();
+  impl->index_info.sa_bytes = impl->suffix_array.Bytes();
+  impl->index_info.isa_bytes = impl->isa.Bytes();
+  impl->index_info.lcp_bytes = impl->lcp.ResidentBytes();
+  impl->index_info.lcp_primary_bytes =
+      impl->lcp.BytePrimary()
+          ? static_cast<std::uint64_t>(impl->lcp.BytePrimary()->size())
+          : 0;
+  impl->index_info.lcp_overflow_anchors = impl->lcp.AnchorCount();
+  impl->index_info.lcp_overflow_bytes =
+      impl->index_info.lcp_encoding == SaLcpEncoding::kByteCoded
+          ? impl->lcp.SerializedDataBytes() -
+                impl->index_info.lcp_primary_bytes
+          : 0;
+  impl->index_info.lcp_guide_bytes = impl->lcp.GuideBytes();
+  impl->index_info.child_bytes = impl->child.Bytes();
   if (has_learned) {
     impl->index_info.sa_lookup_acceleration = SaLookupAcceleration::kSaplingPwl;
     impl->index_info.learned_index_bytes =
-        impl->learned.SerializedBytes(container.spec.coordinate_width);
+        impl->learned.SerializedBytes();
     impl->index_info.learned_k = impl->learned.k;
     impl->index_info.learned_bucket_bits = impl->learned.bucket_bits;
     impl->index_info.learned_memory_overhead_basis_points =
         impl->learned.memory_overhead_basis_points;
   }
+  impl->index_info.resident_core_bytes =
+      impl->index_info.text_bytes + impl->index_info.sa_bytes +
+      impl->index_info.isa_bytes + impl->index_info.lcp_bytes +
+      impl->index_info.child_bytes + impl->learned.ResidentBytes();
   return SuffixArray(std::move(impl));
 }
 

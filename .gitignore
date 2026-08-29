@@ -21,6 +21,10 @@ Thumbs.db
 *.gcda
 *.gcno
 
+# Python caches created by the benchmark result-packaging tests.
+__pycache__/
+*.py[cod]
+
 # A common WSL artifact produced by Windows-style output redirection.
 /NUL
 

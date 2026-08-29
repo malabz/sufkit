@@ -152,7 +152,7 @@ void RunBackend(sufkit::SaBackend backend,
     CHECK(sampled.SamplingRate() == rate);
     CHECK(sampled.GetInfo().sa_sampling_rate == rate);
     CHECK(sampled.GetInfo().suffix_count == expected);
-    CHECK(sampled.GetInfo().format_version == "1.3");
+    CHECK(sampled.GetInfo().format_version == "1.4");
     for (std::uint64_t row = 0; row < expected; ++row) {
       CHECK(sampled.SuffixAt(row) % rate == 0);
     }
@@ -185,6 +185,61 @@ void RunBackend(sufkit::SaBackend backend,
   ExpectError(sufkit::ErrorCode::kInvalidInput, [&] {
     (void)sampled4.FindRightMaximalMatches("ACGTACGT", too_short);
   });
+}
+
+void CheckDirectLcpConstruction(const std::filesystem::path& directory) {
+  const auto ref = Reference();
+  auto full_options =
+      BuildOptions(sufkit::SaBackend::kDivsufsort, 1);
+  auto full = sufkit::SuffixArray::Build(ref, full_options);
+  const std::vector<std::string> queries{
+      "GGACGTACGTGATTACATTTT", "NNACGTGATTACANNTGCATGCA",
+      "GATTACAGATTACAGG", "ACGTACGTACGTACGT"};
+
+  for (const std::uint32_t rate : {1U, 2U, 4U, 8U}) {
+    auto options = BuildOptions(sufkit::SaBackend::kDivsufsort, rate);
+    options.acceleration = sufkit::SaAcceleration::kLcpSuffixLink;
+    sufkit::SuffixArrayBuildStatistics statistics;
+    options.statistics = &statistics;
+    auto direct = sufkit::SuffixArray::Build(ref, options);
+    constexpr auto kExpectedLcpEncoding = sufkit::SaLcpEncoding::kRaw;
+    CHECK(direct.GetInfo().lcp_encoding == kExpectedLcpEncoding);
+    CHECK(direct.GetInfo().isa_bytes != 0);
+    CHECK(direct.GetInfo().child_bytes == 0);
+    CHECK(statistics.isa_seconds > 0.0);
+    CHECK(statistics.lcp_seconds > 0.0);
+    CheckExact(full, direct);
+
+    for (const auto& query : queries) {
+      sufkit::RightMaximalOptions query_options;
+      query_options.min_length = std::max<std::uint64_t>(8, rate);
+      query_options.strands = sufkit::StrandMode::kBoth;
+      query_options.algorithm =
+          sufkit::RightMaximalSearchAlgorithm::kBaseline;
+      const auto expected =
+          full.FindRightMaximalMatches(query, query_options);
+      for (const auto algorithm :
+           {sufkit::RightMaximalSearchAlgorithm::kBaseline,
+            sufkit::RightMaximalSearchAlgorithm::kLcp,
+            sufkit::RightMaximalSearchAlgorithm::kSuffixLink}) {
+        query_options.algorithm = algorithm;
+        CHECK(SameRightMaximalResult(
+            expected, direct.FindRightMaximalMatches(query, query_options)));
+      }
+    }
+
+    const auto path = directory /
+                      ("div-direct-sample-" + std::to_string(rate) +
+                       ".sufidx");
+    direct.Save(path);
+    const auto inspected = sufkit::InspectIndex(path);
+    CHECK(inspected.lcp_encoding == kExpectedLcpEncoding);
+    CHECK(inspected.sa_acceleration ==
+          sufkit::SaAcceleration::kLcpSuffixLink);
+    auto loaded = sufkit::SuffixArray::Load(path);
+    CHECK(loaded.GetInfo().lcp_encoding == kExpectedLcpEncoding);
+    CheckExact(full, loaded);
+  }
 }
 
 void RandomizedDifferential() {
@@ -249,6 +304,7 @@ int main() {
   if (caps != backends.end() && caps->available) {
     RunBackend(sufkit::SaBackend::kCaps, directory);
   }
+  CheckDirectLcpConstruction(directory);
   RandomizedDifferential();
   std::filesystem::remove_all(directory);
   if (failures != 0) {

@@ -1,6 +1,100 @@
 if(NOT DEFINED SUFKIT_EXECUTABLE OR NOT DEFINED OUTPUT_ROOT)
     message(FATAL_ERROR "SUFKIT_EXECUTABLE and OUTPUT_ROOT are required")
 endif()
+if(NOT DEFINED SUFKIT_EXPECT_FAST_LCP_ENCODING)
+    set(SUFKIT_EXPECT_FAST_LCP_ENCODING "raw")
+endif()
+if(NOT DEFINED SUFKIT_EXPECT_LOW_LCP_ENCODING)
+    set(SUFKIT_EXPECT_LOW_LCP_ENCODING "byte-coded")
+endif()
+
+cmake_policy(SET CMP0007 NEW)
+
+function(assert_maximal_rectangular_tsv path label)
+    file(STRINGS "${path}" lines)
+    if(NOT lines)
+        message(FATAL_ERROR "${label} is empty")
+    endif()
+    list(GET lines 0 header)
+    string(REGEX MATCHALL "\t" header_tabs "${header}")
+    list(LENGTH header_tabs expected_tabs)
+    set(line_number 0)
+    foreach(line IN LISTS lines)
+        math(EXPR line_number "${line_number} + 1")
+        string(REGEX MATCHALL "\t" line_tabs "${line}")
+        list(LENGTH line_tabs actual_tabs)
+        if(NOT actual_tabs EQUAL expected_tabs)
+            message(FATAL_ERROR
+                "${label} line ${line_number} has ${actual_tabs} tabs; expected ${expected_tabs}")
+        endif()
+    endforeach()
+endfunction()
+
+function(assert_maximal_storage_mode build_path method algorithm profile
+         expect_isa)
+    file(STRINGS "${build_path}" build_lines)
+    set(found FALSE)
+    foreach(line IN LISTS build_lines)
+        string(REPLACE "\t" ";" columns "${line}")
+        list(LENGTH columns column_count)
+        if(column_count EQUAL 35)
+            list(GET columns 1 actual_method)
+            if(actual_method STREQUAL "${method}")
+                if(found)
+                    message(FATAL_ERROR
+                        "build_results.tsv contains duplicate ${method} rows")
+                endif()
+                set(found TRUE)
+                list(GET columns 2 actual_algorithm)
+                list(GET columns 25 status)
+                list(GET columns 27 construction_width)
+                list(GET columns 28 stored_width)
+                list(GET columns 29 actual_profile)
+                list(GET columns 30 lcp_encoding)
+                list(GET columns 32 isa_bytes)
+                if(profile STREQUAL "fast")
+                    set(expected_lcp_encoding
+                        "${SUFKIT_EXPECT_FAST_LCP_ENCODING}")
+                else()
+                    set(expected_lcp_encoding
+                        "${SUFKIT_EXPECT_LOW_LCP_ENCODING}")
+                endif()
+                if(NOT status STREQUAL "ok" OR
+                   NOT actual_algorithm STREQUAL "${algorithm}" OR
+                   NOT construction_width STREQUAL "32" OR
+                   NOT stored_width STREQUAL "32" OR
+                   NOT actual_profile STREQUAL "${profile}" OR
+                   NOT lcp_encoding STREQUAL
+                       "${expected_lcp_encoding}")
+                    message(FATAL_ERROR
+                        "unexpected ${method} storage metadata: ${line}")
+                endif()
+                if(expect_isa AND isa_bytes STREQUAL "0")
+                    message(FATAL_ERROR
+                        "${method} fast profile did not retain the ISA")
+                elseif(NOT expect_isa AND NOT isa_bytes STREQUAL "0")
+                    message(FATAL_ERROR
+                        "${method} low-memory profile retained the ISA")
+                endif()
+                list(GET columns 17 build_scope)
+                list(GET columns 18 save_scope)
+                list(GET columns 19 load_scope)
+                if(NOT build_scope STREQUAL
+                       "build_worker_clean_exec_reference_plus_build" OR
+                   NOT save_scope STREQUAL
+                       "save_worker_clean_exec_load_plus_save" OR
+                   NOT load_scope STREQUAL
+                       "load_worker_clean_exec_load")
+                    message(FATAL_ERROR
+                        "${method} does not report clean-exec phase RSS: ${line}")
+                endif()
+            endif()
+        endif()
+    endforeach()
+    if(NOT found)
+        message(FATAL_ERROR "build_results.tsv is missing ${method}")
+    endif()
+endfunction()
 
 file(REMOVE_RECURSE "${OUTPUT_ROOT}")
 execute_process(
@@ -42,7 +136,8 @@ if(NOT run_metadata MATCHES "build_repetitions\tquery_repetitions\twarmups" OR
     message(FATAL_ERROR "right-maximal exact match run_metadata.tsv does not record learned-index parameters")
 endif()
 foreach(token IN ITEMS "naive_right_maximal_oracle_status" "oracle_reference_bases"
-                       "oracle_query_bases" "passed")
+                       "oracle_query_bases" "passed" "worker_process_model"
+                       "clean-exec-phase-v1")
     string(FIND "${run_metadata}" "${token}" position)
     if(position EQUAL -1)
         message(FATAL_ERROR "run_metadata.tsv is missing oracle marker ${token}")
@@ -55,7 +150,7 @@ foreach(token IN ITEMS "right-maximal-baseline" "right-maximal-suffix-link-binar
                        "reported_matches" "count_checksum" "result_checksum"
                        "materialization_match_threshold" "vector_skipped"
                        "query_peak_rss_mb" "peak_rss_scope"
-                       "query_worker_inherited_controller_dataset_queries_plus_load_plus_query"
+                       "query_worker_clean_exec_queries_plus_load_plus_query"
                        "learned_lookup_calls" "suffix_link_success_rate"
                        "prediction_error_mean" "full_binary_fallbacks"
                        "fm-huff" "fm-balanced" "fm-epr" "not_supported")
@@ -68,9 +163,9 @@ endforeach()
 foreach(token IN ITEMS "sa_sampling_rate\trepetitions" "right-maximal-sampled-k4"
                        "right-maximal-sampled-k8" "build_peak_rss_mb"
                        "save_peak_rss_mb" "load_peak_rss_mb"
-                       "build_worker_inherited_controller_dataset_plus_build"
-                       "save_worker_inherited_controller_dataset_plus_load_plus_save"
-                       "load_worker_inherited_controller_dataset_plus_load"
+                       "build_worker_clean_exec_reference_plus_build"
+                       "save_worker_clean_exec_load_plus_save"
+                       "load_worker_clean_exec_load"
                        "allocated_disk_bytes")
     string(FIND "${build_results}" "${token}" position)
     if(position EQUAL -1)
@@ -90,12 +185,82 @@ foreach(token IN ITEMS "user_cpu_seconds" "system_cpu_seconds" "peak_rss_mb"
                        "peak_rss_scope" "query_bases" "serialized_bytes"
                        "allocated_disk_bytes" "auxiliary_bytes"
                        "materialization_match_threshold" "vector_skipped"
-                       "save_worker_inherited_controller_dataset_plus_load_plus_save"
-                       "query_worker_inherited_controller_dataset_queries_plus_load_plus_query"
+                       "save_worker_clean_exec_load_plus_save"
+                       "query_worker_clean_exec_queries_plus_load_plus_query"
                        "fm-huff\tstreaming\t20\t0\tNA" "not_supported")
     string(FIND "${raw_repetitions}" "${token}" position)
     if(position EQUAL -1)
         message(FATAL_ERROR "raw_repetitions.tsv is missing resource/capability evidence ${token}")
+    endif()
+endforeach()
+
+foreach(workload IN ITEMS mem mam)
+    set(profile_output "${OUTPUT_ROOT}/${workload}-storage-profiles")
+    if(workload STREQUAL "mem")
+        set(profile_methods
+            "mem-auto-fast,mem-lcp-fast-auto-skip,mem-auto-low-memory,mem-lcp-low-memory")
+        set(auto_fast_method mem-auto-fast)
+        set(explicit_fast_method mem-lcp-fast-auto-skip)
+        set(auto_low_memory_method mem-auto-low-memory)
+        set(explicit_low_memory_method mem-lcp-low-memory)
+        set(explicit_fast_algorithm lcp)
+    else()
+        set(profile_methods
+            "mam-auto-fast,mam-suffix-link-fast,mam-auto-low-memory,mam-lcp-low-memory")
+        set(auto_fast_method mam-auto-fast)
+        set(explicit_fast_method mam-suffix-link-fast)
+        set(auto_low_memory_method mam-auto-low-memory)
+        set(explicit_low_memory_method mam-lcp-low-memory)
+        set(explicit_fast_algorithm suffix-link)
+    endif()
+    execute_process(
+        COMMAND "${SUFKIT_EXECUTABLE}" bench
+            --workload "${workload}"
+            --profile smoke
+            --scenarios balanced
+            --methods "${profile_methods}"
+            --min-lengths 20
+            --build-repetitions 1
+            --query-repetitions 1
+            --warmups 0
+            --output-dir "${profile_output}"
+        RESULT_VARIABLE profile_status
+        OUTPUT_VARIABLE profile_stdout
+        ERROR_VARIABLE profile_stderr)
+    if(NOT profile_status EQUAL 0)
+        message(FATAL_ERROR
+            "${workload} storage-profile smoke benchmark failed "
+            "(${profile_status}):\n${profile_stdout}\n${profile_stderr}")
+    endif()
+
+    foreach(name IN ITEMS run_metadata.tsv correctness_summary.tsv
+                          build_results.tsv query_results.tsv
+                          raw_repetitions.tsv)
+        assert_maximal_rectangular_tsv("${profile_output}/${name}"
+                                       "${workload} profile ${name}")
+    endforeach()
+    assert_maximal_storage_mode("${profile_output}/build_results.tsv"
+                                "${auto_fast_method}" auto fast TRUE)
+    assert_maximal_storage_mode("${profile_output}/build_results.tsv"
+                                "${explicit_fast_method}"
+                                "${explicit_fast_algorithm}" fast TRUE)
+    assert_maximal_storage_mode("${profile_output}/build_results.tsv"
+                                "${auto_low_memory_method}" auto
+                                low-memory FALSE)
+    assert_maximal_storage_mode("${profile_output}/build_results.tsv"
+                                "${explicit_low_memory_method}" lcp
+                                low-memory FALSE)
+
+    file(READ "${profile_output}/run_metadata.tsv" profile_metadata)
+    if(NOT profile_metadata MATCHES "\t${workload}\tclean-exec-phase-v1")
+        message(FATAL_ERROR
+            "${workload} profile metadata is missing clean-exec provenance")
+    endif()
+    file(READ "${profile_output}/raw_repetitions.tsv" profile_raw)
+    if(NOT profile_raw MATCHES
+           "query_worker_clean_exec_queries_plus_load_plus_query")
+        message(FATAL_ERROR
+            "${workload} raw results are missing clean-exec query RSS scope")
     endif()
 endforeach()
 

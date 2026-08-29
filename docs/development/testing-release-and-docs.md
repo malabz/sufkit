@@ -62,8 +62,9 @@ vendored or benchmark source. See the [C++ style guide](cpp-style.md).
 | Change | Required evidence |
 |---|---|
 | Reference model | Plain/gzip parity, boundaries, normalized fingerprint |
-| SA constructor | Full order/permutation, 32/64 parity, exact/right-maximal exact match parity |
-| SA sampling/LCP | K=1/K>1 order, sampled ISA/LCP, recovery parity, 1.3 corruption |
+| SA constructor | Full order/permutation, backend-width limits, build64->store32 parity, exact/maximal parity |
+| Coordinate storage | native32/64 and split40/48 scalar/span parity, boundary selection, corruption, concurrency |
+| SA sampling/LCP | K=1/K>1 order, raw/byte-coded parity, anchor validation, recovery parity, 1.3/1.4 corruption |
 | Exact algorithm | Range/count/sorted locate parity for all strands |
 | right-maximal exact match algorithm | Brute-force random oracle plus all internal-mode parity |
 | FM backend/batch | Scalar/width/backend range, count, locate checksum parity |
@@ -87,9 +88,18 @@ vendored or benchmark source. See the [C++ style guide](cpp-style.md).
 8. Confirm licenses and `THIRD_PARTY_NOTICES.md` cover every bundled source.
 9. Confirm no local paths, hostnames, build products, raw benchmark TSVs,
    generated HTML, or plans are tracked.
-10. Run sampled-SA differential tests and confirm formats 1.0-1.3 remain
-    readable whenever SA sampling or LCP construction changes.
+10. Run sampled-SA and adaptive-storage differential tests. Confirm formats
+    1.0-1.3 remain readable and all newly saved standalone SAs use valid 1.4
+    codecs whenever SA sampling, coordinate layout, or LCP construction
+    changes.
 11. Create commit, tag, push, or release only with explicit authorization.
+
+Large-width release claims require separate evidence. Boundary fixtures can
+prove checked selection and codec correctness without allocating billions of
+rows, but they cannot prove peak memory, cache behavior, or throughput above
+`2^32` symbols. Mark those ranges experimental until representative clean-exec
+build/load/query measurements exist, including an apples-to-apples MUMmer4
+comparison when such a claim is made.
 
 ## Documentation source of truth
 

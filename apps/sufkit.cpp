@@ -208,6 +208,8 @@ int RunBuild(const std::vector<std::string>& arguments) {
     std::cout
         << "sufkit build --type sa|fm --input PATH --output PATH [--force]\n"
            "  SA: --sa-backend auto|divsufsort|caps --sa-width auto|32|64 "
+           "--sa-storage-width auto|32|40|48|64 "
+           "--sa-profile fast|low-memory "
            "--threads N\n"
            "      --sa-sampling-rate K\n"
            "      --sa-acceleration none|lcp|child|suffix-link|full\n"
@@ -220,8 +222,9 @@ int RunBuild(const std::vector<std::string>& arguments) {
   const auto options = ParseOptions(
       arguments,
       {"--type", "--input", "--output", "--sa-backend", "--sa-width",
-       "--threads", "--fm-backend", "--sa-acceleration", "--sa-sampling-rate",
-       "--learned-k", "--learned-memory-bp", "--learned-bucket-bits"},
+       "--sa-storage-width", "--sa-profile", "--threads", "--fm-backend",
+       "--sa-acceleration", "--sa-sampling-rate", "--learned-k",
+       "--learned-memory-bp", "--learned-bucket-bits"},
       {"--force", "--learned-index"});
   const auto type = options.Require("--type");
   const auto input = std::filesystem::path(options.Require("--input"));
@@ -234,7 +237,16 @@ int RunBuild(const std::vector<std::string>& arguments) {
       throw sufkit::Error(sufkit::ErrorCode::kInvalidInput,
                           "--fm-backend is invalid for --type sa");
     }
+    const auto profile = options.ValueOr("--sa-profile", "fast");
     sufkit::SuffixArrayBuildOptions build_options;
+    if (profile == "fast") {
+      build_options = sufkit::FastSuffixArrayBuildOptions();
+    } else if (profile == "low-memory") {
+      build_options = sufkit::LowMemorySuffixArrayBuildOptions();
+    } else {
+      throw sufkit::Error(sufkit::ErrorCode::kInvalidInput,
+                          "invalid SA resource profile: " + profile);
+    }
     const auto backend = options.ValueOr("--sa-backend", "auto");
     if (backend == "auto") {
       build_options.backend = sufkit::SaBackend::kAutoSelect;
@@ -259,6 +271,23 @@ int RunBuild(const std::vector<std::string>& arguments) {
                           "invalid SA width: " + width);
     }
 
+    const auto storage_width = options.ValueOr("--sa-storage-width", "auto");
+    if (storage_width == "auto") {
+      build_options.storage_width =
+          sufkit::CoordinateStorageWidth::kAutoSelect;
+    } else if (storage_width == "32") {
+      build_options.storage_width = sufkit::CoordinateStorageWidth::kBits32;
+    } else if (storage_width == "40") {
+      build_options.storage_width = sufkit::CoordinateStorageWidth::kBits40;
+    } else if (storage_width == "48") {
+      build_options.storage_width = sufkit::CoordinateStorageWidth::kBits48;
+    } else if (storage_width == "64") {
+      build_options.storage_width = sufkit::CoordinateStorageWidth::kBits64;
+    } else {
+      throw sufkit::Error(sufkit::ErrorCode::kInvalidInput,
+                          "invalid SA storage width: " + storage_width);
+    }
+
     const auto threads = sufkit::app::ParseUnsigned(
         options.ValueOr("--threads", "1"), "--threads");
     if (threads == 0 || threads > std::numeric_limits<std::uint32_t>::max()) {
@@ -274,12 +303,32 @@ int RunBuild(const std::vector<std::string>& arguments) {
                           "--sa-sampling-rate is out of range");
     }
     build_options.sampling_rate = static_cast<std::uint32_t>(sampling_rate);
-    build_options.acceleration = ParseSaAcceleration(
-        options.ValueOr("--sa-acceleration", "suffix-link"));
+    if (options.Has("--sa-acceleration")) {
+      build_options.acceleration =
+          ParseSaAcceleration(options.Require("--sa-acceleration"));
+    }
     const bool learned_option = options.Has("--learned-index") ||
                                 options.Has("--learned-k") ||
                                 options.Has("--learned-memory-bp") ||
                                 options.Has("--learned-bucket-bits");
+    if (profile == "low-memory") {
+      if (sampling_rate != 1) {
+        throw sufkit::Error(
+            sufkit::ErrorCode::kInvalidInput,
+            "--sa-profile low-memory requires --sa-sampling-rate 1");
+      }
+      if (options.Has("--sa-acceleration") &&
+          build_options.acceleration != sufkit::SaAcceleration::kLcp) {
+        throw sufkit::Error(
+            sufkit::ErrorCode::kInvalidInput,
+            "--sa-profile low-memory only supports --sa-acceleration lcp");
+      }
+      if (learned_option) {
+        throw sufkit::Error(
+            sufkit::ErrorCode::kInvalidInput,
+            "--sa-profile low-memory does not retain a learned index");
+      }
+    }
     build_options.learned_index.enabled = learned_option;
     if (options.Has("--learned-k")) {
       const auto value = sufkit::app::ParseUnsigned(
@@ -324,6 +373,7 @@ int RunBuild(const std::vector<std::string>& arguments) {
   }
   if (type == "fm") {
     if (options.Has("--sa-backend") || options.Has("--sa-width") ||
+        options.Has("--sa-storage-width") || options.Has("--sa-profile") ||
         options.Has("--threads") || options.Has("--sa-acceleration") ||
         options.Has("--sa-sampling-rate") || options.Has("--learned-index") ||
         options.Has("--learned-k") || options.Has("--learned-memory-bp") ||
@@ -663,10 +713,15 @@ int RunInspect(const std::vector<std::string>& arguments) {
             << "format_version\t" << info.format_version << '\n'
             << "library_version\t" << info.library_version << '\n'
             << "backend\t" << info.backend << '\n'
+            << "construction_backend\t" << info.backend << '\n'
             << "backend_signature\t" << info.backend_signature << '\n'
             << "sdsl_version\t" << info.sdsl_version << '\n'
             << "coordinate_width\t"
             << static_cast<unsigned>(info.coordinate_width) << '\n'
+            << "construction_coordinate_width\t"
+            << static_cast<unsigned>(info.coordinate_width) << '\n'
+            << "stored_coordinate_width\t"
+            << static_cast<unsigned>(info.stored_coordinate_width) << '\n'
             << "sequence_count\t" << info.sequence_count << '\n'
             << "total_bases\t" << info.total_bases << '\n'
             << "text_symbols\t" << info.text_symbols << '\n'
@@ -679,7 +734,22 @@ int RunInspect(const std::vector<std::string>& arguments) {
   if (info.kind == sufkit::IndexKind::kSuffixArray) {
     std::cout << "sa_acceleration\t" << sufkit::ToString(info.sa_acceleration)
               << '\n'
+              << "sa_resource_profile\t"
+              << sufkit::ToString(info.sa_resource_profile) << '\n'
+              << "lcp_encoding\t" << sufkit::ToString(info.lcp_encoding)
+              << '\n'
               << "auxiliary_bytes\t" << info.auxiliary_bytes << '\n'
+              << "text_bytes\t" << info.text_bytes << '\n'
+              << "sa_bytes\t" << info.sa_bytes << '\n'
+              << "isa_bytes\t" << info.isa_bytes << '\n'
+              << "lcp_bytes\t" << info.lcp_bytes << '\n'
+              << "lcp_primary_bytes\t" << info.lcp_primary_bytes << '\n'
+              << "lcp_overflow_anchors\t" << info.lcp_overflow_anchors
+              << '\n'
+              << "lcp_overflow_bytes\t" << info.lcp_overflow_bytes << '\n'
+              << "lcp_guide_bytes\t" << info.lcp_guide_bytes << '\n'
+              << "child_bytes\t" << info.child_bytes << '\n'
+              << "resident_core_bytes\t" << info.resident_core_bytes << '\n'
               << "lookup_acceleration\t"
               << sufkit::ToString(info.sa_lookup_acceleration) << '\n'
               << "learned_index_bytes\t" << info.learned_index_bytes << '\n'
@@ -748,6 +818,12 @@ int main(int argc, char** argv) {
     }
     if (command == "bench") {
       return sufkit::app::run_benchmark(arguments);
+    }
+    if (command == "__benchmark-worker") {
+      return sufkit::app::run_benchmark_worker(arguments);
+    }
+    if (command == "__maximal-benchmark-worker") {
+      return sufkit::app::run_maximal_benchmark_worker(arguments);
     }
     throw sufkit::Error(sufkit::ErrorCode::kInvalidInput,
                         "unknown command: " + command);

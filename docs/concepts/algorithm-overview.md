@@ -23,11 +23,16 @@ sufkit provides two constructors that first establish a complete suffix order:
   medium references;
 - CaPS-SA32/64: shared-memory parallel construction for large references.
 
-Both receive identical encoded text and produce the same suffix order. When
-LCP is requested, CaPS exposes the vector already computed by its merge stages;
-divsufsort uses a private adapter that constructs ISA/LCP after sorting without
-a second common-pipeline pass. Constructor choice does not change exact or right-maximal exact match
-semantics.
+Both receive identical encoded text and produce the same suffix order. The
+constructor's 32/64-bit integer type is independent of the final coordinate
+layout: a wider constructor result may be validated and down-packed to
+native32, split40, or split48 storage. CaPS computes a merge-built LCP
+internally. Fast and CHILD construction copy the required raw values while the
+CaPS object is alive. Low-memory releases the CaPS object and then builds
+byte-coded LCP from the retained SA and a temporary ISA. The divsufsort path
+likewise constructs the profile-selected raw or byte-coded auxiliary
+representation after sorting. Constructor choice does not change exact or
+maximal-match semantics.
 
 Construction is generally O(n) or near-linear in practical suffix sorters;
 the public contract promises correctness and width limits rather than one
@@ -73,14 +78,48 @@ ISA[SA[row]] = row
 ```
 
 LCP stores the common-prefix length of adjacent stored suffixes, with
-`LCP[0]=0`. The divsufsort path constructs it with a linear generalized Kasai
-scan using SA and ISA. For sampled positions, the retained common prefix is
-reduced by K per text step. CaPS instead retains its merge-built complete LCP;
-sampling compacts it by range minima between retained rows.
+`LCP[0]=0`. Low-memory constructs byte-coded LCP with a linear generalized
+Kasai scan using SA and ISA; Fast retains native raw LCP. For sampled
+positions, the retained common prefix is reduced by K per text step. When
+CHILD needs raw rows,
+divsufsort uses a raw generalized Kasai scan; CaPS can reuse its merge-built
+complete LCP, compacting it by range minima between retained rows when K is
+greater than one.
 
 LCP supports interval reasoning and reduces repeated comparisons. ISA enables
 moving from a text position back to the row of its suffix, which is central to
 suffix-link interval reuse.
+
+Most LCP values in genomic indexes are short. Byte-coded LCP stores values
+below 255 directly in one byte. A 255 marker identifies a longer value; a
+text-ordered anchor stores the start position and value of each maximal run
+whose generalized PLCP decreases by the sampling rate. A small derived guide
+narrows anchor lookup after load. Low-memory uses this representation
+unconditionally. Fast keeps raw LCP because byte coding did not meet the
+three-percent per-workload regression gate in pinned quick measurements. Both
+representations expose identical row values.
+
+## Adaptive coordinate storage
+
+The largest logical-text position, not constructor choice, determines which
+final storage widths are valid:
+
+```text
+max_position <= UINT32_MAX  -> native32
+max_position < 2^40         -> split40
+max_position < 2^48         -> split48
+otherwise                   -> native64
+```
+
+Split40 uses contiguous low32 and high8 planes; split48 uses low32 and high16.
+This avoids padding each coordinate to eight bytes. Random row probes decode
+one low/high pair, while interval enumeration can decode a contiguous span.
+The public coordinate type remains `uint64_t`.
+
+Fast chooses native32 or native64 automatically because suffix-link lookups
+favor native random access. Low-memory chooses the narrowest valid width and
+keeps SA+LCP without a resident ISA. This is a policy distinction, not a
+change in suffix order or query semantics.
 
 ## CHILD and enhanced suffix arrays
 
@@ -203,6 +242,10 @@ Automatic choices are deliberately conservative:
 - FM construction defaults to Huffman;
 - experimental speedups are promoted only after cross-method equivalence and
   representative benchmarks.
+
+In particular, the split40/48 layouts are not promoted into Fast auto
+selection, and no `>2^32` or MUMmer4 superiority claim is made until real-scale
+build, loaded-memory, and query measurements pass the documented gates.
 
 Primary provenance and fixed dependency revisions are recorded in
 `THIRD_PARTY_NOTICES.md`, the backend reference, and detailed benchmark pages.
