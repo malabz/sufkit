@@ -21,6 +21,7 @@
 #include <sufkit/version.hpp>
 
 #include "caps_backend.hpp"
+#include "fast_prefix_index.hpp"
 #include "sa_codec.hpp"
 
 namespace sufkit::detail {
@@ -1343,6 +1344,18 @@ IndexInfo IndexInfoFromContainer(const ParsedContainer& container) {
             CheckedMetricAdd(info.text_bytes, info.sa_bytes, "resident core"),
             info.auxiliary_bytes, "resident core"),
         learned_resident_bytes, "resident core");
+    if (info.sa_resource_profile == SaResourceProfile::kFast &&
+        info.sa_sampling_rate == 1 && info.isa_bytes != 0 &&
+        info.learned_index_bytes == 0) {
+      const auto prefix_k = FastPrefixIndex::SelectK(
+          info.suffix_count, info.resident_core_bytes);
+      const auto prefix_bytes = FastPrefixIndex::ResidentBytesForK(
+          prefix_k, info.suffix_count);
+      info.auxiliary_bytes = CheckedMetricAdd(
+          info.auxiliary_bytes, prefix_bytes, "Fast prefix index");
+      info.resident_core_bytes = CheckedMetricAdd(
+          info.resident_core_bytes, prefix_bytes, "resident core");
+    }
   } else {
     if (info.coordinate_width != 64) {
       throw Error(ErrorCode::kCorruptIndex,

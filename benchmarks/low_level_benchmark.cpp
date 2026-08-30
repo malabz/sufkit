@@ -11,6 +11,7 @@
 #include <iomanip>
 #include <iostream>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -100,6 +101,22 @@ SUFKIT_NOINLINE CompareResult ComparePatternProduction(
   return {result.order, result.lcp, result.comparisons};
 }
 
+SUFKIT_NOINLINE std::size_t LongestCommonPrefixScalar(
+    const std::uint8_t* left, const std::uint8_t* right,
+    std::size_t length) {
+  std::size_t index = 0;
+  while (index < length && left[index] == right[index]) {
+    ++index;
+  }
+  return index;
+}
+
+SUFKIT_NOINLINE std::size_t LongestCommonPrefixProduction(
+    const std::uint8_t* left, const std::uint8_t* right,
+    std::size_t length) {
+  return sufkit::detail::LongestCommonPrefixBytesLong(left, right, length);
+}
+
 SUFKIT_NOINLINE std::uint64_t PopcountKernel(std::uint64_t value) {
 #if defined(SUFKIT_X86_64_SSE42_BASELINE)
   return static_cast<std::uint64_t>(_mm_popcnt_u64(value));
@@ -183,11 +200,13 @@ Options ParseOptions(int argc, char** argv) {
 
 std::vector<std::size_t> LengthsForProfile(const std::string& profile) {
   if (profile == "smoke") {
-    return {7, 8, 9, 15, 16, 17, 31, 32, 33, 63, 64, 65, 100, 500};
+    return {0,  1,  7,  8,  9,  15, 16, 17, 31, 32, 33,
+            47, 48, 49, 63, 64, 65, 79, 80, 81, 95, 96, 97,
+            100, 127, 128, 129, 500};
   }
   std::vector<std::size_t> lengths;
-  lengths.reserve(84);
-  for (std::size_t length = 1; length <= 80; ++length) {
+  lengths.reserve(165);
+  for (std::size_t length = 0; length <= 160; ++length) {
     lengths.push_back(length);
   }
   lengths.insert(lengths.end(), {100, 200, 500, 4096});
@@ -197,8 +216,9 @@ std::vector<std::size_t> LengthsForProfile(const std::string& profile) {
 std::vector<std::optional<std::size_t>> MismatchesForLength(
     std::size_t length) {
   std::vector<std::optional<std::size_t>> mismatches;
-  const std::array<std::size_t, 8> candidates{
-      0, 1, 3, 7, 8, 15, 16, length - 1};
+  const std::array<std::size_t, 14> candidates{
+      0,  1,  3,  7,  8,  15, 16,
+      31, 32, 47, 48, 63, 64, length - 1};
   for (const auto candidate : candidates) {
     if (candidate >= length) {
       continue;
@@ -221,8 +241,12 @@ InputCase MakeInputCase(std::size_t length,
   result.mismatch = mismatch;
   result.lhs_offset = lhs_offset;
   result.rhs_offset = rhs_offset;
-  result.lhs_storage.assign(length + lhs_offset + 16, 0xeeU);
-  result.rhs_storage.assign(length + rhs_offset + 16, 0xddU);
+  // Do not add tail padding: ASan must be able to catch a vector load past the
+  // caller-provided logical extent.
+  result.lhs_storage.assign(
+      std::max<std::size_t>(1, length + lhs_offset), 0xeeU);
+  result.rhs_storage.assign(
+      std::max<std::size_t>(1, length + rhs_offset), 0xddU);
   for (std::size_t index = 0; index < length; ++index) {
     const auto base = static_cast<std::uint8_t>(2 +
         ((index * 5 + length * 3 + lhs_offset) & 3U));
@@ -300,7 +324,7 @@ void VerifyCase(const InputCase& input) {
 
     const auto shared_size = std::min(text_size, pattern_size);
     const auto expected_lce =
-        ComparePatternScalar(text, shared_size, pattern, shared_size).lcp;
+        LongestCommonPrefixScalar(text, pattern, shared_size);
     const auto actual_lce = sufkit::detail::LongestCommonPrefixBytes(
         text, pattern, shared_size);
     if (expected_lce != actual_lce) {
@@ -328,7 +352,59 @@ void VerifyCase(const InputCase& input) {
   }
 }
 
+void VerifyLceBoundaryMatrix() {
+  if (sufkit::detail::LongestCommonPrefixBytes(nullptr, nullptr, 0) != 0) {
+    throw std::runtime_error("zero-length LCE mismatch");
+  }
+
+  // Exhaust every mismatch position around and beyond both the 16-byte SIMD
+  // boundary and the 32-byte unrolled boundary. Each allocation ends exactly
+  // at the logical input boundary, so ASan also verifies that the kernel never
+  // issues a full vector load for a short tail.
+  for (std::size_t length = 0; length <= 160; ++length) {
+    for (std::size_t left_offset = 0; left_offset < 16; ++left_offset) {
+      const auto right_offset = (left_offset * 7 + 3) & 15U;
+      const auto left_allocation =
+          std::max<std::size_t>(1, left_offset + length);
+      const auto right_allocation =
+          std::max<std::size_t>(1, right_offset + length);
+      auto left_storage =
+          std::make_unique<std::uint8_t[]>(left_allocation);
+      auto right_storage =
+          std::make_unique<std::uint8_t[]>(right_allocation);
+      auto* const left = left_storage.get() + left_offset;
+      auto* const right = right_storage.get() + right_offset;
+      for (std::size_t index = 0; index < length; ++index) {
+        const auto value = static_cast<std::uint8_t>(
+            2U + ((index * 13U + length * 5U + left_offset) & 3U));
+        left[index] = value;
+        right[index] = value;
+      }
+
+      const auto verify = [&](std::size_t expected) {
+        const auto oracle = LongestCommonPrefixScalar(left, right, length);
+        const auto actual = sufkit::detail::LongestCommonPrefixBytesLong(
+            left, right, length);
+        if (oracle != expected || actual != oracle) {
+          throw std::runtime_error(
+              "production/oracle LCE boundary mismatch at length " +
+              std::to_string(length) + ", expected LCP " +
+              std::to_string(expected));
+        }
+      };
+
+      verify(length);
+      for (std::size_t mismatch = 0; mismatch < length; ++mismatch) {
+        right[mismatch] ^= 0x5aU;
+        verify(mismatch);
+        right[mismatch] ^= 0x5aU;
+      }
+    }
+  }
+}
+
 void VerifyAll(const std::vector<CaseGroup>& groups) {
+  VerifyLceBoundaryMatrix();
   for (const auto& group : groups) {
     for (const auto& input : group.cases) {
       VerifyCase(input);
@@ -361,6 +437,23 @@ std::pair<std::uint64_t, std::uint64_t> RunGroup(
   return {checksum, examined_bytes};
 }
 
+template <std::size_t (*Kernel)(const std::uint8_t*, const std::uint8_t*,
+                                std::size_t)>
+std::pair<std::uint64_t, std::uint64_t> RunLceGroup(
+    const CaseGroup& group, std::size_t rounds) {
+  std::uint64_t checksum = 0xcbf29ce484222325ULL;
+  std::uint64_t examined_bytes = 0;
+  for (std::size_t round = 0; round < rounds; ++round) {
+    for (const auto& input : group.cases) {
+      const auto lcp = Kernel(input.lhs(), input.rhs(), input.length);
+      Mix(checksum, static_cast<std::uint64_t>(lcp));
+      examined_bytes += static_cast<std::uint64_t>(
+          lcp + (lcp < input.length ? 1U : 0U));
+    }
+  }
+  return {checksum, examined_bytes};
+}
+
 std::string MismatchLabel(const std::optional<std::size_t>& mismatch) {
   return mismatch.has_value() ? std::to_string(*mismatch) : "equal";
 }
@@ -373,6 +466,35 @@ void MeasureGroup(const char* kernel_name, const Options& options,
                   std::size_t rounds, std::ofstream& output) {
   const auto begin = Clock::now();
   const auto [checksum, examined_bytes] = RunGroup<Kernel>(group, rounds);
+  const double seconds =
+      std::chrono::duration<double>(Clock::now() - begin).count();
+  const auto iterations = rounds * group.cases.size();
+  const double nanoseconds_per_call =
+      seconds * 1.0e9 / static_cast<double>(iterations);
+  const double bytes_per_second =
+      seconds == 0.0 ? 0.0
+                     : static_cast<double>(examined_bytes) / seconds;
+  output << options.profile << '\t' << kernel_name << '\t' << group.length
+         << '\t' << MismatchLabel(group.mismatch) << '\t' << repetition
+         << '\t' << iterations << '\t' << std::setprecision(17) << seconds
+         << '\t' << nanoseconds_per_call << '\t' << bytes_per_second << '\t'
+         << checksum << '\t'
+#if defined(SUFKIT_X86_64_SSE42_BASELINE)
+         << 1
+#else
+         << 0
+#endif
+         << '\t' << (RuntimeSupportsSse42() ? 1 : 0) << '\t'
+         << PopcountKernel(checksum) << '\n';
+}
+
+template <std::size_t (*Kernel)(const std::uint8_t*, const std::uint8_t*,
+                                std::size_t)>
+void MeasureLceGroup(const char* kernel_name, const Options& options,
+                     const CaseGroup& group, std::uint32_t repetition,
+                     std::size_t rounds, std::ofstream& output) {
+  const auto begin = Clock::now();
+  const auto [checksum, examined_bytes] = RunLceGroup<Kernel>(group, rounds);
   const double seconds =
       std::chrono::duration<double>(Clock::now() - begin).count();
   const auto iterations = rounds * group.cases.size();
@@ -413,6 +535,8 @@ void WriteMeasurements(const Options& options,
   for (const auto& group : groups) {
     static_cast<void>(RunGroup<ComparePatternScalar>(group, 1));
     static_cast<void>(RunGroup<ComparePatternProduction>(group, 1));
+    static_cast<void>(RunLceGroup<LongestCommonPrefixScalar>(group, 1));
+    static_cast<void>(RunLceGroup<LongestCommonPrefixProduction>(group, 1));
   }
   const std::size_t rounds = options.profile == "smoke" ? 32 : 2048;
   for (std::uint32_t repetition = 0;
@@ -423,7 +547,15 @@ void WriteMeasurements(const Options& options,
                                            repetition, rounds, output);
         MeasureGroup<ComparePatternProduction>(
             "production_sse", options, group, repetition, rounds, output);
+        MeasureLceGroup<LongestCommonPrefixScalar>(
+            "lce_scalar", options, group, repetition, rounds, output);
+        MeasureLceGroup<LongestCommonPrefixProduction>(
+            "lce_sse", options, group, repetition, rounds, output);
       } else {
+        MeasureLceGroup<LongestCommonPrefixProduction>(
+            "lce_sse", options, group, repetition, rounds, output);
+        MeasureLceGroup<LongestCommonPrefixScalar>(
+            "lce_scalar", options, group, repetition, rounds, output);
         MeasureGroup<ComparePatternProduction>(
             "production_sse", options, group, repetition, rounds, output);
         MeasureGroup<ComparePatternScalar>("scalar", options, group,

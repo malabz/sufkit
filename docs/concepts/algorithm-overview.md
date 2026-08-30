@@ -237,7 +237,8 @@ Automatic choices are deliberately conservative:
 - constructor auto-routing uses CaPS only for large, multithreaded builds;
 - SA acceleration defaults to ISA+LCP suffix links;
 - exact auto search chooses PWL only when a model exists and the pattern is
-  long enough; otherwise binary;
+  long enough; otherwise a Fast exact-prefix directory when available, then
+  LCP-aware binary;
 - CHILD/full are explicit;
 - FM construction defaults to Huffman;
 - experimental speedups are promoted only after cross-method equivalence and

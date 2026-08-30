@@ -292,6 +292,19 @@ void TestSuffixArray(const std::filesystem::path& directory) {
   CHECK(directional.hits[2].sequence_id == 2 &&
         directional.hits[2].position == 0 &&
         directional.hits[2].strand == sufkit::Strand::kForward);
+  both.max_hits = 1;
+  const auto directional_first = sa32.Locate("AAA", both);
+  CHECK(directional_first.total_hits == directional.total_hits);
+  CHECK(directional_first.hits.size() == 1);
+  CHECK(directional_first.truncated);
+  CHECK(directional_first.hits[0].sequence_id == 1 &&
+        directional_first.hits[0].position == 0 &&
+        directional_first.hits[0].strand ==
+            sufkit::Strand::kReverseComplement);
+  const auto palindrome_first = sa32.Locate("ACGT", both);
+  CHECK(palindrome_first.total_hits == palindrome.total_hits);
+  CHECK(palindrome_first.hits.size() == 1);
+  CHECK(palindrome_first.hits[0].strand == sufkit::Strand::kBoth);
   both.max_hits = 2;
   const auto directional_limited = sa32.Locate("AAA", both);
   CHECK(directional_limited.total_hits == 3);
@@ -770,6 +783,82 @@ void TestSaStorageProfiles(const std::filesystem::path& directory) {
   }
 }
 
+void TestFastPrefixDirectoryIntegration(
+    const std::filesystem::path& directory) {
+  std::string sequence(262144, 'A');
+  std::uint64_t state = 20260830;
+  constexpr std::array<char, 4> kBases{'A', 'C', 'G', 'T'};
+  for (auto& base : sequence) {
+    state = state * 6364136223846793005ULL + 1442695040888963407ULL;
+    base = kBases[static_cast<std::size_t>(state >> 62U)];
+  }
+  const auto reference = sufkit::GenomeReference::FromRecords(
+      {{"fast-prefix", "", sequence}});
+  auto options = sufkit::FastSuffixArrayBuildOptions();
+  options.backend = sufkit::SaBackend::kDivsufsort;
+  auto index = sufkit::SuffixArray::Build(reference, options);
+
+  const auto info = index.GetInfo();
+  const auto persistent_core = info.text_bytes + info.sa_bytes +
+                               info.isa_bytes + info.lcp_bytes +
+                               info.child_bytes;
+  // This input selects the private k=8 table: 4^8 packed 32-bit intervals.
+  CHECK(info.resident_core_bytes - persistent_core == (512U << 10U));
+  CHECK(info.auxiliary_bytes >= info.isa_bytes + info.lcp_bytes +
+                                    (512U << 10U));
+
+  const auto pattern = sequence.substr(12345, 50);
+  sufkit::SaSearchStatistics binary_stats;
+  const auto binary = index.EqualRange(
+      pattern, sufkit::SaSearchAlgorithm::kBinary, &binary_stats);
+  sufkit::SaSearchStatistics auto_stats;
+  const auto automatic = index.EqualRange(
+      pattern, sufkit::SaSearchAlgorithm::kAutoSelect, &auto_stats);
+  CHECK(binary.begin == automatic.begin && binary.end == automatic.end);
+  CHECK(auto_stats.suffix_comparisons < binary_stats.suffix_comparisons);
+
+  const auto query = sequence.substr(12345, 200);
+  const auto same_matches = [](const auto& left, const auto& right) {
+    if (left.total_matches != right.total_matches ||
+        left.truncated != right.truncated ||
+        left.matches.size() != right.matches.size()) {
+      return false;
+    }
+    for (std::size_t i = 0; i < left.matches.size(); ++i) {
+      const auto& a = left.matches[i];
+      const auto& b = right.matches[i];
+      if (a.sequence_id != b.sequence_id ||
+          a.reference_position != b.reference_position ||
+          a.query_position != b.query_position || a.length != b.length ||
+          a.strand != b.strand) {
+        return false;
+      }
+    }
+    return true;
+  };
+  sufkit::MemOptions auto_mem;
+  auto_mem.min_length = 20;
+  auto binary_mem = auto_mem;
+  binary_mem.lookup_algorithm = sufkit::SaSearchAlgorithm::kBinary;
+  CHECK(same_matches(index.FindMems(query, auto_mem),
+                     index.FindMems(query, binary_mem)));
+  sufkit::MamOptions auto_mam;
+  auto_mam.min_length = 20;
+  auto binary_mam = auto_mam;
+  binary_mam.lookup_algorithm = sufkit::SaSearchAlgorithm::kBinary;
+  CHECK(same_matches(index.FindMams(query, auto_mam),
+                     index.FindMams(query, binary_mam)));
+
+  const auto path = directory / "fast-prefix.sa.sufidx";
+  index.Save(path);
+  const auto inspected = sufkit::InspectIndex(path);
+  auto loaded = sufkit::SuffixArray::Load(path);
+  CHECK(inspected.resident_core_bytes == info.resident_core_bytes);
+  CHECK(loaded.GetInfo().resident_core_bytes == info.resident_core_bytes);
+  const auto loaded_range = loaded.EqualRange(pattern);
+  CHECK(loaded_range.begin == binary.begin && loaded_range.end == binary.end);
+}
+
 void TestPackedSpanLocateEnumeration() {
   const auto reference = sufkit::GenomeReference::FromRecords(
       {{"repeat", "", std::string(700, 'A')}});
@@ -785,6 +874,14 @@ void TestPackedSpanLocateEnumeration() {
   native_options.storage_width =
       sufkit::CoordinateStorageWidth::kBits32;
   const auto native = sufkit::SuffixArray::Build(reference, native_options);
+  for (const std::size_t length : {511U, 512U, 513U, 600U}) {
+    const std::string long_pattern(length, 'A');
+    const auto expected_hits = 701U - length;
+    CHECK(native.Count(long_pattern) == expected_hits);
+    CHECK(native.Count(long_pattern, sufkit::StrandMode::kBoth) ==
+          expected_hits);
+    CHECK(native.EqualRange(long_pattern).Size() == expected_hits);
+  }
   const std::array<std::optional<std::uint64_t>, 5> limits{
       {std::nullopt, 0, 1, 10, 600}};
   std::vector<sufkit::QueryResult> expected;
@@ -1034,9 +1131,14 @@ void TestLearnedSa(const std::filesystem::path& directory) {
   no_learned.acceleration = sufkit::SaAcceleration::kFull;
   auto full = sufkit::SuffixArray::Build(reference, no_learned);
   sufkit::SaSearchStatistics auto_stats;
-  (void)full.EqualRange("ACGT", sufkit::SaSearchAlgorithm::kAutoSelect,
-                        &auto_stats);
-  CHECK(auto_stats.suffix_comparisons != 0);  // auto uses binary, never CHILD
+  const auto automatic = full.EqualRange(
+      "ACGT", sufkit::SaSearchAlgorithm::kAutoSelect, &auto_stats);
+  sufkit::SaSearchStatistics lcp_stats;
+  const auto lcp = full.EqualRange(
+      "ACGT", sufkit::SaSearchAlgorithm::kLcpBinary, &lcp_stats);
+  CHECK(automatic.begin == lcp.begin && automatic.end == lcp.end);
+  CHECK(auto_stats.suffix_comparisons == lcp_stats.suffix_comparisons);
+  CHECK(auto_stats.character_comparisons == lcp_stats.character_comparisons);
   CheckError(sufkit::ErrorCode::kUnsupportedBackend, [&] {
     (void)full.EqualRange("ACGT", sufkit::SaSearchAlgorithm::kSaplingPwl);
   });
@@ -1418,6 +1520,7 @@ int main() {
     TestReferenceAndFasta(directory);
     TestSuffixArray(directory);
     TestSaStorageProfiles(directory);
+    TestFastPrefixDirectoryIntegration(directory);
     TestPackedSpanLocateEnumeration();
     TestLegacySaFixtures();
     TestManyContigCoordinateMapping(directory);

@@ -78,6 +78,78 @@ inline ByteComparison ComparePatternBytes(const std::uint8_t* text,
   return {0, index, index - initial_lcp};
 }
 
+inline std::size_t LongestCommonPrefixBytesLong(const std::uint8_t* left,
+                                                const std::uint8_t* right,
+                                                std::size_t length) {
+  constexpr std::size_t kVectorBytes = 16;
+  constexpr std::size_t kUnrolledBytes = 2 * kVectorBytes;
+  constexpr unsigned kAllBytesEqual = 0xFFFFU;
+
+  std::size_t index = 0;
+
+  // Most candidate extensions stop immediately after their proven anchor.
+  // Four scalar probes preserve that low-latency case while remaining short
+  // enough that long equal runs reach the wider LCE loop quickly.
+  const auto scalar_end = std::min(length, static_cast<std::size_t>(4));
+  while (index < scalar_end) {
+    if (left[index] != right[index]) {
+      return index;
+    }
+    ++index;
+  }
+
+  // A shorter scalar prefix than ComparePatternBytes keeps two independent
+  // cache-line streams in flight for long equal runs. The remaining-length
+  // checks precede every load, so neither the unrolled loop nor the final
+  // vector can read beyond [0, length).
+  while (length - index >= kUnrolledBytes) {
+    const auto left0 = _mm_loadu_si128(
+        reinterpret_cast<const __m128i*>(left + index));
+    const auto right0 = _mm_loadu_si128(
+        reinterpret_cast<const __m128i*>(right + index));
+    const auto left1 = _mm_loadu_si128(
+        reinterpret_cast<const __m128i*>(left + index + kVectorBytes));
+    const auto right1 = _mm_loadu_si128(
+        reinterpret_cast<const __m128i*>(right + index + kVectorBytes));
+
+    const auto mask0 = static_cast<unsigned>(
+        _mm_movemask_epi8(_mm_cmpeq_epi8(left0, right0)));
+    const auto mask1 = static_cast<unsigned>(
+        _mm_movemask_epi8(_mm_cmpeq_epi8(left1, right1)));
+    if (mask0 != kAllBytesEqual) {
+      const auto mismatch = static_cast<std::size_t>(
+          __builtin_ctz((~mask0) & kAllBytesEqual));
+      return index + mismatch;
+    }
+    if (mask1 != kAllBytesEqual) {
+      const auto mismatch = static_cast<std::size_t>(
+          __builtin_ctz((~mask1) & kAllBytesEqual));
+      return index + kVectorBytes + mismatch;
+    }
+    index += kUnrolledBytes;
+  }
+
+  if (length - index >= kVectorBytes) {
+    const auto left_block = _mm_loadu_si128(
+        reinterpret_cast<const __m128i*>(left + index));
+    const auto right_block = _mm_loadu_si128(
+        reinterpret_cast<const __m128i*>(right + index));
+    const auto mask = static_cast<unsigned>(
+        _mm_movemask_epi8(_mm_cmpeq_epi8(left_block, right_block)));
+    if (mask != kAllBytesEqual) {
+      const auto mismatch = static_cast<std::size_t>(
+          __builtin_ctz((~mask) & kAllBytesEqual));
+      return index + mismatch;
+    }
+    index += kVectorBytes;
+  }
+
+  while (index < length && left[index] == right[index]) {
+    ++index;
+  }
+  return index;
+}
+
 inline std::size_t LongestCommonPrefixBytes(const std::uint8_t* left,
                                             const std::uint8_t* right,
                                             std::size_t length) {

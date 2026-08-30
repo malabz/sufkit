@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <limits>
 #include <new>
+#include <optional>
 #include <thread>
 #include <tuple>
 #include <type_traits>
@@ -17,6 +18,7 @@
 #include "caps_backend.hpp"
 #include "coordinate_storage.hpp"
 #include "divsufsort_backend.hpp"
+#include "fast_prefix_index.hpp"
 #include "genome_reference_internal.hpp"
 #include "lcp_storage.hpp"
 #include "query.hpp"
@@ -96,8 +98,9 @@ struct LcpAccess {
   const std::uint64_t* raw64 = nullptr;
   const std::uint8_t* primary = nullptr;
 
-  std::uint64_t Exact(std::size_t row,
-                      std::uint64_t suffix_position) const {
+  template <class SuffixPosition>
+  std::uint64_t ExactLazy(std::size_t row,
+                          SuffixPosition&& suffix_position) const {
     if (raw32 != nullptr) {
       return raw32[row];
     }
@@ -108,11 +111,17 @@ struct LcpAccess {
         primary[row] < detail::LcpStorage::kByteLimit) {
       return primary[row];
     }
-    return storage->Exact(row, suffix_position);
+    return storage->Exact(row, suffix_position());
   }
 
-  bool AtLeast(std::size_t row, std::uint64_t suffix_position,
-               std::uint64_t target) const {
+  std::uint64_t Exact(std::size_t row,
+                      std::uint64_t suffix_position) const {
+    return ExactLazy(row, [suffix_position] { return suffix_position; });
+  }
+
+  template <class SuffixPosition>
+  bool AtLeastLazy(std::size_t row, SuffixPosition&& suffix_position,
+                   std::uint64_t target) const {
     if (raw32 != nullptr) {
       return raw32[row] >= target;
     }
@@ -127,8 +136,15 @@ struct LcpAccess {
       if (target <= detail::LcpStorage::kByteLimit) {
         return true;
       }
+      return storage->AtLeast(row, suffix_position(), target);
     }
-    return storage->AtLeast(row, suffix_position, target);
+    return storage->AtLeast(row, suffix_position(), target);
+  }
+
+  bool AtLeast(std::size_t row, std::uint64_t suffix_position,
+               std::uint64_t target) const {
+    return AtLeastLazy(row, [suffix_position] { return suffix_position; },
+                       target);
   }
 };
 
@@ -140,7 +156,8 @@ struct LcpView {
   std::size_t size() const noexcept { return row_count; }
 
   std::uint64_t operator[](std::size_t row) const {
-    return access.Exact(row, SaValue(*suffix_array, row));
+    return access.ExactLazy(
+        row, [&] { return SaValue(*suffix_array, row); });
   }
 };
 
@@ -150,13 +167,25 @@ struct TypedLcpView {
   const SaVector* suffix_array = nullptr;
 
   std::uint64_t operator[](std::size_t row) const {
-    return access.Exact(
-        row, static_cast<std::uint64_t>((*suffix_array)[row]));
+    return access.ExactLazy(row, [&] {
+      return static_cast<std::uint64_t>((*suffix_array)[row]);
+    });
   }
 
   bool AtLeast(std::size_t row, std::uint64_t target) const {
-    return access.AtLeast(
-        row, static_cast<std::uint64_t>((*suffix_array)[row]), target);
+    return access.AtLeastLazy(
+        row,
+        [&] { return static_cast<std::uint64_t>((*suffix_array)[row]); },
+        target);
+  }
+};
+
+struct RawLcpView {
+  const std::uint32_t* raw32 = nullptr;
+  const std::uint64_t* raw64 = nullptr;
+
+  bool AtLeast(std::size_t row, std::uint64_t target) const noexcept {
+    return raw32 != nullptr ? raw32[row] >= target : raw64[row] >= target;
   }
 };
 
@@ -290,6 +319,69 @@ struct EncodedView {
   std::uint8_t back() const noexcept { return data[length - 1]; }
 };
 
+// Exact SA queries up to 512 bases use stack storage. This removes one heap
+// allocation from the common count/equal-range path and two from a both-strand
+// query, while retaining an unbounded heap fallback for long patterns.
+class ExactPatternBuffer {
+ public:
+  explicit ExactPatternBuffer(std::string_view pattern)
+      : ExactPatternBuffer(pattern.size()) {
+    if (pattern.empty()) {
+      throw Error(ErrorCode::kInvalidInput, "pattern must not be empty");
+    }
+    auto* output = MutableData();
+    for (std::size_t index = 0; index < pattern.size(); ++index) {
+      const auto symbol = kRightMaximalEncoding[
+          static_cast<unsigned char>(pattern[index])];
+      if (symbol == detail::kSentinel) {
+        throw Error(ErrorCode::kInvalidInput,
+                    "pattern contains a non-ACGT character");
+      }
+      output[index] = symbol;
+    }
+  }
+
+  ExactPatternBuffer ReverseComplement() const {
+    ExactPatternBuffer result(size_);
+    auto* output = result.MutableData();
+    const auto* input = Data();
+    for (std::size_t index = 0; index < size_; ++index) {
+      output[index] = kRightMaximalComplement[input[size_ - index - 1U]];
+    }
+    return result;
+  }
+
+  bool Equals(const ExactPatternBuffer& other) const noexcept {
+    return size_ == other.size_ &&
+           std::equal(Data(), Data() + size_, other.Data());
+  }
+
+  EncodedView View() const noexcept { return {Data(), size_}; }
+  std::size_t Size() const noexcept { return size_; }
+
+ private:
+  static constexpr std::size_t kInlineBases = 512;
+
+  explicit ExactPatternBuffer(std::size_t size) : size_(size) {
+    if (size_ > kInlineBases) {
+      heap_.resize(size_);
+    }
+  }
+
+  const std::uint8_t* Data() const noexcept {
+    return size_ <= kInlineBases ? inline_.data() : heap_.data();
+  }
+  std::uint8_t* MutableData() noexcept {
+    return size_ <= kInlineBases ? inline_.data() : heap_.data();
+  }
+
+  // Constructors initialize exactly the active prefix. Leaving the remaining
+  // stack capacity untouched avoids clearing 512 bytes for every short query.
+  std::array<std::uint8_t, kInlineBases> inline_;
+  std::vector<std::uint8_t> heap_;
+  std::size_t size_ = 0;
+};
+
 // Exact locate keeps the globally ordered coordinate until after retention.
 // Reference concatenation preserves contig order, so sorting this compact
 // representation is equivalent to sorting public (sequence, local) matches.
@@ -303,13 +395,34 @@ bool GlobalMatchLess(const GlobalMatch& left, const GlobalMatch& right) {
          std::tie(right.global_position, right.strand);
 }
 
-void RetainGlobalMatch(std::vector<GlobalMatch>& matches, GlobalMatch match,
-                       const LocateOptions& options, bool& heap_active) {
-  if (!options.max_hits) {
-    matches.push_back(match);
-    return;
+void ReplaceGlobalMatchHeapRoot(std::vector<GlobalMatch>& matches,
+                                GlobalMatch replacement) {
+  // The replacement is smaller than the current maximum. Sift it down once
+  // instead of traversing the bounded heap for both pop_heap and push_heap.
+  std::size_t parent = 0;
+  while (true) {
+    const auto left = parent * 2 + 1;
+    if (left >= matches.size()) {
+      break;
+    }
+    auto child = left;
+    const auto right = left + 1;
+    if (right < matches.size() &&
+        GlobalMatchLess(matches[left], matches[right])) {
+      child = right;
+    }
+    if (!GlobalMatchLess(replacement, matches[child])) {
+      break;
+    }
+    matches[parent] = matches[child];
+    parent = child;
   }
-  const auto limit = *options.max_hits;
+  matches[parent] = replacement;
+}
+
+void RetainBoundedGlobalMatch(std::vector<GlobalMatch>& matches,
+                              GlobalMatch match, std::uint64_t limit,
+                              bool& heap_active) {
   if (limit == 0) {
     return;
   }
@@ -322,9 +435,14 @@ void RetainGlobalMatch(std::vector<GlobalMatch>& matches, GlobalMatch match,
     heap_active = true;
   }
   if (GlobalMatchLess(match, matches.front())) {
-    std::pop_heap(matches.begin(), matches.end(), GlobalMatchLess);
-    matches.back() = match;
-    std::push_heap(matches.begin(), matches.end(), GlobalMatchLess);
+    ReplaceGlobalMatchHeapRoot(matches, match);
+  }
+}
+
+void RetainSmallestGlobalMatch(std::optional<GlobalMatch>& smallest,
+                               GlobalMatch match) {
+  if (!smallest || GlobalMatchLess(match, *smallest)) {
+    smallest = match;
   }
 }
 
@@ -397,6 +515,44 @@ QueryResult FinalizeGlobalMatches(std::vector<GlobalMatch> globals,
   }
   result.hits.resize(output);
   result.truncated = result.hits.size() < result.total_hits;
+  return result;
+}
+
+QueryResult FinalizeSmallestGlobalMatch(
+    const std::optional<GlobalMatch>& global,
+    const detail::ReferenceData& reference, std::uint64_t pattern_length,
+    std::uint64_t total_hits) {
+  QueryResult result;
+  result.total_hits = total_hits;
+  if (!global) {
+    result.truncated = total_hits != 0;
+    return result;
+  }
+
+  const auto& starts = reference.contig_starts;
+  const auto& lengths = reference.contig_lengths;
+  if (starts.empty() || starts.size() != lengths.size()) {
+    throw Error(ErrorCode::kCorruptIndex,
+                "suffix-array reference coordinates are invalid");
+  }
+  const auto sequence =
+      std::upper_bound(starts.begin(), starts.end(), global->global_position);
+  if (sequence == starts.begin()) {
+    throw Error(ErrorCode::kCorruptIndex,
+                "suffix-array hit is outside a reference contig");
+  }
+  const auto sequence_index =
+      static_cast<std::size_t>(sequence - starts.begin() - 1);
+  const Position local = global->global_position - starts[sequence_index];
+  if (local > lengths[sequence_index] ||
+      pattern_length > lengths[sequence_index] - local) {
+    throw Error(ErrorCode::kCorruptIndex,
+                "suffix-array hit is outside a reference contig");
+  }
+  result.hits.push_back(
+      {static_cast<SequenceId>(sequence_index), local, pattern_length,
+       global->strand});
+  result.truncated = total_hits > 1;
   return result;
 }
 
@@ -501,9 +657,10 @@ std::uint64_t LcpBoundaryFor(const std::vector<std::uint8_t>& text,
                              const SaVector& suffix_array,
                              EncodedView pattern,
                              std::uint64_t begin, std::uint64_t end, bool upper,
-                             SaSearchStatistics* statistics) {
-  std::uint64_t left_lcp = 0;
-  std::uint64_t right_lcp = 0;
+                             SaSearchStatistics* statistics,
+                             std::uint64_t known_prefix = 0) {
+  std::uint64_t left_lcp = known_prefix;
+  std::uint64_t right_lcp = known_prefix;
   while (begin < end) {
     const auto middle = begin + (end - begin) / 2;
     const auto comparison = CompareSuffixPatternLcp(
@@ -528,12 +685,14 @@ template <class SaVector>
 SuffixRange LcpRangeFor(const std::vector<std::uint8_t>& text,
                         const SaVector& suffix_array, EncodedView pattern,
                         SuffixRange search_range,
-                        SaSearchStatistics* statistics) {
+                        SaSearchStatistics* statistics,
+                        std::uint64_t known_prefix = 0) {
   const auto lower =
       LcpBoundaryFor(text, suffix_array, pattern, search_range.begin,
-                     search_range.end, false, statistics);
+                     search_range.end, false, statistics, known_prefix);
   const auto upper = LcpBoundaryFor(text, suffix_array, pattern, lower,
-                                    search_range.end, true, statistics);
+                                    search_range.end, true, statistics,
+                                    known_prefix);
   return {lower, upper};
 }
 
@@ -1852,6 +2011,7 @@ struct SuffixArray::Impl {
   LcpAccess lcp_access;
   CoordinateStorage child;
   LearnedSaIndex learned;
+  detail::FastPrefixIndex fast_prefix;
   SaAcceleration acceleration = SaAcceleration::kNone;
   std::uint32_t sampling_rate = 1;
   detail::StoredBackend backend = detail::StoredBackend::kDivsufsort32;
@@ -1861,8 +2021,29 @@ struct SuffixArray::Impl {
   bool HasLcp() const noexcept { return !lcp.Empty(); }
   bool HasChild() const noexcept { return !CoordinatesEmpty(child); }
   bool HasLearned() const noexcept { return !learned.Empty(); }
+  bool HasFastPrefix() const noexcept { return !fast_prefix.Empty(); }
 
   void RefreshLcpAccess() noexcept { lcp_access = MakeLcpAccess(lcp); }
+
+  void BuildFastPrefix() {
+    if (index_info.sa_resource_profile != SaResourceProfile::kFast ||
+        sampling_rate != 1 || !HasIsa() || HasLearned()) {
+      return;
+    }
+    fast_prefix = detail::FastPrefixIndex::Build(
+        text, suffix_array, isa, reference.contig_starts,
+        reference.contig_lengths, index_info.resident_core_bytes);
+    const auto bytes = fast_prefix.ResidentBytes();
+    if (bytes > std::numeric_limits<std::uint64_t>::max() -
+                    index_info.auxiliary_bytes ||
+        bytes > std::numeric_limits<std::uint64_t>::max() -
+                    index_info.resident_core_bytes) {
+      throw Error(ErrorCode::kBuildFailure,
+                  "Fast prefix-index memory accounting overflows");
+    }
+    index_info.auxiliary_bytes += bytes;
+    index_info.resident_core_bytes += bytes;
+  }
 
   SuffixRange BinaryRange(EncodedView pattern,
                           SaSearchStatistics* statistics = nullptr) const {
@@ -1923,8 +2104,26 @@ struct SuffixArray::Impl {
     }
     return suffix_array.Visit(
         [&](const auto& values) {
-          return LcpRangeFor(text, values, pattern, prefix_range, statistics);
+          return LcpRangeFor(text, values, pattern, prefix_range, statistics,
+                             learned.k);
         });
+  }
+
+  SuffixRange FastPrefixRange(
+      EncodedView pattern,
+      SaSearchStatistics* statistics = nullptr) const {
+    const auto prefix_range = fast_prefix.Lookup(pattern.data, pattern.size());
+    if (!prefix_range) {
+      return LcpBinaryRange(pattern, statistics);
+    }
+    const SuffixRange range{prefix_range->begin, prefix_range->end};
+    if (range.Empty() || pattern.size() == fast_prefix.K()) {
+      return range;
+    }
+    return suffix_array.Visit([&](const auto& values) {
+      return LcpRangeFor(text, values, pattern, range, statistics,
+                         fast_prefix.K());
+    });
   }
 
   std::uint8_t SymbolAt(std::uint64_t row, std::uint64_t depth) const {
@@ -2060,7 +2259,7 @@ struct SuffixArray::Impl {
     if (requested == SaSearchAlgorithm::kAutoSelect) {
       return HasLearned() && pattern_length >= learned.k
                  ? SaSearchAlgorithm::kSaplingPwl
-                 : SaSearchAlgorithm::kBinary;
+                 : SaSearchAlgorithm::kLcpBinary;
     }
     if (requested == SaSearchAlgorithm::kSaplingPwl && !HasLearned()) {
       throw Error(ErrorCode::kUnsupportedBackend,
@@ -2073,10 +2272,37 @@ struct SuffixArray::Impl {
     return requested;
   }
 
+  SaSearchAlgorithm ResolveMamLookupAlgorithm(
+      SaSearchAlgorithm requested, std::size_t pattern_length) const {
+    if (requested != SaSearchAlgorithm::kAutoSelect) {
+      return ResolveSearchAlgorithm(requested, pattern_length);
+    }
+    // MAM advances one query position at a time and usually reaches the root
+    // only after a failed suffix-link reuse. On this latency-sensitive path,
+    // ordinary binary search is consistently faster than maintaining two LCP
+    // boundary states. PWL remains the strongest automatic choice when its
+    // model can encode the full prefix key; otherwise Fast's exact prefix
+    // directory can remove the root search entirely.
+    if (HasFastPrefix() && pattern_length >= fast_prefix.K()) {
+      return SaSearchAlgorithm::kAutoSelect;
+    }
+    return HasLearned() && pattern_length >= learned.k
+               ? SaSearchAlgorithm::kSaplingPwl
+               : SaSearchAlgorithm::kBinary;
+  }
+
   SuffixRange Range(
       EncodedView pattern,
       SaSearchAlgorithm requested = SaSearchAlgorithm::kAutoSelect,
       SaSearchStatistics* statistics = nullptr) const {
+    // An explicitly built Sapling model retains priority for auto queries.
+    // Otherwise Fast's exact k-mer directory removes the global SA search
+    // without changing semantics; its interval is exact, not a prediction.
+    if (requested == SaSearchAlgorithm::kAutoSelect &&
+        !(HasLearned() && pattern.size() >= learned.k) && HasFastPrefix() &&
+        pattern.size() >= fast_prefix.K()) {
+      return FastPrefixRange(pattern, statistics);
+    }
     SuffixRange result;
     switch (ResolveSearchAlgorithm(requested, pattern.size())) {
       case SaSearchAlgorithm::kAutoSelect:
@@ -2120,8 +2346,9 @@ struct SuffixArray::Impl {
     }
     const auto rows = SaSize(suffix_array);
     if (row + 1 < rows) {
-      const auto next_global = SaValue(suffix_array, row + 1);
-      if (lcp_access.AtLeast(row + 1, next_global, length)) {
+      if (lcp_access.AtLeastLazy(
+              row + 1, [&] { return SaValue(suffix_array, row + 1); },
+              length)) {
         return false;
       }
     }
@@ -2162,6 +2389,43 @@ struct SuffixArray::Impl {
             }
           }
         });
+  }
+
+  std::uint64_t SmallestStoredPosition(SuffixRange interval) const {
+    if (interval.Empty()) {
+      throw Error(ErrorCode::kCorruptIndex,
+                  "cannot select a suffix from an empty interval");
+    }
+    const auto stored_width = suffix_array.Width();
+    if (stored_width == CoordinateStorageWidth::kBits40 ||
+        stored_width == CoordinateStorageWidth::kBits48) {
+      constexpr std::uint64_t kDecodeRows = 256;
+      std::array<std::uint64_t, kDecodeRows> decoded{};
+      auto smallest = std::numeric_limits<std::uint64_t>::max();
+      for (std::uint64_t begin = interval.begin; begin < interval.end;) {
+        const auto count = std::min(kDecodeRows, interval.end - begin);
+        suffix_array.DecodeSpan(begin, count, decoded.data());
+        smallest = std::min(
+            smallest,
+            *std::min_element(decoded.begin(),
+                              decoded.begin() +
+                                  static_cast<std::ptrdiff_t>(count)));
+        begin += count;
+      }
+      return smallest;
+    }
+    return suffix_array.Visit([&](const auto& values) -> std::uint64_t {
+      using Values = std::decay_t<decltype(values)>;
+      if constexpr (kIsPackedCoordinateStorage<Values>) {
+        return 0;
+      } else {
+        const auto first =
+            values.begin() + static_cast<std::ptrdiff_t>(interval.begin);
+        const auto last =
+            values.begin() + static_cast<std::ptrdiff_t>(interval.end);
+        return static_cast<std::uint64_t>(*std::min_element(first, last));
+      }
+    });
   }
 
   template <class Callback>
@@ -2270,16 +2534,56 @@ struct SuffixArray::Impl {
           output.reserve(static_cast<std::size_t>(desired));
         }
       }
-      ForEachStoredPosition(interval, [&](std::uint64_t global) {
-        RetainGlobalMatch(output, {global, strand}, options, heap_active);
-      });
+      if (!options.max_hits) {
+        ForEachStoredPosition(interval, [&](std::uint64_t global) {
+          output.push_back({global, strand});
+        });
+      } else {
+        const auto limit = *options.max_hits;
+        ForEachStoredPosition(interval, [&](std::uint64_t global) {
+          RetainBoundedGlobalMatch(output, {global, strand}, limit,
+                                   heap_active);
+        });
+      }
+      return interval.Size();
+    }
+
+    std::uint64_t total = 0;
+    if (!options.max_hits) {
+      ForEachExactGlobal(
+          pattern, algorithm, statistics, [&](std::uint64_t global) {
+            output.push_back({global, strand});
+            ++total;
+          });
+    } else {
+      const auto limit = *options.max_hits;
+      ForEachExactGlobal(
+          pattern, algorithm, statistics, [&](std::uint64_t global) {
+            RetainBoundedGlobalMatch(output, {global, strand}, limit,
+                                     heap_active);
+            ++total;
+          });
+    }
+    return total;
+  }
+
+  std::uint64_t CollectSmallest(
+      EncodedView pattern, Strand strand,
+      std::optional<GlobalMatch>& smallest, SaSearchAlgorithm algorithm,
+      SaSearchStatistics* statistics) const {
+    if (sampling_rate == 1) {
+      const auto interval = Range(pattern, algorithm, statistics);
+      if (!interval.Empty()) {
+        RetainSmallestGlobalMatch(
+            smallest, {SmallestStoredPosition(interval), strand});
+      }
       return interval.Size();
     }
 
     std::uint64_t total = 0;
     ForEachExactGlobal(
         pattern, algorithm, statistics, [&](std::uint64_t global) {
-          RetainGlobalMatch(output, {global, strand}, options, heap_active);
+          RetainSmallestGlobalMatch(smallest, {global, strand});
           ++total;
         });
     return total;
@@ -2439,20 +2743,16 @@ struct SuffixArray::Impl {
     });
   }
 
-  template <class Callback>
-  void EnumerateOneStrand(const std::vector<std::uint8_t>& query,
-                          std::uint64_t original_query_length, Strand strand,
-                          std::uint64_t min_length,
-                          RightMaximalSearchAlgorithm algorithm,
-                          SaSearchAlgorithm lookup_algorithm,
-                          RightMaximalSearchStatistics* statistics,
-                          Callback& callback) const {
+  template <class LinkInterval, class Callback>
+  void EnumerateOneStrandWithLinker(
+      const std::vector<std::uint8_t>& query,
+      std::uint64_t original_query_length, Strand strand,
+      std::uint64_t min_length, RightMaximalSearchAlgorithm algorithm,
+      SaSearchAlgorithm lookup_algorithm,
+      RightMaximalSearchStatistics* statistics, LinkInterval& link_interval,
+      Callback& callback) const {
     const LcpView lcp_values{lcp_access, &suffix_array,
                             static_cast<std::size_t>(lcp.Size())};
-    detail::SuffixLinkScanSink* scan_sink = nullptr;
-#if defined(SUFKIT_ENABLE_SUFFIX_LINK_DIAGNOSTICS)
-    scan_sink = detail::CurrentSuffixLinkScanSink();
-#endif
     std::size_t run_begin = 0;
     while (run_begin < query.size()) {
       while (run_begin < query.size() &&
@@ -2476,8 +2776,7 @@ struct SuffixArray::Impl {
           if (statistics) {
             ++statistics->suffix_link_attempts;
           }
-          interval =
-              SuffixLinkInterval(previous, min_length, 1, scan_sink);
+          interval = link_interval(previous, min_length, 1);
           if (!interval.Empty()) {
             interval = NarrowChar(interval, min_length - 1, prefix.back());
           }
@@ -2493,9 +2792,9 @@ struct SuffixArray::Impl {
             if (algorithm == RightMaximalSearchAlgorithm::kFull) {
               interval = ChildRange(prefix);
             } else {
-              const auto selected =
-                  ResolveSearchAlgorithm(lookup_algorithm, prefix.size());
               if (statistics) {
+                const auto selected =
+                    ResolveSearchAlgorithm(lookup_algorithm, prefix.size());
                 ++statistics->lookup_calls;
                 if (selected == SaSearchAlgorithm::kSaplingPwl) {
                   ++statistics->learned_lookup_calls;
@@ -2503,7 +2802,7 @@ struct SuffixArray::Impl {
                   ++statistics->binary_lookup_calls;
                 }
               }
-              interval = Range(prefix, selected,
+              interval = Range(prefix, lookup_algorithm,
                                statistics ? &statistics->lookup : nullptr);
             }
           }
@@ -2511,9 +2810,9 @@ struct SuffixArray::Impl {
                    algorithm == RightMaximalSearchAlgorithm::kFull) {
           interval = ChildRange(prefix);
         } else {
-          const auto selected =
-              ResolveSearchAlgorithm(lookup_algorithm, prefix.size());
           if (statistics) {
+            const auto selected =
+                ResolveSearchAlgorithm(lookup_algorithm, prefix.size());
             ++statistics->lookup_calls;
             if (query_position != run_begin && previous.Empty()) {
               ++statistics->previous_empty_lookups;
@@ -2524,7 +2823,7 @@ struct SuffixArray::Impl {
               ++statistics->binary_lookup_calls;
             }
           }
-          interval = Range(prefix, selected,
+          interval = Range(prefix, lookup_algorithm,
                            statistics ? &statistics->lookup : nullptr);
         }
         previous = interval;
@@ -2583,6 +2882,80 @@ struct SuffixArray::Impl {
       }
       run_begin = run_end;
     }
+  }
+
+  template <class Coordinate, class Callback>
+  void EnumerateOneStrandNativeSuffixLink(
+      const std::vector<std::uint8_t>& query,
+      std::uint64_t original_query_length, Strand strand,
+      std::uint64_t min_length, RightMaximalSearchAlgorithm algorithm,
+      SaSearchAlgorithm lookup_algorithm,
+      RightMaximalSearchStatistics* statistics, RawLcpView lcp_values,
+      detail::SuffixLinkScanSink* scan_sink, Callback& callback) const {
+    using NativeCoordinates = std::vector<Coordinate>;
+    suffix_array.Visit([&](const auto& sa_values) {
+      using SaValues = std::decay_t<decltype(sa_values)>;
+      if constexpr (std::is_same_v<SaValues, NativeCoordinates>) {
+        isa.Visit([&](const auto& isa_values) {
+          using IsaValues = std::decay_t<decltype(isa_values)>;
+          if constexpr (std::is_same_v<IsaValues, NativeCoordinates>) {
+            auto link_interval = [&](SuffixRange previous,
+                                     std::uint64_t depth,
+                                     std::uint32_t shift) {
+              return SuffixLinkIntervalFor(sa_values, isa_values, lcp_values,
+                                           previous, depth, shift, scan_sink);
+            };
+            EnumerateOneStrandWithLinker(
+                query, original_query_length, strand, min_length, algorithm,
+                lookup_algorithm, statistics, link_interval, callback);
+          }
+        });
+      }
+    });
+  }
+
+  template <class Callback>
+  void EnumerateOneStrand(const std::vector<std::uint8_t>& query,
+                          std::uint64_t original_query_length, Strand strand,
+                          std::uint64_t min_length,
+                          RightMaximalSearchAlgorithm algorithm,
+                          SaSearchAlgorithm lookup_algorithm,
+                          RightMaximalSearchStatistics* statistics,
+                          Callback& callback) const {
+    detail::SuffixLinkScanSink* scan_sink = nullptr;
+#if defined(SUFKIT_ENABLE_SUFFIX_LINK_DIAGNOSTICS)
+    scan_sink = detail::CurrentSuffixLinkScanSink();
+#endif
+    const bool uses_suffix_links =
+        algorithm == RightMaximalSearchAlgorithm::kSuffixLink ||
+        algorithm == RightMaximalSearchAlgorithm::kFull;
+    const RawLcpView raw_lcp{lcp_access.raw32, lcp_access.raw64};
+    if (uses_suffix_links &&
+        (raw_lcp.raw32 != nullptr || raw_lcp.raw64 != nullptr) &&
+        suffix_array.Width() == CoordinateStorageWidth::kBits32 &&
+        isa.Width() == CoordinateStorageWidth::kBits32) {
+      EnumerateOneStrandNativeSuffixLink<std::uint32_t>(
+          query, original_query_length, strand, min_length, algorithm,
+          lookup_algorithm, statistics, raw_lcp, scan_sink, callback);
+      return;
+    }
+    if (uses_suffix_links &&
+        (raw_lcp.raw32 != nullptr || raw_lcp.raw64 != nullptr) &&
+        suffix_array.Width() == CoordinateStorageWidth::kBits64 &&
+        isa.Width() == CoordinateStorageWidth::kBits64) {
+      EnumerateOneStrandNativeSuffixLink<std::uint64_t>(
+          query, original_query_length, strand, min_length, algorithm,
+          lookup_algorithm, statistics, raw_lcp, scan_sink, callback);
+      return;
+    }
+
+    auto link_interval = [&](SuffixRange previous, std::uint64_t depth,
+                             std::uint32_t shift) {
+      return SuffixLinkInterval(previous, depth, shift, scan_sink);
+    };
+    EnumerateOneStrandWithLinker(
+        query, original_query_length, strand, min_length, algorithm,
+        lookup_algorithm, statistics, link_interval, callback);
   }
 
   template <class Callback>
@@ -2855,9 +3228,10 @@ struct SuffixArray::Impl {
                 algorithm == RightMaximalSearchAlgorithm::kFull) {
               interval = ChildRange(prefix);
             } else {
-              const auto selected = ResolveSearchAlgorithm(
-                  options.lookup_algorithm, prefix.size());
-              interval = Range(prefix, selected, nullptr);
+              // Preserve kAutoSelect so Fast's exact prefix directory can
+              // seed the root lookup. Explicit lookup algorithms retain their
+              // existing behavior for ablation and reproducibility.
+              interval = Range(prefix, options.lookup_algorithm, nullptr);
             }
           }
           previous = interval;
@@ -2893,7 +3267,7 @@ struct SuffixArray::Impl {
                       static_cast<std::uint64_t>(run_end - anchor_position) -
                           right,
                       reference_end - sampled - right));
-                  right += detail::LongestCommonPrefixBytes(
+                  right += detail::LongestCommonPrefixBytesLong(
                       query.data() + anchor_position +
                           static_cast<std::size_t>(right),
                       text.data() + static_cast<std::size_t>(sampled + right),
@@ -2993,8 +3367,11 @@ struct SuffixArray::Impl {
         callback(MamMatch{match.sequence_id, match.reference_position,
                           match.query_position, match.length, match.strand});
       };
+      const auto lookup = ResolveMamLookupAlgorithm(
+          options.lookup_algorithm,
+          static_cast<std::size_t>(options.min_length));
       EnumerateOneStrand(value, encoded.size(), strand, options.min_length,
-                         algorithm, options.lookup_algorithm, nullptr, filter);
+                         algorithm, lookup, nullptr, filter);
     };
     if (options.strands == StrandMode::kForward ||
         options.strands == StrandMode::kBoth) {
@@ -3292,6 +3669,7 @@ SuffixArray SuffixArray::Build(const GenomeReference& reference,
       impl->index_info.text_bytes + impl->index_info.sa_bytes +
       impl->index_info.isa_bytes + impl->index_info.lcp_bytes +
       impl->index_info.child_bytes + impl->learned.ResidentBytes();
+  impl->BuildFastPrefix();
   return SuffixArray(std::move(impl));
 }
 
@@ -3307,7 +3685,8 @@ SuffixRange SuffixArray::EqualRange(std::string_view pattern,
                 "equal_range is not representable as one interval for a "
                 "sampled suffix array; use count or locate");
   }
-  return impl_->Range(detail::EncodePattern(pattern), algorithm, statistics);
+  const ExactPatternBuffer encoded(pattern);
+  return impl_->Range(encoded.View(), algorithm, statistics);
 }
 
 std::uint64_t SuffixArray::Count(std::string_view pattern,
@@ -3319,19 +3698,19 @@ std::uint64_t SuffixArray::Count(std::string_view pattern, StrandMode strands,
                                  SaSearchAlgorithm algorithm,
                                  SaSearchStatistics* statistics) const {
   ValidateStrandMode(strands);
-  const auto encoded = detail::EncodePattern(pattern);
+  const ExactPatternBuffer encoded(pattern);
   if (strands == StrandMode::kForward) {
-    return impl_->ExactCount(encoded, algorithm, statistics);
+    return impl_->ExactCount(encoded.View(), algorithm, statistics);
   }
-  const auto reverse = detail::ReverseComplement(encoded);
+  const auto reverse = encoded.ReverseComplement();
   if (strands == StrandMode::kReverseComplement) {
-    return impl_->ExactCount(reverse, algorithm, statistics);
+    return impl_->ExactCount(reverse.View(), algorithm, statistics);
   }
-  if (encoded == reverse) {
-    return impl_->ExactCount(encoded, algorithm, statistics);
+  if (encoded.Equals(reverse)) {
+    return impl_->ExactCount(encoded.View(), algorithm, statistics);
   }
-  return impl_->ExactCount(encoded, algorithm, statistics) +
-         impl_->ExactCount(reverse, algorithm, statistics);
+  return impl_->ExactCount(encoded.View(), algorithm, statistics) +
+         impl_->ExactCount(reverse.View(), algorithm, statistics);
 }
 
 QueryResult SuffixArray::Locate(std::string_view pattern,
@@ -3344,30 +3723,60 @@ QueryResult SuffixArray::Locate(std::string_view pattern,
                                 SaSearchAlgorithm algorithm,
                                 SaSearchStatistics* statistics) const {
   ValidateStrandMode(options.strands);
-  const auto encoded = detail::EncodePattern(pattern);
+  const ExactPatternBuffer encoded(pattern);
+  if (options.max_hits && *options.max_hits == 1) {
+    std::optional<GlobalMatch> smallest;
+    std::uint64_t total_hits = 0;
+    if (options.strands == StrandMode::kForward) {
+      total_hits = impl_->CollectSmallest(encoded.View(), Strand::kForward,
+                                          smallest, algorithm, statistics);
+    } else {
+      const auto reverse = encoded.ReverseComplement();
+      if (options.strands == StrandMode::kReverseComplement) {
+        total_hits = impl_->CollectSmallest(
+            reverse.View(), Strand::kReverseComplement, smallest, algorithm,
+            statistics);
+      } else if (encoded.Equals(reverse)) {
+        total_hits = impl_->CollectSmallest(
+            encoded.View(), Strand::kBoth, smallest, algorithm, statistics);
+      } else {
+        total_hits = impl_->CollectSmallest(
+            encoded.View(), Strand::kForward, smallest, algorithm,
+            statistics);
+        total_hits += impl_->CollectSmallest(
+            reverse.View(), Strand::kReverseComplement, smallest, algorithm,
+            statistics);
+      }
+    }
+    return FinalizeSmallestGlobalMatch(smallest, impl_->reference,
+                                       encoded.Size(), total_hits);
+  }
+
   std::vector<GlobalMatch> matches;
   bool heap_active = false;
   std::uint64_t total_hits = 0;
   if (options.strands == StrandMode::kForward) {
-    total_hits = impl_->Collect(encoded, Strand::kForward, options, matches,
-                                heap_active, algorithm, statistics);
+    total_hits = impl_->Collect(encoded.View(), Strand::kForward, options,
+                                matches, heap_active, algorithm, statistics);
   } else {
-    const auto reverse = detail::ReverseComplement(encoded);
+    const auto reverse = encoded.ReverseComplement();
     if (options.strands == StrandMode::kReverseComplement) {
-      total_hits = impl_->Collect(reverse, Strand::kReverseComplement, options,
+      total_hits = impl_->Collect(reverse.View(), Strand::kReverseComplement,
+                                  options, matches, heap_active, algorithm,
+                                  statistics);
+    } else if (encoded.Equals(reverse)) {
+      total_hits = impl_->Collect(encoded.View(), Strand::kBoth, options,
                                   matches, heap_active, algorithm, statistics);
-    } else if (encoded == reverse) {
-      total_hits = impl_->Collect(encoded, Strand::kBoth, options, matches,
-                                  heap_active, algorithm, statistics);
     } else {
-      total_hits = impl_->Collect(encoded, Strand::kForward, options, matches,
-                                  heap_active, algorithm, statistics);
-      total_hits += impl_->Collect(reverse, Strand::kReverseComplement, options,
-                                   matches, heap_active, algorithm, statistics);
+      total_hits = impl_->Collect(encoded.View(), Strand::kForward, options,
+                                  matches, heap_active, algorithm, statistics);
+      total_hits += impl_->Collect(
+          reverse.View(), Strand::kReverseComplement, options, matches,
+          heap_active, algorithm, statistics);
     }
   }
   return FinalizeGlobalMatches(std::move(matches), impl_->reference,
-                               encoded.size(), total_hits);
+                               encoded.Size(), total_hits);
 }
 
 void SuffixArray::ForEachRightMaximalMatch(
@@ -3983,6 +4392,7 @@ SuffixArray SuffixArray::Load(const std::filesystem::path& path) {
       impl->index_info.text_bytes + impl->index_info.sa_bytes +
       impl->index_info.isa_bytes + impl->index_info.lcp_bytes +
       impl->index_info.child_bytes + impl->learned.ResidentBytes();
+  impl->BuildFastPrefix();
   return SuffixArray(std::move(impl));
 }
 

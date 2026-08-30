@@ -553,6 +553,19 @@ void TestPackedSpanMemMamEnumeration() {
   CHECK(Tuples(expected_mem) == NaiveMems(records, query, 20));
   CHECK(Tuples(expected_mam) == NaiveMams(records, query, 20));
 
+  auto low_options = sufkit::LowMemorySuffixArrayBuildOptions();
+  low_options.backend = sufkit::SaBackend::kDivsufsort;
+  low_options.coordinate_width = sufkit::CoordinateWidth::kBits64;
+  const auto low = sufkit::SuffixArray::Build(reference, low_options);
+  CHECK(low.GetInfo().lcp_encoding == sufkit::SaLcpEncoding::kByteCoded);
+  CHECK(low.GetInfo().lcp_overflow_anchors != 0);
+  auto low_mem_options = mem_options;
+  low_mem_options.algorithm = sufkit::MemSearchAlgorithm::kLcp;
+  const auto low_mem = low.FindMems(query, low_mem_options);
+  CHECK(low_mem.total_matches == expected_mem.total_matches);
+  CHECK(low_mem.truncated == expected_mem.truncated);
+  CHECK(Tuples(low_mem) == expected_mem_tuples);
+
   const std::array<sufkit::CoordinateStorageWidth, 4> storage_widths{
       {sufkit::CoordinateStorageWidth::kBits32,
        sufkit::CoordinateStorageWidth::kBits40,

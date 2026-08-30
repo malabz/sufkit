@@ -43,12 +43,18 @@ coordinate with `Strand::kBoth`.
 | `kLcpBinary` | SA+LCP | Reuse known boundary prefixes |
 | `kSaplingPwl` | Learned section | Predict, bracket, then verify a local range |
 | `kChild` | LCP+CHILD | Explicit ESA traversal |
-| `kAutoSelect` | Any | PWL when eligible; otherwise binary |
+| `kAutoSelect` | Any | PWL when eligible; otherwise Fast exact-prefix lookup, then LCP-aware binary |
 
 Auto selection never chooses CHILD. An unavailable explicit algorithm throws
 `unsupported_backend`; it never silently changes semantics. PWL prediction is
 only a hint: exponential bracketing, verified local search, and full binary
 fallback preserve the exact range.
+
+A complete Fast index with resident ISA derives a private canonical-DNA prefix
+directory after build or load. A table hit is already the exact SA interval for
+the first k symbols; longer patterns are refined only inside that interval.
+The table is never serialized and Low-memory does not build it. Its presence
+changes query cost, not the public lookup contract or `.sufidx` bytes.
 
 ### FM lookup and batching
 

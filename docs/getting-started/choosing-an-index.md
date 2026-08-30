@@ -80,7 +80,7 @@ MUMmer4 there, as experimental rather than established.
 
 | Profile | Resident structures | Automatic width | MEM auto | MAM auto |
 |---|---|---|---|---|
-| `fast` | Requested layout; preset defaults to complete SA+ISA+raw LCP | native32, then native64 | LCP + auto-skip | Suffix-link |
+| `fast` | Requested layout; preset defaults to complete SA+ISA+raw LCP plus a derived exact-prefix directory | native32, then native64 | LCP + auto-skip | Suffix-link |
 | `low-memory` | Complete SA+LCP only | Narrowest 32/40/48/64 | LCP + auto-skip | LCP |
 
 Low-memory overrides acceleration to LCP, disables the learned model, and
@@ -95,6 +95,12 @@ advantage on adjacent query positions. MEM does not automatically consume that
 ISA: sparse query anchors made LCP plus MUMmer-style auto-skip the more robust
 path in mixed and repeat-rich quick measurements. Explicit algorithm choices
 remain available for controlled workloads and benchmark ablations.
+
+For sufficiently large complete Fast indexes without a Sapling model, sufkit
+also derives an exact k-mer interval directory (`k<=10`). The default budget is
+at most 25% of the pre-existing resident core (8 MiB for native32 at `k=10`).
+It accelerates root interval lookup for exact, MEM, MAM, and right-maximal
+queries; it is rebuilt after load and is not part of the serialized file.
 
 For K=1, these first-order payload budgets exclude overflow anchors and other
 metadata. Fast includes native raw LCP; Low-memory includes a one-byte primary

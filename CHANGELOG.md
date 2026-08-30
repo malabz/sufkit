@@ -25,6 +25,12 @@ All notable changes to sufkit are documented in this file.
 - Made automatic maximal-match selection workload-specific: both profiles use
   LCP with MUMmer-style query skipping for MEM, while Fast retains suffix-link
   auto selection for reference-MAM and Low-memory uses LCP.
+- Added a private exact k-mer interval directory for complete Fast indexes.
+  It is derived from text+ISA after build/load, is never serialized, and seeds
+  exact, MEM, MAM, and right-maximal root searches without changing results.
+- Reduced Fast query overhead with query-scope typed suffix-link dispatch,
+  lazy byte-coded LCP overflow decoding, a bounded SSE4.2 long-LCE kernel, and
+  specialized small-limit locate/result-retention paths.
 - Added `.sufidx` format 1.4 codec headers for SA/ISA/CHILD/learned coordinates
   and raw or byte-coded LCP. Readers retain 1.0-1.3 compatibility, and backend
   identity remains independent from physical storage encoding.

@@ -171,6 +171,34 @@ Interpolate between adjacent anchors with checked unsigned arithmetic and a
 wide integer intermediate. Floating point is not part of persisted/query
 semantics.
 
+## Fast exact-prefix directory
+
+Complete Fast indexes that retain ISA and do not contain a Sapling model may
+derive a canonical-DNA prefix directory. Construction scans each contig with a
+rolling 2-bit key, resets at N and every contig boundary, maps valid text
+positions through ISA, and verifies the inverse SA mapping. It therefore never
+creates a key that crosses N, separator, sentinel, or contig boundaries.
+
+For native32 row domains, `(begin,end)` is packed into one 64-bit word so one
+dependent load obtains the complete interval. Wider row domains retain two
+64-bit endpoint planes. The largest `k<=10` fitting within 25% of the existing
+resident core is selected; references below the minimum size do not pay the
+fixed table cost.
+
+A lookup result is an exact interval, not a prediction. If the pattern is
+longer than k, LCP-aware lower/upper-bound refinement starts with k already
+matched and remains inside the returned interval. Short or non-canonical
+prefixes fall back to the ordinary path. The directory is immutable,
+thread-safe, derived after build/load, excluded from `.sufidx`, and included in
+runtime resident-memory accounting.
+
+This uses the same high-level latency-reduction idea as
+[MiniBWA](https://github.com/lh3/minibwa)'s exact k-mer interval cache, but the
+implementation is independent and specialized for sufkit's standalone SA,
+generalized-contig boundaries, and exact range API. MiniBWA's compact
+request-state and prefetch design also informs performance experiments; no
+MiniBWA source is copied or linked into sufkit.
+
 ## PWL exact lookup
 
 ```text

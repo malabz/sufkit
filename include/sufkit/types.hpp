@@ -152,7 +152,7 @@ enum class SaLookupAcceleration : std::uint8_t {
 
 /** Algorithm used for one standalone-SA exact range lookup. */
 enum class SaSearchAlgorithm : std::uint8_t {
-  /** Use PWL when available and the pattern is long enough; else binary. */
+  /** Use eligible PWL/Fast-prefix lookup, then LCP-aware binary search. */
   kAutoSelect = 0,
   /** Two ordinary suffix binary searches. */
   kBinary = 1,
@@ -573,7 +573,7 @@ struct IndexInfo {
   SaResourceProfile sa_resource_profile = SaResourceProfile::kFast;
   /** Physical LCP representation. */
   SaLcpEncoding lcp_encoding = SaLcpEncoding::kNone;
-  /** Resident ISA/LCP/CHILD payload bytes, including a derived LCP guide. */
+  /** Resident auxiliary payload bytes, including derived query directories. */
   std::uint64_t auxiliary_bytes = 0;
   /** Resident logical-text payload bytes. */
   std::uint64_t text_bytes = 0;
@@ -593,7 +593,7 @@ struct IndexInfo {
   std::uint64_t lcp_guide_bytes = 0;
   /** Resident CHILD payload bytes. */
   std::uint64_t child_bytes = 0;
-  /** Sum of resident text, SA, ISA, LCP, CHILD, and learned payloads. */
+  /** Sum of resident text, index structures, and derived query payloads. */
   std::uint64_t resident_core_bytes = 0;
   /** Learned lookup capability, independent of ESA layout. */
   SaLookupAcceleration sa_lookup_acceleration = SaLookupAcceleration::kBinary;

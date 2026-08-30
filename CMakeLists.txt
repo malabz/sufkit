@@ -137,6 +137,7 @@ add_library(sufkit ${_sufkit_library_type}
     src/coordinate_storage.cpp
     src/lcp_storage.cpp
     src/sa_codec.cpp
+    src/fast_prefix_index.cpp
     src/caps_backend.cpp
     src/divsufsort_backend.cpp
     src/suffix_array.cpp
@@ -335,6 +336,16 @@ if(SUFKIT_BUILD_TESTS)
         target_include_directories(sufkit_sa_codec_tests PRIVATE
             ${CMAKE_CURRENT_SOURCE_DIR}/src)
         add_test(NAME sufkit_sa_codec_tests COMMAND sufkit_sa_codec_tests)
+        add_executable(sufkit_fast_prefix_index_tests
+            tests/test_fast_prefix_index.cpp)
+        target_link_libraries(sufkit_fast_prefix_index_tests
+            PRIVATE sufkit::sufkit)
+        target_compile_features(sufkit_fast_prefix_index_tests
+            PRIVATE cxx_std_17)
+        target_include_directories(sufkit_fast_prefix_index_tests PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/src)
+        add_test(NAME sufkit_fast_prefix_index_tests
+            COMMAND sufkit_fast_prefix_index_tests)
     endif()
     add_executable(sufkit_tests tests/test_sufkit.cpp)
     target_link_libraries(sufkit_tests PRIVATE sufkit::sufkit)
