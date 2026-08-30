@@ -417,6 +417,19 @@ if(SUFKIT_BUILD_TESTS)
             COMMAND sufkit_mam_mummer4_full_depth_tests)
     endif()
     if(SUFKIT_BUILD_BENCHMARKS)
+        add_executable(sufkit_benchmark_provenance_tests
+            tests/test_benchmark_provenance.cpp
+            apps/benchmark_provenance.cpp)
+        target_compile_features(sufkit_benchmark_provenance_tests PRIVATE
+            cxx_std_17)
+        target_include_directories(sufkit_benchmark_provenance_tests PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/apps)
+        if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+            target_compile_options(sufkit_benchmark_provenance_tests PRIVATE
+                -Wall -Wextra -Wpedantic -Wconversion -Wshadow)
+        endif()
+        add_test(NAME sufkit_benchmark_provenance_tests
+            COMMAND sufkit_benchmark_provenance_tests)
         find_package(Python3 COMPONENTS Interpreter QUIET)
         if(Python3_Interpreter_FOUND)
             add_test(NAME sufkit_benchmark_packager_tests

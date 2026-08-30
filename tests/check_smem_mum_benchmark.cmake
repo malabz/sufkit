@@ -25,6 +25,46 @@ function(assert_rectangular_tsv path label)
     endforeach()
 endfunction()
 
+function(read_first_tsv_field path column output_variable)
+    file(STRINGS "${path}" lines LIMIT_COUNT 2)
+    list(LENGTH lines line_count)
+    if(line_count LESS 2)
+        message(FATAL_ERROR "${path} has no data row")
+    endif()
+    list(GET lines 0 header)
+    list(GET lines 1 row)
+    string(REPLACE "\t" ";" header_fields "${header}")
+    list(FIND header_fields "${column}" column_index)
+    if(column_index EQUAL -1)
+        message(FATAL_ERROR "${path} is missing column ${column}")
+    endif()
+    string(REPLACE "\t" ";" row_fields "${row}")
+    list(LENGTH row_fields row_field_count)
+    if(column_index GREATER_EQUAL row_field_count)
+        message(FATAL_ERROR
+            "${path} data row has no value for column ${column}")
+    endif()
+    list(GET row_fields ${column_index} value)
+    set(${output_variable} "${value}" PARENT_SCOPE)
+endfunction()
+
+function(assert_first_tsv_field path column expected)
+    read_first_tsv_field("${path}" "${column}" actual)
+    if(NOT actual STREQUAL expected)
+        message(FATAL_ERROR
+            "${path} ${column} is '${actual}', expected '${expected}'")
+    endif()
+endfunction()
+
+function(assert_first_tsv_sha256 path column)
+    read_first_tsv_field("${path}" "${column}" actual)
+    string(LENGTH "${actual}" hash_length)
+    if(NOT hash_length EQUAL 64 OR NOT actual MATCHES "^[0-9A-Fa-f]+$")
+        message(FATAL_ERROR
+            "${path} ${column} is not a SHA-256 digest: '${actual}'")
+    endif()
+endfunction()
+
 function(run_maximal_smoke workload methods)
     set(result_root "${OUTPUT_ROOT}/${workload}")
     file(REMOVE_RECURSE "${result_root}")
@@ -65,10 +105,40 @@ function(run_maximal_smoke workload methods)
 
     file(READ "${result_root}/query_results.tsv" query_results)
     file(READ "${result_root}/correctness_summary.tsv" correctness)
+    file(READ "${result_root}/run_metadata.tsv" run_metadata)
+    foreach(token IN ITEMS "git_commit" "git_dirty" "executable_sha256"
+                           "command_line_redacted" "peak_rss_scope"
+                           "oracle_name" "naive_oracle_status"
+                           "git_provenance_scope")
+        string(FIND "${run_metadata}" "${token}" position)
+        if(position EQUAL -1)
+            message(FATAL_ERROR
+                "${workload} run_metadata.tsv is missing ${token}")
+        endif()
+    endforeach()
+    if(workload STREQUAL "smem")
+        set(expected_oracle "naive-generalized-smem-forward")
+    else()
+        set(expected_oracle "naive-mum-forward")
+    endif()
+    assert_first_tsv_field("${result_root}/run_metadata.tsv"
+                           "oracle_name" "${expected_oracle}")
+    assert_first_tsv_field("${result_root}/run_metadata.tsv"
+                           "naive_oracle_status" "passed")
+    assert_first_tsv_field("${result_root}/run_metadata.tsv"
+                           "git_provenance_scope" "cmake_configure_time")
+    assert_first_tsv_field("${result_root}/run_metadata.tsv"
+                           "peak_rss_scope" "method_process_lifetime")
+    assert_first_tsv_sha256("${result_root}/run_metadata.tsv"
+                            "executable_sha256")
     if(workload STREQUAL "smem")
         foreach(token IN ITEMS
                 "min_occurrences\ttotal_smems\tsmems_per_second"
                 "smem-baseline\tbaseline\tnone\tstreaming\t20"
+                "smem-lcp\tlcp\tlcp\tstreaming\t20"
+                "smem-child\tchild\tchild\tstreaming\t20"
+                "smem-suffix-link\tsuffix-link\tsuffix-link\tstreaming\t20"
+                "smem-full\tfull\tfull\tstreaming\t20"
                 "smem-auto-fast\tauto\tsuffix-link\tstreaming\t20"
                 "smem-auto-low-memory\tauto\tlcp\tstreaming\t20")
             string(FIND "${query_results}" "${token}" position)
@@ -86,6 +156,10 @@ function(run_maximal_smoke workload methods)
     else()
         foreach(token IN ITEMS
                 "mum-baseline\tbaseline\tnone\tstreaming\t20"
+                "mum-lcp\tlcp\tlcp\tstreaming\t20"
+                "mum-child\tchild\tchild\tstreaming\t20"
+                "mum-suffix-link\tsuffix-link\tsuffix-link\tstreaming\t20"
+                "mum-full\tfull\tfull\tstreaming\t20"
                 "mum-auto-fast\tauto\tsuffix-link\tstreaming\t20"
                 "mum-auto-low-memory\tauto\tlcp\tstreaming\t20")
             string(FIND "${query_results}" "${token}" position)
@@ -101,15 +175,15 @@ function(run_maximal_smoke workload methods)
 endfunction()
 
 run_maximal_smoke(
-    smem "smem-baseline,smem-auto-fast,smem-auto-low-memory")
+    smem "smem-baseline,smem-lcp,smem-child,smem-suffix-link,smem-full,smem-auto-fast,smem-auto-low-memory")
 run_maximal_smoke(
-    mum "mum-baseline,mum-auto-fast,mum-auto-low-memory")
+    mum "mum-baseline,mum-lcp,mum-child,mum-suffix-link,mum-full,mum-auto-fast,mum-auto-low-memory")
 
 set(fake_minibwa "${OUTPUT_ROOT}/fake-minibwa.sh")
 file(WRITE "${fake_minibwa}" [=[#!/bin/sh
 case "$1" in
     version)
-        printf '%s\n' 'minibwa-test'
+        printf 'minibwa-test\t/private/build/minibwa\n'
         ;;
     index)
         printf '%s\n' 'fake-index' >"$4.fake"
@@ -181,6 +255,36 @@ if(NOT minibwa_status EQUAL 0)
         "MiniBWA external-scope smoke failed (${minibwa_status}):\n"
         "${minibwa_stdout}\n${minibwa_stderr}")
 endif()
+foreach(name IN ITEMS run_metadata.tsv correctness_summary.tsv
+                      build_results.tsv query_results.tsv
+                      raw_repetitions.tsv)
+    assert_rectangular_tsv("${minibwa_output}/${name}"
+                           "MiniBWA ${name}")
+endforeach()
+
+file(READ "${minibwa_output}/run_metadata.tsv" minibwa_metadata)
+string(FIND "${minibwa_metadata}" "${fake_minibwa}" exposed_path)
+if(NOT exposed_path EQUAL -1)
+    message(FATAL_ERROR
+        "MiniBWA absolute path leaked into run_metadata.tsv")
+endif()
+string(FIND "${minibwa_metadata}" "/private/build/minibwa"
+            exposed_version_path)
+if(NOT exposed_version_path EQUAL -1)
+    message(FATAL_ERROR
+        "MiniBWA version path leaked into run_metadata.tsv")
+endif()
+string(FIND "${minibwa_metadata}" "minibwa-test <path>"
+            redacted_version)
+if(redacted_version EQUAL -1)
+    message(FATAL_ERROR
+        "MiniBWA version metadata was not sanitized")
+endif()
+string(FIND "${minibwa_metadata}" "--minibwa <path>" redacted_minibwa)
+if(redacted_minibwa EQUAL -1)
+    message(FATAL_ERROR
+        "MiniBWA command provenance was not retained in redacted form")
+endif()
 
 file(STRINGS "${minibwa_output}/raw_repetitions.tsv" minibwa_raw_lines)
 set(found_measured_external FALSE)
@@ -243,6 +347,59 @@ if(NOT found_measured_external OR NOT found_high_frequency_external OR
         "or unmeasured capability rows")
 endif()
 
+file(STRINGS "${minibwa_output}/query_results.tsv" minibwa_query_lines)
+list(GET minibwa_query_lines 0 minibwa_query_header)
+string(REPLACE "\t" ";" minibwa_query_header_fields
+               "${minibwa_query_header}")
+foreach(column IN ITEMS method operation min_length seconds_median
+                        query_peak_rss_mb_max status)
+    list(FIND minibwa_query_header_fields "${column}" ${column}_index)
+    if(${column}_index EQUAL -1)
+        message(FATAL_ERROR
+            "MiniBWA query_results.tsv is missing ${column}")
+    endif()
+endforeach()
+list(REMOVE_AT minibwa_query_lines 0)
+set(found_minibwa_summary_20 FALSE)
+set(found_minibwa_summary_21 FALSE)
+set(found_minibwa_summary_22 FALSE)
+set(found_minibwa_summary_23 FALSE)
+foreach(line IN LISTS minibwa_query_lines)
+    string(REPLACE "\t" ";" fields "${line}")
+    list(GET fields ${method_index} method)
+    if(NOT method STREQUAL "minibwa")
+        continue()
+    endif()
+    list(GET fields ${operation_index} operation)
+    list(GET fields ${min_length_index} min_length)
+    list(GET fields ${seconds_median_index} seconds)
+    list(GET fields ${query_peak_rss_mb_max_index} peak_rss)
+    list(GET fields ${status_index} row_status)
+    if(NOT operation STREQUAL "external-load+query" OR
+       seconds STREQUAL "NA" OR peak_rss STREQUAL "NA")
+        message(FATAL_ERROR
+            "MiniBWA summary lost external timing/RSS scope: ${line}")
+    endif()
+    if(min_length STREQUAL "20" AND
+       row_status STREQUAL "external_fmd_scope")
+        set(found_minibwa_summary_20 TRUE)
+    elseif(min_length STREQUAL "21" AND
+           row_status STREQUAL "external_high_frequency")
+        set(found_minibwa_summary_21 TRUE)
+    elseif((min_length STREQUAL "22" OR min_length STREQUAL "23") AND
+           row_status STREQUAL "external_incomplete_coordinates")
+        set(found_minibwa_summary_${min_length} TRUE)
+    else()
+        message(FATAL_ERROR
+            "MiniBWA summary has an unexpected external status: ${line}")
+    endif()
+endforeach()
+if(NOT found_minibwa_summary_20 OR NOT found_minibwa_summary_21 OR
+   NOT found_minibwa_summary_22 OR NOT found_minibwa_summary_23)
+    message(FATAL_ERROR
+        "MiniBWA query summary lacks one or more external scope rows")
+endif()
+
 set(fake_mummer "${OUTPUT_ROOT}/fake-mummer-launcher.sh")
 file(WRITE "${fake_mummer}" [=[#!/bin/sh
 if [ "$1" = "--version" ]; then
@@ -283,10 +440,24 @@ if(NOT mummer_metadata_status EQUAL 0)
         "MUMmer4 provenance smoke failed (${mummer_metadata_status}):\n"
         "${mummer_metadata_stdout}\n${mummer_metadata_stderr}")
 endif()
+foreach(name IN ITEMS run_metadata.tsv correctness_summary.tsv
+                      build_results.tsv query_results.tsv
+                      raw_repetitions.tsv)
+    assert_rectangular_tsv("${mummer_metadata_output}/${name}"
+                           "MUMmer4 ${name}")
+endforeach()
 file(READ "${mummer_metadata_output}/run_metadata.tsv" mummer_metadata)
+foreach(exposed IN ITEMS "${fake_mummer}" "${TEST_RUNTIME_ELF}")
+    string(FIND "${mummer_metadata}" "${exposed}" exposed_position)
+    if(NOT exposed_position EQUAL -1)
+        message(FATAL_ERROR
+            "MUMmer4 path leaked into run_metadata.tsv: ${exposed}")
+    endif()
+endforeach()
 foreach(token IN ITEMS
         "mummer_launcher_sha256\tmummer_runtime_sha256"
-        "${expected_launcher_sha256}\t${expected_runtime_sha256}")
+        "${expected_launcher_sha256}\t${expected_runtime_sha256}"
+        "--mummer4 <path>" "--mummer4-runtime <path>")
     string(FIND "${mummer_metadata}" "${token}" position)
     if(position EQUAL -1)
         message(FATAL_ERROR

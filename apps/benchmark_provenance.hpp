@@ -3,6 +3,7 @@
 #pragma once
 
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace sufkit::app::bench {
@@ -22,5 +23,9 @@ struct BenchmarkProvenance {
 
 BenchmarkProvenance CollectBenchmarkProvenance(
     const std::vector<std::string>& arguments);
+
+// Conservatively removes path-bearing compiler-flag tokens before they are
+// written to a shareable benchmark evidence file.
+std::string RedactCompilerFlagPaths(std::string_view flags);
 
 }  // namespace sufkit::app::bench

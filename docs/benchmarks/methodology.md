@@ -352,6 +352,23 @@ completeness only: MiniBWA remains a separate FMD timing/provenance peer and is
 not a coordinate-correctness differential. Capability placeholders such as
 `not_supported` and skipped operations keep `NA` timing.
 
+Run metadata records the MiniBWA version after replacing tabs, newlines, and
+path-like tokens, so external tool output cannot break the TSV schema or leak
+a local build path. `command_line_redacted` similarly replaces every supplied
+reference, query, output, MUMmer4, and MiniBWA path with `<path>`. The
+`git_commit` and `git_dirty` fields are captured when CMake configures the
+benchmark binary; `git_provenance_scope=cmake_configure_time` makes that scope
+explicit. Reconfigure before a release measurement. The executable SHA-256 is
+the authoritative identity of the binary that actually produced the row.
+Compiler-flag metadata conservatively replaces every token containing a path
+separator with `<path-flag>`, including quoted include paths and definition
+values; this can also redact harmless relative paths by design.
+
+MUMmer4 query rows use `operation=external-load+query`: their wall time and
+peak RSS include process startup, loading the saved MUMmer index, and querying.
+They must not be compared as if they were the same scope as sufkit's preloaded
+in-process `streaming` or `vector` kernels.
+
 Before accepting performance results, every internal SMEM/MUM method must
 match the independent small oracle for each `(min_length,min_occurrences)`
 group. A published MUMmer4 differential must use an ACGT-only single-contig

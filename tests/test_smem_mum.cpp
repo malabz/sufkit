@@ -865,6 +865,45 @@ void TestWidthsBackendsAndLookups() {
   }
 }
 
+void TestSuffixLinkBudgetFallsBackToRoot() {
+  // Deleting the leading C expands the A^32 prefix beyond the production
+  // suffix-link scan budget. SMEM and strict MUM must discard that partial
+  // interval and recover the next query start through an exact root lookup.
+  constexpr std::size_t kProbeBudget = 4096;
+  constexpr std::size_t kMinLength = 32;
+  constexpr std::size_t kRepeatBases =
+      kProbeBudget + kMinLength + 16;
+  const std::vector<sufkit::SequenceRecord> records{
+      {"ref", "", "C" + std::string(kRepeatBases, 'A') + "G"}};
+  const std::string query = "C" + std::string(kMinLength, 'A') + "G";
+  const auto index = Build(records);
+  const auto expected_smems =
+      NaiveSmems(records, query, kMinLength, 1,
+                 sufkit::StrandMode::kForward);
+  const auto expected_mums =
+      NaiveMums(records, query, kMinLength,
+                sufkit::StrandMode::kForward);
+
+  for (const auto algorithm :
+       {sufkit::MemSearchAlgorithm::kBaseline,
+        sufkit::MemSearchAlgorithm::kLcp,
+        sufkit::MemSearchAlgorithm::kSuffixLink,
+        sufkit::MemSearchAlgorithm::kFull,
+        sufkit::MemSearchAlgorithm::kAutoSelect}) {
+    sufkit::SmemOptions smem;
+    smem.min_length = kMinLength;
+    smem.algorithm = algorithm;
+    CheckSmemResult(index.FindSmems(query, smem), expected_smems);
+
+    sufkit::MumOptions mum;
+    mum.min_length = kMinLength;
+    mum.algorithm = algorithm;
+    const auto observed_mums = index.FindMums(query, mum);
+    CHECK(observed_mums.total_matches == expected_mums.size());
+    CHECK(Tuples(observed_mums) == expected_mums);
+  }
+}
+
 void TestRandomDifferential() {
   std::mt19937_64 generator(20260830);
   const auto random_base = [&] { return "ACGTN"[generator() % 5]; };
@@ -1002,6 +1041,7 @@ int main() {
   TestStrictMumAndAlgorithms();
   TestMumContractsAndProfiles();
   TestWidthsBackendsAndLookups();
+  TestSuffixLinkBudgetFallsBackToRoot();
   TestRandomDifferential();
   TestPersistenceAndConcurrency();
   TestLegacySaFixtures();

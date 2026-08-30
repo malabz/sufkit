@@ -2884,8 +2884,10 @@ struct SuffixArray::Impl {
         sa_values[static_cast<std::size_t>(previous.begin)]);
     const auto right_suffix = static_cast<std::uint64_t>(
         sa_values[static_cast<std::size_t>(previous.end - 1)]);
-    if (left_suffix + shift >= text.size() ||
-        right_suffix + shift >= text.size()) {
+    const auto text_size = static_cast<std::uint64_t>(text.size());
+    if (left_suffix >= text_size || right_suffix >= text_size ||
+        static_cast<std::uint64_t>(shift) >= text_size - left_suffix ||
+        static_cast<std::uint64_t>(shift) >= text_size - right_suffix) {
 #if defined(SUFKIT_ENABLE_SUFFIX_LINK_DIAGNOSTICS)
       if (scan_sink) {
         scan_sink->Record(0, 0, 0, false);

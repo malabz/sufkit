@@ -9,6 +9,8 @@
 #include <set>
 #include <sstream>
 #include <string_view>
+#include <utility>
+#include <vector>
 
 #include <sched.h>
 #include <unistd.h>
@@ -36,36 +38,44 @@ std::string SanitizeField(std::string value) {
   return value.empty() ? "unknown" : value;
 }
 
-bool ContainsAbsolutePath(const std::string& token) {
-  if (!token.empty() && token.front() == '/') {
-    return true;
-  }
-  if (token.rfind("-I/", 0) == 0 || token.rfind("-L/", 0) == 0 ||
-      token.rfind("-isystem/", 0) == 0 || token.find("=/") != std::string::npos) {
-    return true;
-  }
-  for (std::size_t index = 1; index + 1 < token.size(); ++index) {
-    if (token[index] == ':' &&
-        (token[index + 1] == '/' || token[index + 1] == '\\')) {
-      return true;
+std::vector<std::string> SplitCompilerFlags(std::string_view flags) {
+  std::vector<std::string> tokens;
+  std::string token;
+  char quote = '\0';
+  for (const char character : flags) {
+    if (quote != '\0') {
+      if (character == quote) {
+        quote = '\0';
+      } else {
+        token.push_back(character);
+      }
+      continue;
     }
+    if (character == '\'' || character == '"') {
+      quote = character;
+      continue;
+    }
+    if (std::isspace(static_cast<unsigned char>(character)) != 0) {
+      if (!token.empty()) {
+        tokens.push_back(std::move(token));
+        token.clear();
+      }
+      continue;
+    }
+    token.push_back(character);
   }
-  return false;
+  if (!token.empty()) {
+    tokens.push_back(std::move(token));
+  }
+  return tokens;
 }
 
-std::string RedactCompilerFlagPaths(std::string_view flags) {
-  std::istringstream input{std::string(flags)};
-  std::ostringstream output;
-  std::string token;
-  bool first = true;
-  while (input >> token) {
-    if (!first) {
-      output << ' ';
-    }
-    first = false;
-    output << (ContainsAbsolutePath(token) ? "<path-flag>" : token);
-  }
-  return output.str();
+bool ContainsPathComponent(std::string_view token) {
+  // This intentionally also hides relative paths and URL-like values. The
+  // metadata remains useful for optimization switches while never exposing a
+  // local directory through a quoted include or definition value.
+  return token.find('/') != std::string_view::npos ||
+         token.find('\\') != std::string_view::npos;
 }
 
 std::string CpuFlags() {
@@ -188,6 +198,19 @@ std::string RedactedCommandLine(const std::vector<std::string>& arguments) {
 }
 
 }  // namespace
+
+std::string RedactCompilerFlagPaths(std::string_view flags) {
+  std::ostringstream output;
+  bool first = true;
+  for (const auto& token : SplitCompilerFlags(flags)) {
+    if (!first) {
+      output << ' ';
+    }
+    first = false;
+    output << (ContainsPathComponent(token) ? "<path-flag>" : token);
+  }
+  return output.str();
+}
 
 BenchmarkProvenance CollectBenchmarkProvenance(
     const std::vector<std::string>& arguments) {

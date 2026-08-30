@@ -1,5 +1,6 @@
 #include "right_maximal_benchmark.hpp"
 #include "app_support.hpp"
+#include "benchmark_provenance.hpp"
 #include "benchmark_profiles.hpp"
 
 #include <sufkit/sufkit.hpp>
@@ -211,6 +212,35 @@ std::string join_numbers(const std::vector<std::uint64_t>& values) {
         output << values[index];
     }
     return output.str();
+}
+
+std::string sanitize_external_version(std::string value) {
+    std::replace(value.begin(), value.end(), '\t', ' ');
+    std::replace(value.begin(), value.end(), '\r', ' ');
+    std::replace(value.begin(), value.end(), '\n', ' ');
+    std::istringstream input(value);
+    std::ostringstream output;
+    std::string token;
+    bool first = true;
+    while (input >> token) {
+        const bool path_like = token.find('/') != std::string::npos ||
+            token.find('\\') != std::string::npos ||
+            (token.size() >= 2 &&
+             std::isalpha(static_cast<unsigned char>(token.front())) &&
+             token[1] == ':');
+        if (!first) output << ' ';
+        output << (path_like ? "<path>" : token);
+        first = false;
+    }
+    return first ? std::string{} : output.str();
+}
+
+const char* oracle_name_for_workload(std::string_view workload) {
+    if (workload == "mem") return "naive-mem-forward";
+    if (workload == "mam") return "naive-reference-mam-forward";
+    if (workload == "smem") return "naive-generalized-smem-forward";
+    if (workload == "mum") return "naive-mum-forward";
+    return "naive-right-maximal-forward";
 }
 
 std::uint64_t parse_number(const std::string& value, const char* name) {
@@ -906,13 +936,7 @@ std::vector<CorrectnessResult> run_naive_oracle(
             row.reference_bases = reference_bases;
             row.query_count = query_subset.size();
             row.query_bases = query_bases;
-            row.oracle = options.workload == "mem" ? "naive-mem-forward" :
-                         options.workload == "mam" ?
-                             "naive-reference-mam-forward" :
-                         options.workload == "smem" ?
-                             "naive-generalized-smem-forward" :
-                         options.workload == "mum" ? "naive-mum-forward" :
-                             "naive-right-maximal-forward";
+            row.oracle = oracle_name_for_workload(options.workload);
             RightMaximalOptions right_maximal_options;
             right_maximal_options.min_length = min_length;
             right_maximal_options.algorithm =
@@ -2762,7 +2786,7 @@ void benchmark_mummer(const Dataset& dataset, const Options& options,
         summary.method = "mummer4";
         summary.algorithm = build.algorithm;
         summary.acceleration = build.acceleration;
-        summary.operation = "vector";
+        summary.operation = "external-load+query";
         summary.min_length = length;
         summary.query_count = dataset.queries.size();
         summary.query_bases = dataset.query_bases;
@@ -2790,7 +2814,7 @@ void benchmark_mummer(const Dataset& dataset, const Options& options,
                 RawRow raw_row;
                 raw_row.dataset = dataset.name;
                 raw_row.method = "mummer4";
-                raw_row.operation = "vector";
+                raw_row.operation = summary.operation;
                 raw_row.min_length = length;
                 raw_row.repetition = repetition;
                 raw_row.peak_rss_scope = "not_applicable";
@@ -2850,7 +2874,7 @@ void benchmark_mummer(const Dataset& dataset, const Options& options,
                 (summary.total_matches != total || summary.reported_matches != reported ||
                  summary.count_checksum != count_checksum || summary.checksum != checksum))
                 throw Error(ErrorCode::kBuildFailure,
-                    "MUMmer4 right-maximal exact match checksum changed between repetitions");
+                    "MUMmer4 result checksum changed between repetitions");
             summary.seconds.push_back(measured.seconds);
             summary.total_matches = total;
             summary.reported_matches = reported;
@@ -2860,7 +2884,7 @@ void benchmark_mummer(const Dataset& dataset, const Options& options,
             RawRow raw_row;
             raw_row.dataset = dataset.name;
             raw_row.method = "mummer4";
-            raw_row.operation = "vector";
+            raw_row.operation = summary.operation;
             raw_row.min_length = length;
             raw_row.repetition = repetition;
             raw_row.seconds = measured.seconds;
@@ -2879,6 +2903,14 @@ void benchmark_mummer(const Dataset& dataset, const Options& options,
         }
         summary.peak_rss_mb = query_peak_rss.empty() ? 0.0 :
             *std::max_element(query_peak_rss.begin(), query_peak_rss.end());
+        if (summary.total_matches != forward_preflight.total_matches ||
+            summary.reported_matches != forward_preflight.reported_matches ||
+            summary.count_checksum != forward_preflight.count_checksum ||
+            summary.checksum != forward_preflight.result_checksum) {
+            throw Error(
+                ErrorCode::kBuildFailure,
+                "MUMmer4 forward result differs from the sufkit baseline");
+        }
         const auto reverse_output = scratch / ("mummer-reverse-" + std::to_string(length) + ".out");
         const auto reverse_error = scratch / ("mummer-reverse-" + std::to_string(length) + ".err");
         auto reverse_args = common;
@@ -3114,7 +3146,8 @@ void validate(const std::vector<QueryResultRow>& rows) {
 void write_outputs(const Options& options, const std::vector<Dataset>& datasets,
     const std::vector<BuildResult>& builds, const std::vector<QueryResultRow>& queries,
     const std::vector<RawRow>& raw,
-    const std::vector<CorrectnessResult>& correctness) {
+    const std::vector<CorrectnessResult>& correctness,
+    const bench::BenchmarkProvenance& provenance) {
     std::filesystem::create_directories(options.output_directory);
     {
         std::ofstream out(options.output_directory / "run_metadata.tsv");
@@ -3124,7 +3157,12 @@ void write_outputs(const Options& options, const std::vector<Dataset>& datasets,
                "\tnaive_right_maximal_oracle_status\toracle_reference_bases\toracle_query_bases"
                "\tlearned_k\tlearned_memory_overhead_basis_points\tlearned_bucket_bits"
                "\tcompiler\tcmake_version\tbuild_type\tos\tarchitecture\tlogical_cpus\tmummer_version\tmummer_launcher_sha256\tmummer_runtime_sha256\tworkload\tworker_process_model"
-               "\tmin_occurrences\tminibwa_version\tminibwa_sha256\n";
+               "\tmin_occurrences\tminibwa_version\tminibwa_sha256"
+               "\tgit_commit\tgit_dirty\tcompile_flags\tcpu_flags"
+               "\texecutable_sha256\tcpu_affinity\tsse42_compiled"
+               "\tsse42_runtime\tcommand_line_redacted\tpeak_rss_scope"
+               "\toracle_name\tnaive_oracle_status"
+               "\tgit_provenance_scope\n";
         for (const auto& dataset : datasets) {
             out << options.profile << '\t' << dataset.scenario
             << '\t' << options.seed << '\t' << dataset.name << '\t' << std::hex << dataset.fingerprint << std::dec
@@ -3144,7 +3182,16 @@ void write_outputs(const Options& options, const std::vector<Dataset>& datasets,
             << options.workload << "\tclean-exec-phase-v1\t"
             << join_numbers(options.min_occurrences)
             << '\t' << options.minibwa_version << '\t'
-            << options.minibwa_sha256 << '\n';
+            << options.minibwa_sha256 << '\t'
+            << provenance.git_commit << '\t' << provenance.git_dirty << '\t'
+            << provenance.compile_flags << '\t' << provenance.cpu_flags << '\t'
+            << provenance.executable_sha256 << '\t'
+            << provenance.cpu_affinity << '\t' << provenance.sse42_compiled
+            << '\t' << provenance.sse42_runtime << '\t'
+            << provenance.command_line_redacted << '\t'
+            << provenance.peak_rss_scope << '\t'
+            << oracle_name_for_workload(options.workload) << '\t'
+            << dataset.oracle_status << "\tcmake_configure_time\n";
         }
     }
     {
@@ -3295,6 +3342,7 @@ void write_outputs(const Options& options, const std::vector<Dataset>& datasets,
 
 int run(const std::vector<std::string>& arguments) {
     auto options = parse(arguments);
+    const auto provenance = bench::CollectBenchmarkProvenance(arguments);
     std::filesystem::create_directories(options.output_directory);
     const auto scratch = options.output_directory / "work";
     std::filesystem::create_directories(scratch);
@@ -3332,6 +3380,8 @@ int run(const std::vector<std::string>& arguments) {
             {options.minibwa->string(), "version"}, version_out, version_err);
         std::ifstream version_input(version_out);
         std::getline(version_input, options.minibwa_version);
+        options.minibwa_version =
+            sanitize_external_version(options.minibwa_version);
         if (version_result.status != 0 || options.minibwa_version.empty()) {
             throw Error(ErrorCode::kUnsupportedBackend,
                         "cannot read the MiniBWA version");
@@ -3382,7 +3432,8 @@ int run(const std::vector<std::string>& arguments) {
         }
     }
     add_fm_capability_rows(datasets, options, queries, raw);
-    write_outputs(options, datasets, builds, queries, raw, correctness);
+    write_outputs(options, datasets, builds, queries, raw, correctness,
+                  provenance);
     validate(queries);
     std::error_code cleanup_error;
     std::filesystem::remove_all(scratch, cleanup_error);
