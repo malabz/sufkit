@@ -25,7 +25,7 @@ option(SUFKIT_BUILD_DOCS "Build local Doxygen API documentation" OFF)
 option(SUFKIT_ENABLE_DEVELOPER_TOOLS
     "Enable local clang-format and clang-tidy targets" OFF)
 set(SUFKIT_MUMMER4_EXECUTABLE "" CACHE FILEPATH
-    "Optional MUMmer4 executable for local MEM/MAM differential tests")
+    "Optional MUMmer4 executable for local MEM/MAM/MUM differential tests")
 option(SUFKIT_ENABLE_INTERNAL_BENCH_DIAGNOSTICS
     "Instrument suffix-link scans in a developer-only static benchmark build"
     OFF)
@@ -367,6 +367,16 @@ if(SUFKIT_BUILD_TESTS)
     target_link_libraries(sufkit_mem_mam_tests PRIVATE sufkit::sufkit)
     target_compile_features(sufkit_mem_mam_tests PRIVATE cxx_std_17)
     add_test(NAME sufkit_mem_mam_tests COMMAND sufkit_mem_mam_tests)
+    add_executable(sufkit_mam_full_depth_tests
+        tests/test_mam_full_depth.cpp)
+    target_link_libraries(sufkit_mam_full_depth_tests PRIVATE sufkit::sufkit)
+    target_compile_features(sufkit_mam_full_depth_tests PRIVATE cxx_std_17)
+    add_test(NAME sufkit_mam_full_depth_tests
+        COMMAND sufkit_mam_full_depth_tests)
+    add_executable(sufkit_smem_mum_tests tests/test_smem_mum.cpp)
+    target_link_libraries(sufkit_smem_mum_tests PRIVATE sufkit::sufkit)
+    target_compile_features(sufkit_smem_mum_tests PRIVATE cxx_std_17)
+    add_test(NAME sufkit_smem_mum_tests COMMAND sufkit_smem_mum_tests)
     if(SUFKIT_ENABLE_SEQPRO)
         add_executable(sufkit_seqpro_contract_tests
             tests/test_seqpro_contract.cpp)
@@ -395,6 +405,16 @@ if(SUFKIT_BUILD_TESTS)
             "SUFKIT_TEST_MUMMER4=\"${SUFKIT_MUMMER4_EXECUTABLE}\"")
         add_test(NAME sufkit_mummer4_differential_tests
             COMMAND sufkit_mummer4_differential_tests)
+        add_executable(sufkit_mam_mummer4_full_depth_tests
+            tests/test_mam_mummer4_full_depth.cpp)
+        target_link_libraries(sufkit_mam_mummer4_full_depth_tests
+            PRIVATE sufkit::sufkit)
+        target_compile_features(sufkit_mam_mummer4_full_depth_tests
+            PRIVATE cxx_std_17)
+        target_compile_definitions(sufkit_mam_mummer4_full_depth_tests PRIVATE
+            "SUFKIT_TEST_MUMMER4=\"${SUFKIT_MUMMER4_EXECUTABLE}\"")
+        add_test(NAME sufkit_mam_mummer4_full_depth_tests
+            COMMAND sufkit_mam_mummer4_full_depth_tests)
     endif()
     if(SUFKIT_BUILD_BENCHMARKS)
         find_package(Python3 COMPONENTS Interpreter QUIET)
@@ -428,6 +448,13 @@ if(SUFKIT_BUILD_TESTS)
                 -DSUFKIT_EXPECT_LOW_LCP_ENCODING=${_sufkit_expected_low_lcp_encoding}
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_right_maximal_benchmark.cmake)
         set_tests_properties(sufkit_right_maximal_benchmark_smoke PROPERTIES TIMEOUT 180)
+        add_test(NAME sufkit_smem_mum_benchmark_smoke
+            COMMAND ${CMAKE_COMMAND}
+                -DSUFKIT_EXECUTABLE=$<TARGET_FILE:sufkit_cli>
+                -DOUTPUT_ROOT=${CMAKE_CURRENT_BINARY_DIR}/test-smem-mum-benchmark
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_smem_mum_benchmark.cmake)
+        set_tests_properties(sufkit_smem_mum_benchmark_smoke PROPERTIES
+            TIMEOUT 180)
     endif()
 endif()
 

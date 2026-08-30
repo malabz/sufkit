@@ -89,6 +89,15 @@ struct CoordinateView {
   }
 };
 
+template <class Values>
+std::size_t CoordinateCount(const Values& values) noexcept {
+  if constexpr (std::is_same_v<std::decay_t<Values>, CoordinateView>) {
+    return values.size;
+  } else {
+    return values.size();
+  }
+}
+
 // Resolve the immutable LCP representation once per query. Raw values and the
 // common (<255) byte-coded case then use direct pointer loads; only an actual
 // overflow marker enters the anchor decoder in LcpStorage.
@@ -1599,6 +1608,20 @@ bool MamMatchLess(const MamMatch& left, const MamMatch& right) {
                   right.reference_position, right.length, right.strand);
 }
 
+bool SmemMatchLess(const SmemMatch& left, const SmemMatch& right) {
+  return std::tie(left.query_position, left.sequence_id,
+                  left.reference_position, left.length, left.strand) <
+         std::tie(right.query_position, right.sequence_id,
+                  right.reference_position, right.length, right.strand);
+}
+
+bool MumMatchLess(const MumMatch& left, const MumMatch& right) {
+  return std::tie(left.query_position, left.sequence_id,
+                  left.reference_position, left.length, left.strand) <
+         std::tie(right.query_position, right.sequence_id,
+                  right.reference_position, right.length, right.strand);
+}
+
 bool MemMatchEqual(const MemMatch& left, const MemMatch& right) {
   return std::tie(left.query_position, left.sequence_id,
                   left.reference_position, left.length, left.strand) ==
@@ -1607,6 +1630,22 @@ bool MemMatchEqual(const MemMatch& left, const MemMatch& right) {
 }
 
 bool MamMatchEqual(const MamMatch& left, const MamMatch& right) {
+  return std::tie(left.query_position, left.sequence_id,
+                  left.reference_position, left.length, left.strand) ==
+         std::tie(right.query_position, right.sequence_id,
+                  right.reference_position, right.length, right.strand);
+}
+
+bool SmemMatchEqual(const SmemMatch& left, const SmemMatch& right) {
+  return std::tie(left.query_position, left.sequence_id,
+                  left.reference_position, left.length,
+                  left.reference_occurrences, left.strand) ==
+         std::tie(right.query_position, right.sequence_id,
+                  right.reference_position, right.length,
+                  right.reference_occurrences, right.strand);
+}
+
+bool MumMatchEqual(const MumMatch& left, const MumMatch& right) {
   return std::tie(left.query_position, left.sequence_id,
                   left.reference_position, left.length, left.strand) ==
          std::tie(right.query_position, right.sequence_id,
@@ -1661,6 +1700,26 @@ void PrepareMamSearch(const MamOptions& options) {
   if (options.min_length == 0) {
     throw Error(ErrorCode::kInvalidInput,
                 "reference-MAM minimum length must be greater than zero");
+  }
+}
+
+void PrepareSmemSearch(const SmemOptions& options) {
+  ValidateStrandMode(options.strands);
+  if (options.min_length == 0) {
+    throw Error(ErrorCode::kInvalidInput,
+                "SMEM minimum length must be greater than zero");
+  }
+  if (options.min_occurrences == 0) {
+    throw Error(ErrorCode::kInvalidInput,
+                "SMEM minimum occurrence count must be greater than zero");
+  }
+}
+
+void PrepareMumSearch(const MumOptions& options) {
+  ValidateStrandMode(options.strands);
+  if (options.min_length == 0) {
+    throw Error(ErrorCode::kInvalidInput,
+                "MUM minimum length must be greater than zero");
   }
 }
 
@@ -2128,10 +2187,50 @@ struct SuffixArray::Impl {
 
   std::uint8_t SymbolAt(std::uint64_t row, std::uint64_t depth) const {
     const auto suffix = SaValue(suffix_array, row);
-    if (suffix + depth >= text.size()) {
+    if (suffix >= text.size() ||
+        depth >= static_cast<std::uint64_t>(text.size()) - suffix) {
       return detail::kSentinel;
     }
     return text[static_cast<std::size_t>(suffix + depth)];
+  }
+
+  template <class SaVector>
+  std::uint8_t SymbolAtFor(const SaVector& sa_values, std::uint64_t row,
+                           std::uint64_t depth) const {
+    const auto suffix = static_cast<std::uint64_t>(
+        sa_values[static_cast<std::size_t>(row)]);
+    if (suffix >= text.size() ||
+        depth >= static_cast<std::uint64_t>(text.size()) - suffix) {
+      return detail::kSentinel;
+    }
+    return text[static_cast<std::size_t>(suffix + depth)];
+  }
+
+  template <class SaVector>
+  SuffixRange NarrowCharFor(const SaVector& sa_values, SuffixRange range,
+                            std::uint64_t depth,
+                            std::uint8_t symbol) const {
+    auto lower = range.begin;
+    auto upper = range.end;
+    while (lower < upper) {
+      const auto middle = lower + (upper - lower) / 2;
+      if (SymbolAtFor(sa_values, middle, depth) < symbol) {
+        lower = middle + 1;
+      } else {
+        upper = middle;
+      }
+    }
+    const auto begin = lower;
+    upper = range.end;
+    while (lower < upper) {
+      const auto middle = lower + (upper - lower) / 2;
+      if (SymbolAtFor(sa_values, middle, depth) <= symbol) {
+        lower = middle + 1;
+      } else {
+        upper = middle;
+      }
+    }
+    return begin == lower ? SuffixRange{} : SuffixRange{begin, lower};
   }
 
   SuffixRange NarrowChar(SuffixRange range, std::uint64_t depth,
@@ -2157,6 +2256,102 @@ struct SuffixArray::Impl {
       }
     }
     return begin == lower ? SuffixRange{} : SuffixRange{begin, lower};
+  }
+
+  std::uint64_t LcpCommonDepth(SuffixRange range,
+                               std::uint64_t known_depth) const {
+    if (range.Size() <= 1) {
+      return std::numeric_limits<std::uint64_t>::max();
+    }
+
+    // For a contiguous SA interval, the common prefix of every suffix is the
+    // minimum LCP value on the internal row boundaries. Stop as soon as the
+    // interval branches at the already matched depth; an exact minimum is not
+    // needed in that case.
+    return suffix_array.Visit([&](const auto& sa_values) {
+      const TypedLcpView<std::decay_t<decltype(sa_values)>> lcp_values{
+          lcp_access, &sa_values};
+      std::uint64_t common_depth =
+          std::numeric_limits<std::uint64_t>::max();
+      for (auto row = range.begin + 1; row < range.end; ++row) {
+        common_depth = std::min(
+            common_depth,
+            lcp_values[static_cast<std::size_t>(row)]);
+        if (common_depth <= known_depth) {
+          break;
+        }
+      }
+      return common_depth;
+    });
+  }
+
+  std::uint64_t ExtendSmemLcp(
+      const std::vector<std::uint8_t>& query, std::size_t query_position,
+      std::size_t run_end, std::uint64_t min_occurrences,
+      SuffixRange& interval, std::uint64_t depth) const {
+    const auto query_limit =
+        static_cast<std::uint64_t>(run_end - query_position);
+    while (depth < query_limit) {
+      if (interval.Size() == 1) {
+        // Once the interval is a singleton, no further SA navigation is
+        // necessary. A bounded LCE consumes the remainder in one pass while
+        // encoded N/separator/sentinel bytes remain hard mismatches.
+        const auto suffix = SaValue(suffix_array, interval.begin);
+        if (suffix >= text.size() ||
+            depth > static_cast<std::uint64_t>(text.size()) - suffix) {
+          return depth;
+        }
+        const auto text_offset = suffix + depth;
+        const auto available = static_cast<std::size_t>(std::min(
+            query_limit - depth,
+            static_cast<std::uint64_t>(text.size()) - text_offset));
+        const auto matched = detail::LongestCommonPrefixBytesLong(
+            text.data() + static_cast<std::size_t>(text_offset),
+            query.data() + query_position + static_cast<std::size_t>(depth),
+            available);
+        return depth + matched;
+      }
+
+      const auto common_depth = LcpCommonDepth(interval, depth);
+      if (common_depth > depth) {
+        // Every suffix in the interval shares this compact edge. Compare one
+        // representative and jump over the edge instead of narrowing one
+        // character at a time.
+        const auto edge_end = std::min(common_depth, query_limit);
+        const auto suffix = SaValue(suffix_array, interval.begin);
+        if (suffix >= text.size() ||
+            depth > static_cast<std::uint64_t>(text.size()) - suffix) {
+          return depth;
+        }
+        const auto text_offset = suffix + depth;
+        const auto available = static_cast<std::size_t>(std::min(
+            edge_end - depth,
+            static_cast<std::uint64_t>(text.size()) - text_offset));
+        const auto matched = detail::LongestCommonPrefixBytesLong(
+            text.data() + static_cast<std::size_t>(text_offset),
+            query.data() + query_position + static_cast<std::size_t>(depth),
+            available);
+        depth += matched;
+        if (depth != edge_end) {
+          return depth;
+        }
+        if (depth == query_limit) {
+          return depth;
+        }
+      }
+
+      // The compact edge ends at `depth`; selecting the query symbol now
+      // descends to the only child interval that can still qualify.
+      const auto narrowed = NarrowChar(
+          interval, depth,
+          query[query_position + static_cast<std::size_t>(depth)]);
+      if (narrowed.Size() < min_occurrences) {
+        return depth;
+      }
+      interval = narrowed;
+      ++depth;
+    }
+    return depth;
   }
 
   std::uint64_t IntervalDepth(SuffixRange range) const {
@@ -2254,6 +2449,29 @@ struct SuffixArray::Impl {
     return depth == pattern.size() ? range : SuffixRange{};
   }
 
+  void ValidateExplicitSearchAlgorithm(
+      SaSearchAlgorithm requested) const {
+    switch (requested) {
+      case SaSearchAlgorithm::kAutoSelect:
+      case SaSearchAlgorithm::kBinary:
+      case SaSearchAlgorithm::kLcpBinary:
+        return;
+      case SaSearchAlgorithm::kSaplingPwl:
+        if (!HasLearned()) {
+          throw Error(ErrorCode::kUnsupportedBackend,
+                      "Sapling PWL data is unavailable in this index");
+        }
+        return;
+      case SaSearchAlgorithm::kChild:
+        if (!HasChild()) {
+          throw Error(ErrorCode::kUnsupportedBackend,
+                      "CHILD data is unavailable in this index");
+        }
+        return;
+    }
+    throw Error(ErrorCode::kInvalidInput, "invalid SA search algorithm");
+  }
+
   SaSearchAlgorithm ResolveSearchAlgorithm(SaSearchAlgorithm requested,
                                            std::size_t pattern_length) const {
     if (requested == SaSearchAlgorithm::kAutoSelect) {
@@ -2261,14 +2479,7 @@ struct SuffixArray::Impl {
                  ? SaSearchAlgorithm::kSaplingPwl
                  : SaSearchAlgorithm::kLcpBinary;
     }
-    if (requested == SaSearchAlgorithm::kSaplingPwl && !HasLearned()) {
-      throw Error(ErrorCode::kUnsupportedBackend,
-                  "Sapling PWL data is unavailable in this index");
-    }
-    if (requested == SaSearchAlgorithm::kChild && !HasChild()) {
-      throw Error(ErrorCode::kUnsupportedBackend,
-                  "CHILD data is unavailable in this index");
-    }
+    ValidateExplicitSearchAlgorithm(requested);
     return requested;
   }
 
@@ -2637,18 +2848,34 @@ struct SuffixArray::Impl {
     return ResolveAlgorithm(AsRightMaximalAlgorithm(requested));
   }
 
+  RightMaximalSearchAlgorithm ResolveSmemAlgorithm(
+      MemSearchAlgorithm requested) const {
+    // SMEM advances one query position at a time. Fast indexes can reuse the
+    // previous prefix interval through ISA+LCP; Low-memory indexes retain the
+    // exact LCP/root path without requiring a persistent ISA.
+    return ResolveAlgorithm(AsRightMaximalAlgorithm(requested));
+  }
+
+  RightMaximalSearchAlgorithm ResolveMumAlgorithm(
+      MemSearchAlgorithm requested) const {
+    // Strict MUM starts from the same reference-unique candidates as MAM, so
+    // it uses the same workload-specific capability selection.
+    return ResolveMamAlgorithm(requested);
+  }
+
   template <class SaVector, class IsaVector, class LcpVector>
   SuffixRange SuffixLinkIntervalFor(
       const SaVector& sa_values, const IsaVector& isa_values,
       const LcpVector& lcp_values, SuffixRange previous, std::uint64_t depth,
       std::uint32_t shift, detail::SuffixLinkScanSink* scan_sink) const {
+    static constexpr std::uint64_t kLcpProbeBudget = 4096;
     // Shift both interval endpoints through ISA, then expand across LCP values
     // that still support the shortened prefix. Empty means reuse was not
     // proven; callers must restart from the root search path.
     if (previous.Empty() || depth <= shift) {
 #if defined(SUFKIT_ENABLE_SUFFIX_LINK_DIAGNOSTICS)
       if (scan_sink) {
-        scan_sink->Record(0, 0, 0);
+        scan_sink->Record(0, 0, 0, false);
       }
 #endif
       return {};
@@ -2661,17 +2888,18 @@ struct SuffixArray::Impl {
         right_suffix + shift >= text.size()) {
 #if defined(SUFKIT_ENABLE_SUFFIX_LINK_DIAGNOSTICS)
       if (scan_sink) {
-        scan_sink->Record(0, 0, 0);
+        scan_sink->Record(0, 0, 0, false);
       }
 #endif
       return {};
     }
     const auto left_sample = (left_suffix + shift) / sampling_rate;
     const auto right_sample = (right_suffix + shift) / sampling_rate;
-    if (left_sample >= isa_values.size() || right_sample >= isa_values.size()) {
+    if (left_sample >= CoordinateCount(isa_values) ||
+        right_sample >= CoordinateCount(isa_values)) {
 #if defined(SUFKIT_ENABLE_SUFFIX_LINK_DIAGNOSTICS)
       if (scan_sink) {
-        scan_sink->Record(0, 0, 0);
+        scan_sink->Record(0, 0, 0, false);
       }
 #endif
       return {};
@@ -2683,47 +2911,57 @@ struct SuffixArray::Impl {
         std::max(isa_values[static_cast<std::size_t>(left_sample)],
                  isa_values[static_cast<std::size_t>(right_sample)]);
     auto right = static_cast<std::uint64_t>(right_endpoint) + 1;
-    const auto sa_size = static_cast<std::uint64_t>(sa_values.size());
+    const auto sa_size =
+        static_cast<std::uint64_t>(CoordinateCount(sa_values));
     const auto target = depth - shift;
+    std::uint64_t left_rows = 0;
+    std::uint64_t right_rows = 0;
+    bool budget_exhausted = false;
+#if defined(SUFKIT_ENABLE_SUFFIX_LINK_DIAGNOSTICS)
+    const auto scan_begin =
+        scan_sink ? BuildClock::now() : BuildClock::time_point{};
+#endif
+
+    while (left > 0) {
+      if (left_rows + right_rows >= kLcpProbeBudget) {
+        budget_exhausted = true;
+        break;
+      }
+      ++left_rows;
+      if (!lcp_values.AtLeast(static_cast<std::size_t>(left), target)) {
+        break;
+      }
+      --left;
+    }
+    while (!budget_exhausted && right < sa_size) {
+      if (left_rows + right_rows >= kLcpProbeBudget) {
+        budget_exhausted = true;
+        break;
+      }
+      ++right_rows;
+      if (!lcp_values.AtLeast(static_cast<std::size_t>(right), target)) {
+        break;
+      }
+      ++right;
+    }
+
 #if defined(SUFKIT_ENABLE_SUFFIX_LINK_DIAGNOSTICS)
     if (scan_sink) {
-      std::uint64_t left_rows = 0;
-      std::uint64_t right_rows = 0;
-      const auto scan_begin = BuildClock::now();
-      while (left > 0) {
-        ++left_rows;
-        if (!lcp_values.AtLeast(static_cast<std::size_t>(left), target)) {
-          break;
-        }
-        --left;
-      }
-      while (right < sa_size) {
-        ++right_rows;
-        if (!lcp_values.AtLeast(static_cast<std::size_t>(right), target)) {
-          break;
-        }
-        ++right;
-      }
       const auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(
                                BuildClock::now() - scan_begin)
                                .count();
       scan_sink->Record(left_rows, right_rows,
-                        elapsed > 0 ? static_cast<std::uint64_t>(elapsed) : 0);
-    } else {
-#endif
-      while (left > 0 &&
-             lcp_values.AtLeast(static_cast<std::size_t>(left), target)) {
-        --left;
-      }
-      while (right < sa_size &&
-             lcp_values.AtLeast(static_cast<std::size_t>(right), target)) {
-        ++right;
-      }
-#if defined(SUFKIT_ENABLE_SUFFIX_LINK_DIAGNOSTICS)
+                        elapsed > 0 ? static_cast<std::uint64_t>(elapsed) : 0,
+                        budget_exhausted);
     }
 #else
     static_cast<void>(scan_sink);
 #endif
+    // A partially expanded range is not a proven suffix-link interval.
+    // Returning empty makes every caller use its exact root-search fallback.
+    if (budget_exhausted) {
+      return {};
+    }
     return {left, right};
   }
 
@@ -2765,7 +3003,9 @@ struct SuffixArray::Impl {
       }
       SuffixRange previous{};
       for (std::size_t query_position = run_begin;
-           query_position + min_length <= run_end; ++query_position) {
+           min_length <=
+           static_cast<std::uint64_t>(run_end - query_position);
+           ++query_position) {
         const EncodedView prefix(query.data() + query_position,
                                  static_cast<std::size_t>(min_length));
         SuffixRange interval;
@@ -2956,6 +3196,220 @@ struct SuffixArray::Impl {
     EnumerateOneStrandWithLinker(
         query, original_query_length, strand, min_length, algorithm,
         lookup_algorithm, statistics, link_interval, callback);
+  }
+
+  template <class SaVector, class LinkInterval, class Callback>
+  void EnumerateMamOneStrandFullDepthFor(
+      const SaVector& sa_values, const std::vector<std::uint8_t>& query,
+      std::uint64_t original_query_length, Strand strand,
+      std::uint64_t min_length, RightMaximalSearchAlgorithm algorithm,
+      SaSearchAlgorithm lookup_algorithm, LinkInterval& link_interval,
+      Callback& callback) const {
+    std::size_t run_begin = 0;
+    while (run_begin < query.size()) {
+      while (run_begin < query.size() &&
+             query[run_begin] == detail::kSentinel) {
+        ++run_begin;
+      }
+      std::size_t run_end = run_begin;
+      while (run_end < query.size() &&
+             query[run_end] != detail::kSentinel) {
+        ++run_end;
+      }
+
+      // `interval` is the complete SA interval for query
+      // [query_position, query_position + depth). Unlike the generic
+      // right-maximal kernel, this state retains the full match depth. After
+      // deleting one query character, ISA+LCP therefore resumes from almost
+      // the mismatch point instead of rebuilding a fixed min-length prefix.
+      SuffixRange interval{};
+      std::uint64_t depth = 0;
+      std::size_t query_position = run_begin;
+      while (query_position < run_end &&
+             min_length <=
+                 static_cast<std::uint64_t>(run_end - query_position)) {
+        const auto remaining =
+            static_cast<std::uint64_t>(run_end - query_position);
+        if (interval.Empty()) {
+          const EncodedView prefix(query.data() + query_position,
+                                   static_cast<std::size_t>(min_length));
+          interval = algorithm == RightMaximalSearchAlgorithm::kFull
+                         ? ChildRange(prefix)
+                         : Range(prefix, lookup_algorithm, nullptr);
+          depth = interval.Empty() ? 0 : min_length;
+        }
+
+        if (!interval.Empty()) {
+          // A shifted state can be one character shorter than min_length.
+          // More generally, retain the last non-empty interval on a mismatch
+          // so it can still seed the next suffix-link transition.
+          while (depth < remaining && interval.Size() != 1) {
+            const auto narrowed = NarrowCharFor(
+                sa_values, interval, depth,
+                query[query_position + static_cast<std::size_t>(depth)]);
+            if (narrowed.Empty()) {
+              break;
+            }
+            interval = narrowed;
+            ++depth;
+          }
+
+          if (interval.Size() == 1 && depth < remaining) {
+            const auto global = static_cast<std::uint64_t>(
+                sa_values[static_cast<std::size_t>(interval.begin)]);
+            if (global < text.size() &&
+                depth <= static_cast<std::uint64_t>(text.size()) - global) {
+              const auto text_offset = global + depth;
+              const auto available = static_cast<std::size_t>(std::min(
+                  remaining - depth,
+                  static_cast<std::uint64_t>(text.size()) - text_offset));
+              // Query runs contain only A/C/G/T, so N, separator and sentinel
+              // bytes terminate this LCE without a metadata lookup.
+              depth += detail::LongestCommonPrefixBytesLong(
+                  query.data() + query_position +
+                      static_cast<std::size_t>(depth),
+                  text.data() + static_cast<std::size_t>(text_offset),
+                  available);
+            }
+          }
+
+          if (interval.Size() == 1 && depth >= min_length) {
+            const auto row = interval.begin;
+            const auto global = static_cast<std::uint64_t>(
+                sa_values[static_cast<std::size_t>(row)]);
+            const auto mapped =
+                detail::MapGlobalPosition(reference, global, depth);
+            if (mapped) {
+              const bool left_extendable =
+                  query_position > run_begin && mapped->second > 0 &&
+                  query[query_position - 1] ==
+                      text[static_cast<std::size_t>(global - 1)];
+              if (!left_extendable) {
+                const auto output_position =
+                    strand == Strand::kReverseComplement
+                        ? original_query_length - (query_position + depth)
+                        : static_cast<std::uint64_t>(query_position);
+                callback(MamMatch{mapped->first, mapped->second,
+                                  output_position, depth, strand});
+              }
+            }
+          }
+        }
+
+        if (!interval.Empty() && depth > 1) {
+          bool predecessor_was_unique = interval.Size() == 1;
+          do {
+            interval = link_interval(interval, depth, 1);
+            ++query_position;
+            if (interval.Empty()) {
+              depth = 0;
+              break;
+            }
+            --depth;
+            if (!predecessor_was_unique || interval.Size() != 1) {
+              break;
+            }
+
+            // Removing the first base from a unique exact match preserves
+            // the same right endpoint. While the shifted interval is still a
+            // singleton, that query start is necessarily left-extendable by
+            // the base just removed and cannot be a MAM. Skip the start, but
+            // stop immediately when the interval expands: another reference
+            // suffix can then extend beyond the old mismatch and may yield a
+            // valid internal MAM.
+            predecessor_was_unique = true;
+          } while (query_position < run_end && depth > 1 &&
+                   min_length <= static_cast<std::uint64_t>(
+                                     run_end - query_position));
+
+          if (!interval.Empty() && interval.Size() == 1 && depth <= 1 &&
+              query_position < run_end &&
+              min_length <= static_cast<std::uint64_t>(
+                                run_end - query_position)) {
+            // The current singleton start was already proven left-extendable
+            // by the preceding shift, but depth is now too small to link
+            // again. Advance once and restart from the root.
+            ++query_position;
+            interval = {};
+            depth = 0;
+          }
+        } else {
+          interval = {};
+          depth = 0;
+          ++query_position;
+        }
+      }
+      run_begin = run_end;
+    }
+  }
+
+  template <class Coordinate, class Callback>
+  bool EnumerateMamOneStrandNativeFullDepth(
+      const std::vector<std::uint8_t>& query,
+      std::uint64_t original_query_length, Strand strand,
+      std::uint64_t min_length, RightMaximalSearchAlgorithm algorithm,
+      SaSearchAlgorithm lookup_algorithm, RawLcpView lcp_values,
+      detail::SuffixLinkScanSink* scan_sink, Callback& callback) const {
+    using NativeCoordinates = std::vector<Coordinate>;
+    bool handled = false;
+    suffix_array.Visit([&](const auto& sa_values) {
+      using SaValues = std::decay_t<decltype(sa_values)>;
+      if constexpr (std::is_same_v<SaValues, NativeCoordinates>) {
+        isa.Visit([&](const auto& isa_values) {
+          using IsaValues = std::decay_t<decltype(isa_values)>;
+          if constexpr (std::is_same_v<IsaValues, NativeCoordinates>) {
+            auto link_interval = [&](SuffixRange previous,
+                                     std::uint64_t depth,
+                                     std::uint32_t shift) {
+              return SuffixLinkIntervalFor(sa_values, isa_values, lcp_values,
+                                           previous, depth, shift, scan_sink);
+            };
+            EnumerateMamOneStrandFullDepthFor(
+                sa_values, query, original_query_length, strand, min_length,
+                algorithm, lookup_algorithm, link_interval, callback);
+            handled = true;
+          }
+        });
+      }
+    });
+    return handled;
+  }
+
+  template <class Callback>
+  void EnumerateMamOneStrandFullDepth(
+      const std::vector<std::uint8_t>& query,
+      std::uint64_t original_query_length, Strand strand,
+      std::uint64_t min_length, RightMaximalSearchAlgorithm algorithm,
+      SaSearchAlgorithm lookup_algorithm, Callback& callback) const {
+    detail::SuffixLinkScanSink* scan_sink = nullptr;
+#if defined(SUFKIT_ENABLE_SUFFIX_LINK_DIAGNOSTICS)
+    scan_sink = detail::CurrentSuffixLinkScanSink();
+#endif
+    const RawLcpView raw_lcp{lcp_access.raw32, lcp_access.raw64};
+    if ((raw_lcp.raw32 != nullptr || raw_lcp.raw64 != nullptr) &&
+        EnumerateMamOneStrandNativeFullDepth<std::uint32_t>(
+            query, original_query_length, strand, min_length, algorithm,
+            lookup_algorithm, raw_lcp, scan_sink, callback)) {
+      return;
+    }
+    if ((raw_lcp.raw32 != nullptr || raw_lcp.raw64 != nullptr) &&
+        EnumerateMamOneStrandNativeFullDepth<std::uint64_t>(
+            query, original_query_length, strand, min_length, algorithm,
+            lookup_algorithm, raw_lcp, scan_sink, callback)) {
+      return;
+    }
+
+    const auto sa_values = ViewCoordinates(suffix_array);
+    const auto isa_values = ViewCoordinates(isa);
+    const TypedLcpView<CoordinateView> lcp_values{lcp_access, &sa_values};
+    auto link_interval = [&](SuffixRange previous, std::uint64_t depth,
+                             std::uint32_t shift) {
+      return SuffixLinkIntervalFor(sa_values, isa_values, lcp_values,
+                                   previous, depth, shift, scan_sink);
+    };
+    EnumerateMamOneStrandFullDepthFor(
+        sa_values, query, original_query_length, strand, min_length,
+        algorithm, lookup_algorithm, link_interval, callback);
   }
 
   template <class Callback>
@@ -3357,6 +3811,17 @@ struct SuffixArray::Impl {
     }
     const auto enumerate = [&](const std::vector<std::uint8_t>& value,
                                Strand strand) {
+      const auto lookup = ResolveMamLookupAlgorithm(
+          options.lookup_algorithm,
+          static_cast<std::size_t>(options.min_length));
+      if (algorithm == RightMaximalSearchAlgorithm::kSuffixLink ||
+          algorithm == RightMaximalSearchAlgorithm::kFull) {
+        EnumerateMamOneStrandFullDepth(
+            value, encoded.size(), strand, options.min_length, algorithm,
+            lookup, callback);
+        return;
+      }
+
       auto filter = [&](std::uint64_t row, std::uint64_t global,
                         bool minimum_prefix_is_unique,
                         const RightMaximalMatch& match) {
@@ -3367,9 +3832,6 @@ struct SuffixArray::Impl {
         callback(MamMatch{match.sequence_id, match.reference_position,
                           match.query_position, match.length, match.strand});
       };
-      const auto lookup = ResolveMamLookupAlgorithm(
-          options.lookup_algorithm,
-          static_cast<std::size_t>(options.min_length));
       EnumerateOneStrand(value, encoded.size(), strand, options.min_length,
                          algorithm, lookup, nullptr, filter);
     };
@@ -3381,6 +3843,233 @@ struct SuffixArray::Impl {
         options.strands == StrandMode::kBoth) {
       const auto reverse = ReverseComplementRightMaximal(encoded);
       enumerate(reverse, Strand::kReverseComplement);
+    }
+  }
+
+  template <class Callback>
+  std::uint64_t EnumerateSmemOneStrand(
+      const std::vector<std::uint8_t>& query,
+      std::uint64_t original_query_length, Strand strand,
+      const SmemOptions& options, RightMaximalSearchAlgorithm algorithm,
+      Callback& callback) const {
+    detail::SuffixLinkScanSink* scan_sink = nullptr;
+#if defined(SUFKIT_ENABLE_SUFFIX_LINK_DIAGNOSTICS)
+    scan_sink = detail::CurrentSuffixLinkScanSink();
+#endif
+    std::uint64_t total_smems = 0;
+    std::size_t run_begin = 0;
+    while (run_begin < query.size()) {
+      while (run_begin < query.size() &&
+             query[run_begin] == detail::kSentinel) {
+        ++run_begin;
+      }
+      std::size_t run_end = run_begin;
+      while (run_end < query.size() &&
+             query[run_end] != detail::kSentinel) {
+        ++run_end;
+      }
+
+      SuffixRange previous_prefix{};
+      std::uint64_t maximum_end = run_begin;
+      for (std::size_t query_position = run_begin;
+           options.min_length <=
+           static_cast<std::uint64_t>(run_end - query_position);
+           ++query_position) {
+        const EncodedView prefix(
+            query.data() + query_position,
+            static_cast<std::size_t>(options.min_length));
+        SuffixRange interval;
+        const bool uses_links =
+            algorithm == RightMaximalSearchAlgorithm::kSuffixLink ||
+            algorithm == RightMaximalSearchAlgorithm::kFull;
+        if (uses_links && query_position != run_begin &&
+            !previous_prefix.Empty()) {
+          interval = SuffixLinkInterval(previous_prefix, options.min_length, 1,
+                                        scan_sink);
+          if (!interval.Empty()) {
+            interval = NarrowChar(interval, options.min_length - 1,
+                                  prefix.back());
+          }
+        }
+        if (interval.Empty()) {
+          if (algorithm == RightMaximalSearchAlgorithm::kChild ||
+              algorithm == RightMaximalSearchAlgorithm::kFull) {
+            interval = ChildRange(prefix);
+          } else {
+            interval = Range(prefix, options.lookup_algorithm, nullptr);
+          }
+        }
+
+        // Keep the exact minimum-prefix interval for suffix-linking the next
+        // query start. Its occurrence threshold does not affect correctness of
+        // the shifted interval.
+        previous_prefix = interval;
+        if (interval.Size() < options.min_occurrences) {
+          continue;
+        }
+
+        std::uint64_t length = options.min_length;
+        if (algorithm == RightMaximalSearchAlgorithm::kLcp) {
+          length = ExtendSmemLcp(query, query_position, run_end,
+                                 options.min_occurrences, interval, length);
+        } else {
+          while (query_position + length < run_end) {
+            const auto narrowed = NarrowChar(
+                interval, length,
+                query[query_position + static_cast<std::size_t>(length)]);
+            if (narrowed.Size() < options.min_occurrences) {
+              break;
+            }
+            interval = narrowed;
+            ++length;
+          }
+        }
+
+        const auto query_end =
+            static_cast<std::uint64_t>(query_position) + length;
+        // For each query start only the longest c-supported match matters.
+        // Starts are visited in ascending order, so an earlier candidate
+        // contains this one exactly when its right end reaches at least as far.
+        if (query_end <= maximum_end) {
+          continue;
+        }
+        maximum_end = query_end;
+        ++total_smems;
+
+        const auto output_position =
+            strand == Strand::kReverseComplement
+                ? original_query_length - query_end
+                : static_cast<std::uint64_t>(query_position);
+        const auto occurrences = interval.Size();
+        ForEachStoredPosition(interval, [&](std::uint64_t global) {
+          const auto mapped =
+              detail::MapGlobalPosition(reference, global, length);
+          if (!mapped) {
+            return;
+          }
+          callback(SmemMatch{mapped->first, mapped->second, output_position,
+                             length, occurrences, strand});
+        });
+      }
+      run_begin = run_end;
+    }
+    return total_smems;
+  }
+
+  template <class Callback>
+  std::uint64_t EnumerateEncodedSmem(
+      const std::vector<std::uint8_t>& encoded, const SmemOptions& options,
+      RightMaximalSearchAlgorithm algorithm, Callback& callback) const {
+    if (sampling_rate != 1) {
+      throw Error(ErrorCode::kUnsupportedBackend,
+                  "SMEM search requires a complete suffix array");
+    }
+    if (options.min_occurrences > SaSize(suffix_array)) {
+      return 0;
+    }
+    std::uint64_t total_smems = 0;
+    if (options.strands == StrandMode::kForward ||
+        options.strands == StrandMode::kBoth) {
+      total_smems += EnumerateSmemOneStrand(
+          encoded, encoded.size(), Strand::kForward, options, algorithm,
+          callback);
+    }
+    if (options.strands == StrandMode::kReverseComplement ||
+        options.strands == StrandMode::kBoth) {
+      const auto reverse = ReverseComplementRightMaximal(encoded);
+      total_smems += EnumerateSmemOneStrand(
+          reverse, encoded.size(), Strand::kReverseComplement, options,
+          algorithm, callback);
+    }
+    return total_smems;
+  }
+
+  template <class Callback>
+  void EnumerateEncodedMum(const std::vector<std::uint8_t>& encoded,
+                           const MumOptions& options,
+                           RightMaximalSearchAlgorithm algorithm,
+                           Callback& callback) const {
+    if (sampling_rate != 1) {
+      throw Error(ErrorCode::kUnsupportedBackend,
+                  "MUM search requires a complete suffix array");
+    }
+
+    MamOptions mam_options;
+    mam_options.min_length = options.min_length;
+    mam_options.strands = options.strands;
+    mam_options.algorithm = options.algorithm;
+    mam_options.lookup_algorithm = options.lookup_algorithm;
+    std::vector<MamMatch> candidates;
+    auto collect = [&](const MamMatch& match) { candidates.push_back(match); };
+    EnumerateEncodedMam(encoded, mam_options, algorithm, collect);
+
+    // Remove accidental duplicate tuples before interpreting equal reference
+    // intervals as distinct query occurrences.
+    std::sort(candidates.begin(), candidates.end(), MamMatchLess);
+    candidates.erase(
+        std::unique(candidates.begin(), candidates.end(), MamMatchEqual),
+        candidates.end());
+    const auto interval_less = [](const MamMatch& left,
+                                  const MamMatch& right) {
+      if (left.strand != right.strand) {
+        return left.strand < right.strand;
+      }
+      if (left.sequence_id != right.sequence_id) {
+        return left.sequence_id < right.sequence_id;
+      }
+      if (left.reference_position != right.reference_position) {
+        return left.reference_position < right.reference_position;
+      }
+      if (left.length != right.length) {
+        return left.length > right.length;
+      }
+      return left.query_position < right.query_position;
+    };
+    std::sort(candidates.begin(), candidates.end(), interval_less);
+
+    std::size_t begin = 0;
+    while (begin < candidates.size()) {
+      const auto strand = candidates[begin].strand;
+      const auto sequence_id = candidates[begin].sequence_id;
+      std::size_t group_end = begin;
+      while (group_end < candidates.size() &&
+             candidates[group_end].strand == strand &&
+             candidates[group_end].sequence_id == sequence_id) {
+        ++group_end;
+      }
+
+      std::uint64_t furthest_end = 0;
+      for (std::size_t index = begin; index < group_end;) {
+        const auto& first = candidates[index];
+        if (first.length >
+            std::numeric_limits<std::uint64_t>::max() -
+                first.reference_position) {
+          throw Error(ErrorCode::kCorruptIndex,
+                      "MUM reference interval overflows");
+        }
+        const auto reference_end = first.reference_position + first.length;
+        std::size_t equal_end = index + 1;
+        while (equal_end < group_end &&
+               candidates[equal_end].reference_position ==
+                   first.reference_position &&
+               candidates[equal_end].length == first.length) {
+          ++equal_end;
+        }
+
+        const bool duplicated = equal_end - index > 1;
+        const bool contained = reference_end <= furthest_end;
+        // Equal intervals are all rejected. Even a rejected duplicate still
+        // participates in containment: any shorter interval inside it also
+        // occurs at least twice in the query and cannot be a strict MUM.
+        if (!duplicated && !contained) {
+          callback(MumMatch{first.sequence_id, first.reference_position,
+                            first.query_position, first.length,
+                            first.strand});
+        }
+        furthest_end = std::max(furthest_end, reference_end);
+        index = equal_end;
+      }
+      begin = group_end;
     }
   }
 };
@@ -3896,7 +4585,8 @@ MemResult SuffixArray::FindMems(
       return;
     }
     if (!heap_active) {
-      std::make_heap(result.matches.begin(), result.matches.end(), MemMatchLess);
+      std::make_heap(result.matches.begin(), result.matches.end(),
+                     MemMatchLess);
       heap_active = true;
     }
     if (MemMatchLess(match, result.matches.front())) {
@@ -3960,7 +4650,8 @@ MamResult SuffixArray::FindMams(
       return;
     }
     if (!heap_active) {
-      std::make_heap(result.matches.begin(), result.matches.end(), MamMatchLess);
+      std::make_heap(result.matches.begin(), result.matches.end(),
+                     MamMatchLess);
       heap_active = true;
     }
     if (MamMatchLess(match, result.matches.front())) {
@@ -3972,6 +4663,135 @@ MamResult SuffixArray::FindMams(
   };
   impl_->EnumerateEncodedMam(encoded, options, algorithm, collect);
   std::sort(result.matches.begin(), result.matches.end(), MamMatchLess);
+  result.truncated = result.matches.size() < result.total_matches;
+  return result;
+}
+
+void SuffixArray::ForEachSmem(std::string_view query,
+                              const SmemOptions& options,
+                              const SmemCallback& callback) const {
+  PrepareSmemSearch(options);
+  if (!callback) {
+    throw Error(ErrorCode::kInvalidInput, "SMEM callback must not be empty");
+  }
+  impl_->ValidateExplicitSearchAlgorithm(options.lookup_algorithm);
+  const auto encoded = EncodeRightMaximalQuery(query);
+  const auto algorithm = impl_->ResolveSmemAlgorithm(options.algorithm);
+  impl_->EnumerateEncodedSmem(encoded, options, algorithm, callback);
+}
+
+SmemResult SuffixArray::FindSmems(
+    std::string_view query, const SmemOptions& options,
+    std::optional<std::uint64_t> max_matches) const {
+  PrepareSmemSearch(options);
+  impl_->ValidateExplicitSearchAlgorithm(options.lookup_algorithm);
+  const auto encoded = EncodeRightMaximalQuery(query);
+  const auto algorithm = impl_->ResolveSmemAlgorithm(options.algorithm);
+  SmemResult result;
+  if (!max_matches) {
+    auto collect = [&](const SmemMatch& match) {
+      result.matches.push_back(match);
+    };
+    result.total_smems =
+        impl_->EnumerateEncodedSmem(encoded, options, algorithm, collect);
+    std::sort(result.matches.begin(), result.matches.end(), SmemMatchLess);
+    result.matches.erase(
+        std::unique(result.matches.begin(), result.matches.end(),
+                    SmemMatchEqual),
+        result.matches.end());
+    result.total_matches = result.matches.size();
+    return result;
+  }
+
+  const auto retain = *max_matches;
+  bool heap_active = false;
+  auto collect = [&](const SmemMatch& match) {
+    ++result.total_matches;
+    if (retain == 0) {
+      return;
+    }
+    if (!heap_active && result.matches.size() < retain) {
+      result.matches.push_back(match);
+      return;
+    }
+    if (!heap_active) {
+      std::make_heap(result.matches.begin(), result.matches.end(),
+                     SmemMatchLess);
+      heap_active = true;
+    }
+    if (SmemMatchLess(match, result.matches.front())) {
+      std::pop_heap(result.matches.begin(), result.matches.end(),
+                    SmemMatchLess);
+      result.matches.back() = match;
+      std::push_heap(result.matches.begin(), result.matches.end(),
+                     SmemMatchLess);
+    }
+  };
+  result.total_smems =
+      impl_->EnumerateEncodedSmem(encoded, options, algorithm, collect);
+  std::sort(result.matches.begin(), result.matches.end(), SmemMatchLess);
+  result.truncated = result.matches.size() < result.total_matches;
+  return result;
+}
+
+void SuffixArray::ForEachMum(std::string_view query,
+                             const MumOptions& options,
+                             const MumCallback& callback) const {
+  PrepareMumSearch(options);
+  if (!callback) {
+    throw Error(ErrorCode::kInvalidInput, "MUM callback must not be empty");
+  }
+  const auto encoded = EncodeRightMaximalQuery(query);
+  const auto algorithm = impl_->ResolveMumAlgorithm(options.algorithm);
+  impl_->EnumerateEncodedMum(encoded, options, algorithm, callback);
+}
+
+MumResult SuffixArray::FindMums(
+    std::string_view query, const MumOptions& options,
+    std::optional<std::uint64_t> max_matches) const {
+  PrepareMumSearch(options);
+  const auto encoded = EncodeRightMaximalQuery(query);
+  const auto algorithm = impl_->ResolveMumAlgorithm(options.algorithm);
+  MumResult result;
+  if (!max_matches) {
+    auto collect = [&](const MumMatch& match) {
+      result.matches.push_back(match);
+    };
+    impl_->EnumerateEncodedMum(encoded, options, algorithm, collect);
+    std::sort(result.matches.begin(), result.matches.end(), MumMatchLess);
+    result.matches.erase(
+        std::unique(result.matches.begin(), result.matches.end(),
+                    MumMatchEqual),
+        result.matches.end());
+    result.total_matches = result.matches.size();
+    return result;
+  }
+
+  const auto retain = *max_matches;
+  bool heap_active = false;
+  auto collect = [&](const MumMatch& match) {
+    ++result.total_matches;
+    if (retain == 0) {
+      return;
+    }
+    if (!heap_active && result.matches.size() < retain) {
+      result.matches.push_back(match);
+      return;
+    }
+    if (!heap_active) {
+      std::make_heap(result.matches.begin(), result.matches.end(),
+                     MumMatchLess);
+      heap_active = true;
+    }
+    if (MumMatchLess(match, result.matches.front())) {
+      std::pop_heap(result.matches.begin(), result.matches.end(), MumMatchLess);
+      result.matches.back() = match;
+      std::push_heap(result.matches.begin(), result.matches.end(),
+                     MumMatchLess);
+    }
+  };
+  impl_->EnumerateEncodedMum(encoded, options, algorithm, collect);
+  std::sort(result.matches.begin(), result.matches.end(), MumMatchLess);
   result.truncated = result.matches.size() < result.total_matches;
   return result;
 }

@@ -20,10 +20,11 @@ no-silent-fallback contract remain unchanged.
 
 ## `.sufidx` compatibility
 
-The Unreleased MEM/reference-MAM APIs add no sections or identifiers. The
-adaptive-storage work adds format 1.4 section codecs while preserving section
-and backend IDs. Existing 1.0-1.3 standalone SA files retain their legacy
-32/64-bit interpretation and can run the same supported searches.
+The Unreleased MEM/reference-MAM/SMEM/MUM APIs add no sections or identifiers.
+The adaptive-storage work adds format 1.4 section codecs while preserving
+section and backend IDs. Existing 1.0-1.3 standalone SA files retain their
+legacy 32/64-bit interpretation and can run the same supported searches when
+they contain the auxiliary structures required by the selected algorithm.
 
 | Reader | 1.0 | 1.1 | 1.2 | 1.3 | 1.4 |
 |---|---:|---:|---:|---:|---:|

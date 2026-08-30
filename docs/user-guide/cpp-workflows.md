@@ -217,7 +217,7 @@ through unchanged. Streaming order is not stable across algorithms. The
 vector API returns a deterministic query-first order and can retain only the
 first N while still counting the complete result.
 
-## MEM and reference-MAM search
+## MEM, reference-MAM, SMEM, and MUM search
 
 ```cpp
 sufkit::MemOptions mem_options;
@@ -232,12 +232,23 @@ sa.ForEachMem(query, mem_options,
 sufkit::MamOptions mam_options;
 mam_options.min_length = 20;
 auto mams = sa.FindMams(query, mam_options);
+
+sufkit::SmemOptions smem_options;
+smem_options.min_length = 20;
+smem_options.min_occurrences = 2;
+auto smems = sa.FindSmems(query, smem_options);
+
+sufkit::MumOptions mum_options;
+mum_options.min_length = 20;
+auto mums = sa.FindMums(query, mum_options);
 ```
 
 MEM guarantees both left and right maximality. Reference-MAM additionally
 requires one occurrence in the combined reference but permits repeated query
-occurrences. Streaming callbacks are synchronous; vector results are sorted
-and can retain a bounded prefix while reporting the complete count.
+occurrences. SMEM reports maximal qualifying query intervals plus each
+reference coordinate; MUM requires uniqueness in both the reference and the
+current query record. Streaming callbacks are synchronous; vector results are
+sorted and can retain a bounded prefix while reporting complete counts.
 
 ## Error handling
 
@@ -254,8 +265,8 @@ message for diagnostics.
 
 ## Concurrent queries
 
-After build/load, const `Count`, `Locate`, `EqualRange`, right-maximal, MEM,
-and MAM operations do not mutate the index. Multiple threads may call them on
-the same object. Any
+After build/load, const `Count`, `Locate`, `EqualRange`, and maximal-match
+operations do not mutate the index. Multiple threads may call them on the same
+object. Any
 statistics object passed to a query is mutable caller-owned output and must be
 thread-local or otherwise synchronized.

@@ -17,7 +17,7 @@ Then use the maintained guides for:
 
 - [CLI commands](user-guide/cli-reference.md);
 - [C++ workflows](user-guide/cpp-workflows.md);
-- [exact, sampled-SA, right-maximal, MEM, and MAM search](user-guide/search.md);
+- [exact, sampled-SA, right-maximal, MEM, MAM, SMEM, and MUM search](user-guide/search.md);
 - [persistence and inspection](user-guide/persistence-and-inspection.md); and
 - [troubleshooting](user-guide/troubleshooting.md).
 

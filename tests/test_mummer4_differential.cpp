@@ -102,6 +102,7 @@ int main() {
     const auto query_path = root / "query.fa";
     const auto mem_path = root / "mem.out";
     const auto mam_path = root / "mam.out";
+    const auto mum_path = root / "mum.out";
     {
       std::ofstream reference(reference_path);
       reference << ">ref\n"
@@ -116,6 +117,8 @@ int main() {
     if (std::system((common + " -maxmatch > " + Quote(mem_path)).c_str()) !=
             0 ||
         std::system((common + " -mumreference > " + Quote(mam_path)).c_str()) !=
+            0 ||
+        std::system((common + " -mum > " + Quote(mum_path)).c_str()) !=
             0) {
       throw std::runtime_error("MUMmer4 command failed");
     }
@@ -148,12 +151,22 @@ int main() {
     }
     std::sort(mams.begin(), mams.end());
     RequireEqual(mams, ReadMummer(mam_path), "reference-MAM");
+
+    sufkit::MumOptions mum_options;
+    mum_options.min_length = 4;
+    mum_options.algorithm = sufkit::MemSearchAlgorithm::kFull;
+    std::vector<Match> mums;
+    for (const auto& [name, query] : queries) {
+      AppendSufkit(name, index.FindMums(query, mum_options), index, mums);
+    }
+    std::sort(mums.begin(), mums.end());
+    RequireEqual(mums, ReadMummer(mum_path), "MUM");
   } catch (const std::exception& error) {
     std::cerr << "MUMmer4 differential failed: " << error.what() << '\n';
     std::filesystem::remove_all(root);
     return 1;
   }
   std::filesystem::remove_all(root);
-  std::cout << "MUMmer4 MEM/MAM differential passed\n";
+  std::cout << "MUMmer4 MEM/MAM/MUM differential passed\n";
   return 0;
 }

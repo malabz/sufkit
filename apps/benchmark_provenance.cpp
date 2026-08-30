@@ -169,7 +169,8 @@ std::string QuoteArgument(std::string_view value) {
 
 std::string RedactedCommandLine(const std::vector<std::string>& arguments) {
   static const std::set<std::string> path_options{
-      "--reference", "--queries", "--output", "--output-dir", "--mummer4"};
+      "--reference", "--queries", "--output", "--output-dir", "--mummer4",
+      "--mummer4-runtime", "--minibwa"};
   std::ostringstream output;
   output << "sufkit bench";
   bool redact_next = false;

@@ -477,10 +477,10 @@ void print_help() {
         "  --seed 20260822\n"
         "  --build-repetitions N --query-repetitions N --warmups N\n\n"
         "maximal exact match workloads:\n"
-        "  --workload right-maximal|mem|mam --profile smoke|quick --output-dir DIR\n"
+        "  --workload right-maximal|mem|mam|smem|mum --profile smoke|quick --output-dir DIR\n"
         "  --methods right-maximal-baseline,right-maximal-lcp,right-maximal-child,right-maximal-suffix-link,right-maximal-full,\n"
         "            right-maximal-suffix-link-binary,right-maximal-suffix-link-sapling,mummer4\n"
-        "  --min-lengths 20,50,100 [--mummer4 PATH]\n"
+        "  --min-lengths 20,50,100 [--mummer4 PATH] [--mummer4-runtime ELF_PATH]\n"
         "  --learned-k 20 --learned-memory-bp 100 [--learned-bucket-bits N]\n"
         "  MEM methods: mem-baseline,mem-lcp,mem-child,mem-suffix-link,mem-full,\n"
         "               mem-auto-fast,mem-auto-low-memory,\n"
@@ -490,7 +490,12 @@ void print_help() {
         "  MAM methods: mam-baseline,mam-lcp,mam-child,mam-suffix-link,mam-full,\n"
         "               mam-auto-fast,mam-auto-low-memory,\n"
         "               mam-suffix-link-fast,mam-lcp-low-memory,mummer4\n"
-        "  or --workload right-maximal|mem|mam --reference REF.fa[.gz] [--queries Q.fa[.gz]]\n";
+        "  SMEM methods: smem-baseline,smem-lcp,smem-child,smem-suffix-link,smem-full,\n"
+        "                smem-auto-fast,smem-auto-low-memory,minibwa\n"
+        "  MUM methods: mum-baseline,mum-lcp,mum-child,mum-suffix-link,mum-full,\n"
+        "               mum-auto-fast,mum-auto-low-memory,mummer4\n"
+        "  SMEM only: --min-occurrences 1,2,4 [--minibwa PATH]\n"
+        "  or --workload right-maximal|mem|mam|smem|mum --reference REF.fa[.gz] [--queries Q.fa[.gz]]\n";
 }
 
 } // namespace
@@ -500,7 +505,9 @@ int run_benchmark(const std::vector<std::string>& arguments) {
         if (arguments[index] == "--workload" &&
             (arguments[index + 1] == "right-maximal" ||
              arguments[index + 1] == "mem" ||
-             arguments[index + 1] == "mam")) {
+             arguments[index + 1] == "mam" ||
+             arguments[index + 1] == "smem" ||
+             arguments[index + 1] == "mum")) {
             return right_maximal_bench::run(arguments);
         }
     }

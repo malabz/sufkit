@@ -14,6 +14,7 @@ namespace sufkit::detail {
 // right-maximal benchmark worker and its parent process.
 struct SuffixLinkScanSummary {
   std::uint64_t attempts = 0;
+  std::uint64_t budget_exhaustions = 0;
   std::uint64_t left_rows = 0;
   std::uint64_t right_rows = 0;
   std::uint64_t rows_p50 = 0;
@@ -33,8 +34,11 @@ class SuffixLinkScanSink {
   // A scanned row is one inspected LCP entry, including the terminating entry
   // whose value is below the target. Boundary-limited directions may scan zero.
   void Record(std::uint64_t left_rows, std::uint64_t right_rows,
-              std::uint64_t scan_nanoseconds) {
+              std::uint64_t scan_nanoseconds, bool budget_exhausted) {
     attempts_ = SaturatingAdd(attempts_, 1);
+    if (budget_exhausted) {
+      budget_exhaustions_ = SaturatingAdd(budget_exhaustions_, 1);
+    }
     left_rows_ = SaturatingAdd(left_rows_, left_rows);
     right_rows_ = SaturatingAdd(right_rows_, right_rows);
     scan_nanoseconds_ =
@@ -45,6 +49,7 @@ class SuffixLinkScanSink {
   SuffixLinkScanSummary Summarize() const {
     SuffixLinkScanSummary result;
     result.attempts = attempts_;
+    result.budget_exhaustions = budget_exhaustions_;
     result.left_rows = left_rows_;
     result.right_rows = right_rows_;
     result.scan_nanoseconds = scan_nanoseconds_;
@@ -79,6 +84,7 @@ class SuffixLinkScanSink {
   }
 
   std::uint64_t attempts_ = 0;
+  std::uint64_t budget_exhaustions_ = 0;
   std::uint64_t left_rows_ = 0;
   std::uint64_t right_rows_ = 0;
   std::uint64_t scan_nanoseconds_ = 0;

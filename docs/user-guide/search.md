@@ -1,8 +1,9 @@
 # Search guide
 
 sufkit provides exact pattern search on standalone suffix arrays and SDSL
-FM-indexes, plus right-maximal compatibility search, formal MEM search, and
-reference-unique MAM search on standalone suffix arrays.
+FM-indexes, plus right-maximal compatibility search, formal MEM,
+reference-unique MAM, generalized SMEM, and strict MUM search on standalone
+suffix arrays.
 
 ## Exact search
 
@@ -161,8 +162,8 @@ immutable and support concurrent const queries.
 extended jointly by one equal canonical base on either the left or the right.
 `MamMatch` adds reference uniqueness across all indexed contigs. It follows
 MUMmer4 `-mumreference` semantics, so the same reference-unique string may be
-reported at multiple query positions. Strict query-and-reference-unique MUM
-search is not implemented.
+reported at multiple query positions. Use `MumMatch` when uniqueness in the
+current query record is also required.
 
 ```cpp
 sufkit::MemOptions mem_options;
@@ -194,15 +195,69 @@ string's complete-SA interval contains exactly one reference occurrence.
 Neither operation is available on an FM index.
 
 The algorithm modes and lookup modes have the same stored-data requirements
-as right-maximal search. Auto selection is suffix-link, then LCP, then
-baseline; CHILD/full remain explicit. All choices must produce the same
-sorted tuple set.
+as right-maximal search. MEM auto uses LCP plus its deterministic query-anchor
+skip when LCP is available, then baseline. Reference-MAM auto uses suffix-link,
+then LCP, then baseline. CHILD/full remain explicit. All choices must produce
+the same sorted tuple set.
 
 `ForEachMem()` and `ForEachMam()` are synchronous streaming APIs.
 `FindMems()` and `FindMams()` sort by query position, sequence ID, reference
 position, length, and strand. Forward and reverse-complement matches remain
 orientation-distinct, including palindromic queries. Bounded vector calls
 still compute the exact complete `total_matches`.
+
+## Generalized SMEM search
+
+An `(l,c)-SMEM` is a query interval of length at least `l` that has at least
+`c` exact occurrences across the combined reference and is not contained in
+another query interval satisfying the same conditions. `c=1` gives the
+standard SMEM definition.
+
+```cpp
+sufkit::SmemOptions options;
+options.min_length = 20;
+options.min_occurrences = 2;
+options.strands = sufkit::StrandMode::kBoth;
+auto result = index.FindSmems(query, options);
+```
+
+`SmemResult::total_smems` counts directional query intervals.
+`total_matches` counts the expanded reference-coordinate rows. Every
+`SmemMatch` reports `reference_occurrences`, so all rows produced by one SMEM
+carry the same interval cardinality.
+
+SMEM requires a complete standalone SA. It examines every legal query start;
+there is no skip option. Auto selection uses suffix-link when ISA+LCP is
+available, then LCP, then baseline. CHILD/full remain explicit. A sampled SA
+or FM index is rejected instead of returning an approximate occurrence count.
+
+```bash
+sufkit smem --index reference.sufidx --query queries.fa.gz \
+  --min-length 20 --min-occurrences 2 --strand both
+```
+
+## Strict MUM search
+
+A strict MUM is a MEM whose string occurs exactly once in the combined
+reference and exactly once in the current query FASTA record. Query
+uniqueness is evaluated independently for each orientation and includes
+overlapping occurrences. It never spans a query hard break.
+
+```cpp
+sufkit::MumOptions options;
+options.min_length = 20;
+auto result = index.FindMums(query, options);
+```
+
+MUM requires a complete standalone SA. It first enumerates reference-MAMs and
+then removes duplicate or contained reference intervals that demonstrate a
+second query occurrence. `ForEachMum()` may therefore buffer candidates even
+though callback delivery is synchronous.
+
+```bash
+sufkit mum --index reference.sufidx --query queries.fa.gz \
+  --min-length 20 --strand forward
+```
 
 ## Boundaries
 
@@ -212,5 +267,5 @@ payload is rejected rather than converted into an invalid result.
 
 The legacy right-maximal API remains documented under its weaker contract and
 must not be used when a caller needs a formal left-maximality guarantee. Use
-the `Mem*` API for that guarantee and `Mam*` when reference uniqueness is also
-required.
+the `Mem*` API for that guarantee, `Mam*` for reference uniqueness, `Mum*`
+for uniqueness in both inputs, and `Smem*` for query-supermaximal seeds.

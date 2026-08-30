@@ -126,8 +126,9 @@ std::vector<MatchTuple> NaiveMams(
         const auto query_position = std::get<0>(match);
         const auto length = std::get<3>(match);
         return ReferenceOccurrences(
-                   records, query.substr(static_cast<std::size_t>(query_position),
-                                         static_cast<std::size_t>(length))) !=
+                   records,
+                   query.substr(static_cast<std::size_t>(query_position),
+                                static_cast<std::size_t>(length))) !=
                1;
       }),
       result.end());
@@ -435,8 +436,11 @@ void TestWidthsAndConstructors() {
 
     sufkit::MamOptions mam;
     mam.min_length = 8;
-    mam.algorithm = sufkit::MemSearchAlgorithm::kFull;
-    CHECK(Tuples(index.FindMams(query, mam)) == expected_mams);
+    for (const auto algorithm : {sufkit::MemSearchAlgorithm::kFull,
+                                 sufkit::MemSearchAlgorithm::kSuffixLink}) {
+      mam.algorithm = algorithm;
+      CHECK(Tuples(index.FindMams(query, mam)) == expected_mams);
+    }
   }
 
   auto low_options = sufkit::LowMemorySuffixArrayBuildOptions();
@@ -584,10 +588,15 @@ void TestPackedSpanMemMamEnumeration() {
     CHECK(mem.truncated == expected_mem.truncated);
     CHECK(Tuples(mem) == Tuples(expected_mem));
 
-    const auto mam = candidate.FindMams(query, mam_options);
-    CHECK(mam.total_matches == expected_mam.total_matches);
-    CHECK(mam.truncated == expected_mam.truncated);
-    CHECK(Tuples(mam) == Tuples(expected_mam));
+    for (const auto algorithm : {sufkit::MemSearchAlgorithm::kFull,
+                                 sufkit::MemSearchAlgorithm::kSuffixLink}) {
+      auto candidate_mam_options = mam_options;
+      candidate_mam_options.algorithm = algorithm;
+      const auto mam = candidate.FindMams(query, candidate_mam_options);
+      CHECK(mam.total_matches == expected_mam.total_matches);
+      CHECK(mam.truncated == expected_mam.truncated);
+      CHECK(Tuples(mam) == Tuples(expected_mam));
+    }
 
     const auto limited = candidate.FindMems(query, mem_options, 257);
     CHECK(limited.total_matches == expected_mem.total_matches);
@@ -634,7 +643,8 @@ void TestRandomDifferential() {
       CHECK(count_only.matches.empty());
       const auto limited = index.FindMems(query, options, 1);
       CHECK(limited.total_matches == expected.size());
-      CHECK(limited.matches.size() == std::min<std::size_t>(1, expected.size()));
+      CHECK(limited.matches.size() ==
+            std::min<std::size_t>(1, expected.size()));
       CHECK(Tuples(limited) == std::vector<MatchTuple>(
                                    expected.begin(),
                                    expected.begin() + limited.matches.size()));

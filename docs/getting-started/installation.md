@@ -91,8 +91,8 @@ ctest --test-dir build/seqpro --output-on-failure
 ```
 
 This does not change public headers, install dependencies, `.sufidx`, or the
-MEM/MAM query path. SeqPro is used only to cross-check FASTA base and sequence-
-text coordinate semantics.
+maximal-match query path. SeqPro is used only to cross-check FASTA base and
+sequence-text coordinate semantics.
 
 ## `add_subdirectory`
 

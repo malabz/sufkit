@@ -12,7 +12,7 @@ failure rather than an empty reference.
 
 Exact patterns accept only A/C/G/T after case normalization. N, U, IUPAC,
 whitespace, and empty strings are invalid. Split ambiguous query regions or use
-right-maximal exact match search, where non-ACGT symbols are hard breaks.
+a maximal-match search, where non-ACGT symbols are hard breaks.
 
 ### Query FASTA is rejected
 
@@ -65,8 +65,8 @@ do not bypass validation.
 
 ### Wrong index kind
 
-right-maximal exact match requires a standalone SA. Exact query supports SA and FM. Load with the
-class matching `InspectIndex(...).kind`.
+Maximal-match search requires a standalone SA. Exact query supports SA and FM.
+Load with the class matching `InspectIndex(...).kind`.
 
 ## Search behavior
 
@@ -80,12 +80,19 @@ boundaries. Exact patterns cannot contain their internal codes.
 The loaded index lacks the required learned or CHILD section. Rebuild with
 `--learned-index` or `--sa-acceleration child|full`, or use `auto`/binary.
 
-### Locate or right-maximal exact match uses too much memory
+### SMEM or MUM rejects an otherwise valid SA
+
+Generalized SMEM, reference-MAM, and strict MUM require a complete SA
+(`sampling_rate=1`). Rebuild without SA sampling. A Low-memory complete SA is
+supported; automatic search then uses its LCP path. FM indexes do not expose
+any maximal-match API.
+
+### Locate or maximal-match search uses too much memory
 
 Use `Count` when coordinates are unnecessary. Set `max_hits` or `max_matches`,
-stream right-maximal exact matches with `ForEachRightMaximalMatch`, and avoid
-complete `Locate` on high-frequency patterns. Note that an accurate total
-right-maximal exact match count still traverses the complete match set.
+use the relevant `ForEach*` callback API, and avoid complete `Locate` or SMEM
+coordinate expansion on high-frequency patterns. Accurate totals still require
+traversing the complete logical result set.
 
 ## Build-system issues
 

@@ -7,7 +7,7 @@
 - SDSL Huffman、balanced 和 DNA EPR compressed suffix array；
 - exact count、equal range 和 locate；
 - ISA、LCP、CHILD 与 suffix-link 右极大精确匹配搜索；
-- 正式的双侧极大 MEM 与 reference-MAM（参考中唯一、query 可重复）搜索；
+- 正式的双侧极大 MEM、reference-MAM、广义 `(l,c)-SMEM` 与严格 MUM；
 - 可选的文本位置采样 SA，保持完整 exact count/locate 和右极大匹配结果；
 - 构建宽度与最终存储宽度分离，支持原生 32/64 位及 split40/split48；
 - 使用 raw LCP 的 Fast 与使用 byte-coded LCP 的 Low-memory 两种配置；
@@ -20,7 +20,8 @@
 
 `RightMaximal*` 保留历史兼容的较弱契约；需要正式左、右双侧极大保证时使用
 0.3.0 开发中的 `Mem*` API。`Mam*` 进一步要求匹配串在全部 reference contig
-中只出现一次，但允许它在 query 中重复；严格 MUM 尚未实现。
+中只出现一次，但允许它在 query 中重复；`Mum*` 同时要求当前 query record
+中唯一，`Smem*` 提供至少出现 `c` 次且不被其他合格 query 区间包含的种子。
 
 [中文文档导航](docs/zh-CN/README.md) · [英文完整文档](docs/README.md) ·
 [贡献指南](CONTRIBUTING.md)
@@ -40,8 +41,9 @@ count 和 Sapling PWL 均已随 0.2.0 发布；其中采样 SA 和 Sapling PWL �
 默认选择保持保守：
 
 - 普通 SA 构建使用 divsufsort；只有逻辑文本至少 1 GiB、线程数大于 1 且 CaPS 可用时，`auto` 才选择 CaPS。
-- Fast 是默认 SA profile，保留完整 SA+ISA+原生 raw LCP，右极大/MEM 自动使用
-  suffix-link；CHILD 只在显式请求时使用。
+- Fast 是默认 SA profile，保留完整 SA+ISA+原生 raw LCP。MEM 自动使用
+  LCP+auto-skip，reference-MAM、SMEM 和 MUM 可自动使用 suffix-link；CHILD
+  只在显式请求时使用。
 - Low-memory 保留完整 SA+byte-coded LCP，并移除常驻 ISA、CHILD 与 PWL；
   查询自动使用 LCP 路径。它目前不与文本位置采样组合。
 - 采样 SA 默认关闭。`K>1` 主要减少最终索引内存和文件大小，不降低底层完整 SA 构建的峰值内存；采样右极大匹配要求 `min_length >= K`。

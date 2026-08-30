@@ -169,7 +169,7 @@ See the archived
 and
 [Sapling evidence](https://github.com/malabz/sufkit/blob/main/docs/archive/benchmarks/0.2.0-sapling.md).
 
-## MEM and reference-MAM
+## MEM, reference-MAM, SMEM, and MUM
 
 The Unreleased `mem` and `mam` workloads call the formal `FindMems()` and
 `FindMams()` APIs. MEM rows are checked against MUMmer4 `-maxmatch`;
@@ -177,11 +177,22 @@ reference-MAM rows use `-mumreference`. Baseline, LCP, CHILD, suffix-link, and
 full methods must agree on total matches and sorted-result checksum before a
 run is accepted.
 
-Smoke validation uses seed 20260822, a 64 KiB synthetic reference, 100
+The current source tree also provides `smem` and `mum` workloads. Generalized
+SMEM rows report both distinct query-interval seeds and expanded reference
+coordinates for each occurrence threshold. Strict MUM rows can be checked
+against MUMmer4 `-mum`. MiniBWA is optional and is kept in a separately
+labeled FMD `load+query` scope; it is not treated as an in-process or
+forward-only timing peer. No release-level SMEM/MUM performance result is
+claimed here until the smoke/quick evidence package is completed.
+
+Smoke validation uses seed 20260822, a 16 KiB synthetic reference, 100
 queries, minimum lengths 20 and 50, one warm-up, and three measured
 repetitions. MUMmer4 time includes external process startup, index loading,
 querying, and output-file writing; output parsing and checksum calculation are
 not timed. It is therefore not an in-process query-kernel measurement.
+For an uninstalled libtool build, benchmark commands pass both the launcher
+(`--mummer4`) and the actual ELF (`--mummer4-runtime`); run metadata records
+their SHA-256 values separately.
 
 ## FM-index
 

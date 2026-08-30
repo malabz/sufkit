@@ -9,7 +9,8 @@ Start with:
 - `sufkit::GenomeReference` to validate and normalize FASTA or in-memory
   records;
 - `sufkit::SuffixArray` for exact search, direct SA access, right-maximal
-  compatibility search, formal MEMs, and reference-unique MAMs;
+  compatibility search, formal MEMs, reference-unique MAMs, generalized
+  SMEMs, and strict MUMs;
 - `sufkit::FmIndex` for compressed exact range/count/locate and batched count;
 - `sufkit::InspectIndex` and backend-discovery functions for persisted/build
   capabilities; and
@@ -18,8 +19,9 @@ Start with:
 All public coordinates are zero-based and contig-local. Exact patterns accept
 only A/C/G/T after case normalization. Maximal-match query non-ACGT symbols
 are hard breaks. `RightMaximal*` exposes the historical weaker contract;
-`Mem*` guarantees both-sided maximality and `Mam*` additionally guarantees
-reference uniqueness. Built or loaded indexes are immutable and support concurrent
+`Mem*` guarantees both-sided maximality, `Mam*` adds reference uniqueness,
+`Smem*` guarantees query-supermaximal `(l,c)` seeds, and `Mum*` adds query
+uniqueness. Built or loaded indexes are immutable and support concurrent
 const queries; caller-owned statistics outputs require independent
 synchronization.
 

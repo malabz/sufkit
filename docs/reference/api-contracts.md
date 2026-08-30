@@ -114,16 +114,28 @@ takes precedence over this automatic policy.
 Exact vector results are ordered by sequence ID, position, length, and strand.
 Both-strand palindromic exact hits are merged with strand `Strand::kBoth`.
 
-Right-maximal results are ordered by query position, sequence ID, reference
-position, length, and strand. Forward and reverse results remain distinct.
+All maximal-match coordinate results are ordered by query position, sequence
+ID, reference position, length, and strand. Forward and reverse results remain
+distinct.
 
 `RightMaximalMatch` guarantees exactness and non-extendability on the right. It
 does not guarantee left maximality and is not a MEM contract.
 
 `MemMatch` guarantees exactness and non-extendability on both sides.
 `MamMatch` adds uniqueness of the matched string across all reference contigs.
-It does not require query uniqueness and therefore is reference-MAM rather
-than strict MUM.
+`MumMatch` additionally requires exactly one (including overlapping)
+occurrence in the current directional query record. `MamMatch` deliberately
+does not make that query-uniqueness guarantee.
+
+`SmemMatch` represents one located reference occurrence of an `(l,c)-SMEM`.
+`reference_occurrences` is the full size of the seed's complete-SA interval.
+`SmemResult::total_smems` counts directional query intervals, whereas
+`total_matches` counts located coordinate rows. The retention limit applies
+only to returned coordinate rows; both totals remain exact.
+
+SMEM and MUM require `sampling_rate=1`. Sampled SA and FM-index calls return
+`unsupported_backend`; no approximate fallback is permitted. Their automatic
+algorithm order is suffix-link, LCP, then baseline, and never CHILD/full.
 
 `max_hits` and `max_matches` bound retained output, not the complete count.
 `total_hits`/`total_matches` remain accurate and `truncated` reports omission.

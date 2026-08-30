@@ -155,7 +155,7 @@ Invalid, empty, or hard-boundary states return to a correct root lookup. The
 optimization changes how an interval is found, not which right-maximal exact
 matches are emitted.
 
-## MEM and reference-MAM
+## MEM, reference-MAM, SMEM, and MUM
 
 A MEM is exact and cannot be extended jointly on either side. From a query
 anchor, sufkit first finds a right-side SA interval. LCP information exposes
@@ -173,8 +173,20 @@ principle used by MUMmer4, implemented independently in sufkit.
 A reference-MAM is a MEM whose matched string has exactly one occurrence in
 the union of all reference contigs. Query uniqueness is deliberately not
 required. sufkit therefore checks a complete-SA interval of size one and only
-supports MAM with K=1. Strict MUM would additionally require query uniqueness
-and is outside the current API.
+supports MAM with K=1.
+
+A strict MUM additionally requires the matched string to occur exactly once in
+the current query record. sufkit enumerates reference-MAMs, orders them by
+reference interval, and rejects duplicate or contained intervals that prove a
+second query occurrence. An independent oracle counts overlapping query
+occurrences directly.
+
+For generalized `(l,c)-SMEM`, every query start is extended while the exact SA
+interval contains at least `c` suffixes. The longest qualifying interval at
+each start is a candidate. A left-to-right skyline keeps it only when its end
+extends beyond all earlier candidates, which is exactly the query-containment
+condition. Surviving intervals are then expanded to all reference coordinates.
+Both SMEM and MUM require a complete SA.
 
 ## Sapling-style PWL lookup
 

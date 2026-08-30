@@ -42,12 +42,18 @@ struct Options {
     std::vector<std::string> scenarios{"mixed"};
     std::vector<std::string> methods{"right-maximal-baseline", "right-maximal-lcp", "right-maximal-child", "right-maximal-suffix-link", "right-maximal-full"};
     std::vector<std::uint64_t> min_lengths{20, 50};
+    std::vector<std::uint64_t> min_occurrences{1};
     std::filesystem::path output_directory;
     std::optional<std::filesystem::path> mummer4;
+    std::optional<std::filesystem::path> mummer4_runtime;
+    std::optional<std::filesystem::path> minibwa;
     std::optional<std::filesystem::path> reference;
     std::optional<std::filesystem::path> query_file;
     std::string mummer_version;
-    std::string mummer_sha256;
+    std::string mummer_launcher_sha256;
+    std::string mummer_runtime_sha256;
+    std::string minibwa_version;
+    std::string minibwa_sha256;
     std::uint64_t seed = 20260822;
     std::uint32_t learned_k = 20;
     std::uint32_t learned_memory_overhead_basis_points = 100;
@@ -58,6 +64,7 @@ struct Options {
     bool build_repetitions_explicit = false;
     bool query_repetitions_explicit = false;
     bool warmups_explicit = false;
+    bool min_occurrences_explicit = false;
 };
 
 struct Dataset {
@@ -78,10 +85,12 @@ struct CorrectnessResult {
     std::string scenario;
     std::string oracle = "naive-right-maximal-forward";
     std::uint64_t min_length = 0;
+    std::uint64_t min_occurrences = 1;
     std::uint64_t reference_bases = 0;
     std::uint64_t query_count = 0;
     std::uint64_t query_bases = 0;
     std::uint64_t total_matches = 0;
+    std::uint64_t total_smems = 0;
     std::uint64_t checksum = 0;
     std::string status = "ok";
 };
@@ -133,10 +142,12 @@ struct QueryResultRow {
     std::string acceleration;
     std::string operation;
     std::uint64_t min_length = 0;
+    std::uint64_t min_occurrences = 1;
     std::uint64_t query_count = 0;
     std::uint64_t query_bases = 0;
     std::vector<double> seconds;
     std::uint64_t total_matches = 0;
+    std::uint64_t total_smems = 0;
     std::uint64_t reported_matches = 0;
     std::uint64_t count_checksum = 0;
     std::uint64_t checksum = 0;
@@ -155,6 +166,7 @@ struct RawRow {
     std::string method;
     std::string operation;
     std::uint64_t min_length = 0;
+    std::uint64_t min_occurrences = 1;
     std::uint32_t repetition = 0;
     double seconds = 0;
     double user_cpu_seconds = 0;
@@ -170,6 +182,7 @@ struct RawRow {
         kVectorMaterializationMatchThreshold;
     bool vector_skipped = false;
     std::uint64_t total_matches = 0;
+    std::uint64_t total_smems = 0;
     std::uint64_t reported_matches = 0;
     std::uint64_t count_checksum = 0;
     std::uint64_t checksum = 0;
@@ -189,6 +202,15 @@ std::vector<std::string> split(const std::string& text) {
         begin = end + 1;
     }
     return result;
+}
+
+std::string join_numbers(const std::vector<std::uint64_t>& values) {
+    std::ostringstream output;
+    for (std::size_t index = 0; index < values.size(); ++index) {
+        if (index != 0) output << ',';
+        output << values[index];
+    }
+    return output.str();
 }
 
 std::uint64_t parse_number(const std::string& value, const char* name) {
@@ -211,7 +233,8 @@ Options parse(const std::vector<std::string>& arguments) {
                             "maximal match benchmark requires a workload");
             result.workload = arguments[index];
             if (result.workload != "right-maximal" &&
-                result.workload != "mem" && result.workload != "mam")
+                result.workload != "mem" && result.workload != "mam" &&
+                result.workload != "smem" && result.workload != "mum")
                 throw Error(ErrorCode::kInvalidInput,
                             "unknown maximal match benchmark workload: " +
                                 result.workload);
@@ -227,8 +250,18 @@ Options parse(const std::vector<std::string>& arguments) {
             else if (name == "--min-lengths") {
                 result.min_lengths.clear();
                 for (const auto& item : split(value)) result.min_lengths.push_back(parse_number(item, "--min-lengths"));
+            } else if (name == "--min-occurrences") {
+                result.min_occurrences.clear();
+                for (const auto& item : split(value)) {
+                    result.min_occurrences.push_back(
+                        parse_number(item, "--min-occurrences"));
+                }
+                result.min_occurrences_explicit = true;
             } else if (name == "--output-dir") result.output_directory = value;
             else if (name == "--mummer4") result.mummer4 = std::filesystem::path(value);
+            else if (name == "--mummer4-runtime")
+                result.mummer4_runtime = std::filesystem::path(value);
+            else if (name == "--minibwa") result.minibwa = std::filesystem::path(value);
             else if (name == "--reference") result.reference = std::filesystem::path(value);
             else if (name == "--queries") result.query_file = std::filesystem::path(value);
             else if (name == "--seed") result.seed = parse_number(value, "--seed");
@@ -288,9 +321,20 @@ Options parse(const std::vector<std::string>& arguments) {
     if (!result.warmups_explicit) result.warmups = profile.query_warmups;
     if (result.query_file && !result.reference)
         throw Error(ErrorCode::kInvalidInput, "--queries requires --reference");
+    if (result.mummer4_runtime && !result.mummer4)
+        throw Error(ErrorCode::kInvalidInput,
+                    "--mummer4-runtime requires --mummer4");
     if (result.output_directory.empty()) throw Error(ErrorCode::kInvalidInput, "--output-dir is required");
     if (result.min_lengths.empty() || std::any_of(result.min_lengths.begin(), result.min_lengths.end(), [](auto value) { return value == 0; }))
         throw Error(ErrorCode::kInvalidInput, "right-maximal exact match minimum lengths must be positive");
+    if (result.min_occurrences.empty() ||
+        std::any_of(result.min_occurrences.begin(), result.min_occurrences.end(),
+                    [](auto value) { return value == 0; }))
+        throw Error(ErrorCode::kInvalidInput,
+                    "SMEM minimum occurrence counts must be positive");
+    if (result.min_occurrences_explicit && result.workload != "smem")
+        throw Error(ErrorCode::kInvalidInput,
+                    "--min-occurrences is only valid for the SMEM workload");
     const std::set<std::string> valid_scenarios{
         "mixed", "balanced", "gc-skewed", "repeat-rich", "n-islands", "many-contig"};
     for (const auto& scenario : result.scenarios)
@@ -310,13 +354,24 @@ Options parse(const std::vector<std::string>& arguments) {
         "mam-baseline", "mam-lcp", "mam-child", "mam-suffix-link",
         "mam-full", "mam-auto-fast", "mam-auto-low-memory",
         "mam-suffix-link-fast", "mam-lcp-low-memory", "mummer4"};
+    const std::set<std::string> smem_methods{
+        "smem-baseline", "smem-lcp", "smem-child", "smem-suffix-link",
+        "smem-full", "smem-auto-fast", "smem-auto-low-memory", "minibwa"};
+    const std::set<std::string> mum_methods{
+        "mum-baseline", "mum-lcp", "mum-child", "mum-suffix-link",
+        "mum-full", "mum-auto-fast", "mum-auto-low-memory", "mummer4"};
     const auto& valid_methods = result.workload == "right-maximal"
                                     ? right_maximal_methods
                                 : result.workload == "mem" ? mem_methods
-                                                           : mam_methods;
+                                : result.workload == "mam" ? mam_methods
+                                : result.workload == "smem" ? smem_methods
+                                                             : mum_methods;
     for (const auto& method : result.methods) {
         if (valid_methods.count(method) == 0) throw Error(ErrorCode::kInvalidInput, "unknown right-maximal exact match benchmark method: " + method);
         if (method == "mummer4" && !result.mummer4) throw Error(ErrorCode::kInvalidInput, "mummer4 method requires --mummer4 PATH");
+        if (method == "minibwa" && !result.minibwa)
+            throw Error(ErrorCode::kInvalidInput,
+                        "minibwa method requires --minibwa PATH");
     }
     return result;
 }
@@ -561,6 +616,23 @@ void mix_match(std::uint64_t& checksum, const MamMatch& match) {
     mix(checksum, static_cast<std::uint8_t>(match.strand));
 }
 
+void mix_match(std::uint64_t& checksum, const SmemMatch& match) {
+    mix(checksum, match.query_position);
+    mix(checksum, match.sequence_id);
+    mix(checksum, match.reference_position);
+    mix(checksum, match.length);
+    mix(checksum, match.reference_occurrences);
+    mix(checksum, static_cast<std::uint8_t>(match.strand));
+}
+
+void mix_match(std::uint64_t& checksum, const MumMatch& match) {
+    mix(checksum, match.query_position);
+    mix(checksum, match.sequence_id);
+    mix(checksum, match.reference_position);
+    mix(checksum, match.length);
+    mix(checksum, static_cast<std::uint8_t>(match.strand));
+}
+
 template <class MatchType>
 std::uint64_t unordered_match_hash(std::size_t query_id,
                                    const MatchType& match) {
@@ -639,21 +711,111 @@ std::uint64_t reference_occurrences(
     return count;
 }
 
+std::uint64_t query_occurrences(std::string_view query,
+                                std::string_view pattern) {
+    std::uint64_t count = 0;
+    std::size_t position = query.find(pattern);
+    while (position != std::string_view::npos) {
+        ++count;
+        position = query.find(pattern, position + 1);
+    }
+    return count;
+}
+
 std::vector<RightMaximalMatch> naive_matches(
     const std::vector<SequenceRecord>& records, const std::string& query,
     std::uint64_t min_length, const std::string& workload) {
     auto matches = naive_right_maximal_matches(records, query, min_length);
-    if (workload != "mam") return matches;
+    if (workload != "mam" && workload != "mum") return matches;
     const auto canonical_query = canonical_sequence(query);
     matches.erase(std::remove_if(matches.begin(), matches.end(),
         [&](const auto& match) {
-            return reference_occurrences(
-                       records,
-                       std::string_view(canonical_query).substr(
-                           static_cast<std::size_t>(match.query_position),
-                           static_cast<std::size_t>(match.length))) != 1;
+            const auto pattern = std::string_view(canonical_query).substr(
+                static_cast<std::size_t>(match.query_position),
+                static_cast<std::size_t>(match.length));
+            return reference_occurrences(records, pattern) != 1 ||
+                   (workload == "mum" &&
+                    query_occurrences(canonical_query, pattern) != 1);
         }), matches.end());
     return matches;
+}
+
+std::vector<SmemMatch> naive_smem_matches(
+    const std::vector<SequenceRecord>& records, const std::string& raw_query,
+    std::uint64_t min_length, std::uint64_t min_occurrences) {
+    struct Occurrence {
+        SequenceId sequence_id;
+        Position reference_position;
+        std::uint64_t lce;
+    };
+
+    std::vector<std::string> references;
+    references.reserve(records.size());
+    for (const auto& record : records) {
+        references.push_back(canonical_sequence(record.sequence));
+    }
+    const auto query = canonical_sequence(raw_query);
+    std::vector<SmemMatch> result;
+    std::uint64_t maximum_end = 0;
+    for (std::size_t query_position = 0; query_position < query.size();
+         ++query_position) {
+        if (query[query_position] == 'N') {
+            maximum_end = query_position + 1;
+            continue;
+        }
+        std::vector<Occurrence> occurrences;
+        for (std::size_t sequence_id = 0; sequence_id < references.size();
+             ++sequence_id) {
+            const auto& reference = references[sequence_id];
+            for (std::size_t reference_position = 0;
+                 reference_position < reference.size(); ++reference_position) {
+                std::size_t length = 0;
+                while (query_position + length < query.size() &&
+                       reference_position + length < reference.size() &&
+                       query[query_position + length] != 'N' &&
+                       reference[reference_position + length] != 'N' &&
+                       query[query_position + length] ==
+                           reference[reference_position + length]) {
+                    ++length;
+                }
+                if (length >= min_length) {
+                    occurrences.push_back({
+                        static_cast<SequenceId>(sequence_id),
+                        reference_position, length});
+                }
+            }
+        }
+        if (occurrences.size() < min_occurrences) continue;
+        std::vector<std::uint64_t> lengths;
+        lengths.reserve(occurrences.size());
+        for (const auto& occurrence : occurrences) {
+            lengths.push_back(occurrence.lce);
+        }
+        const auto rank = static_cast<std::size_t>(min_occurrences - 1);
+        std::nth_element(lengths.begin(), lengths.begin() + rank,
+                         lengths.end(), std::greater<>());
+        const auto length = lengths[rank];
+        const auto end = query_position + length;
+        if (end <= maximum_end) continue;
+        maximum_end = end;
+        const auto count = static_cast<std::uint64_t>(std::count_if(
+            occurrences.begin(), occurrences.end(),
+            [&](const auto& occurrence) { return occurrence.lce >= length; }));
+        for (const auto& occurrence : occurrences) {
+            if (occurrence.lce < length) continue;
+            result.push_back({occurrence.sequence_id,
+                              occurrence.reference_position, query_position,
+                              length, count, Strand::kForward});
+        }
+    }
+    std::sort(result.begin(), result.end(), [](const auto& left,
+                                                const auto& right) {
+        return std::tie(left.query_position, left.sequence_id,
+                        left.reference_position, left.length, left.strand) <
+               std::tie(right.query_position, right.sequence_id,
+                        right.reference_position, right.length, right.strand);
+    });
+    return result;
 }
 
 template <class Match>
@@ -732,69 +894,140 @@ std::vector<CorrectnessResult> run_naive_oracle(
     build_options.acceleration = SaAcceleration::kNone;
     const auto index = SuffixArray::Build(reference, build_options);
     std::vector<CorrectnessResult> rows;
+    const auto thresholds = options.workload == "smem"
+        ? options.min_occurrences : std::vector<std::uint64_t>{1};
     for (const auto min_length : options.min_lengths) {
-        CorrectnessResult row;
-        row.dataset = dataset.name;
-        row.scenario = dataset.scenario;
-        row.min_length = min_length;
-        row.reference_bases = reference_bases;
-        row.query_count = query_subset.size();
-        row.query_bases = query_bases;
-        row.oracle = options.workload == "mem" ? "naive-mem-forward" :
-                     options.workload == "mam" ?
-                         "naive-reference-mam-forward" :
-                         "naive-right-maximal-forward";
-        RightMaximalOptions right_maximal_options;
-        right_maximal_options.min_length = min_length;
-        right_maximal_options.algorithm = RightMaximalSearchAlgorithm::kBaseline;
-        std::uint64_t checksum = 0;
-        for (std::size_t query_id = 0; query_id < query_subset.size(); ++query_id) {
-            const auto expected = naive_matches(
-                reference_subset, query_subset[query_id].sequence, min_length,
-                options.workload);
-            std::vector<RightMaximalMatch> observed_matches;
-            std::uint64_t observed_total = 0;
-            if (options.workload == "mem") {
-                MemOptions mem_options;
-                mem_options.min_length = min_length;
-                mem_options.algorithm = MemSearchAlgorithm::kBaseline;
-                const auto observed = index.FindMems(
-                    query_subset[query_id].sequence, mem_options);
-                observed_total = observed.total_matches;
-                for (const auto& match : observed.matches)
-                    observed_matches.push_back(AsComparableMatch(match));
-            } else if (options.workload == "mam") {
-                MamOptions mam_options;
-                mam_options.min_length = min_length;
-                mam_options.algorithm = MemSearchAlgorithm::kBaseline;
-                const auto observed = index.FindMams(
-                    query_subset[query_id].sequence, mam_options);
-                observed_total = observed.total_matches;
-                for (const auto& match : observed.matches)
-                    observed_matches.push_back(AsComparableMatch(match));
-            } else {
-                const auto observed = index.FindRightMaximalMatches(
-                    query_subset[query_id].sequence, right_maximal_options);
-                observed_total = observed.total_matches;
-                observed_matches = observed.matches;
+        for (const auto min_occurrences : thresholds) {
+            CorrectnessResult row;
+            row.dataset = dataset.name;
+            row.scenario = dataset.scenario;
+            row.min_length = min_length;
+            row.min_occurrences = min_occurrences;
+            row.reference_bases = reference_bases;
+            row.query_count = query_subset.size();
+            row.query_bases = query_bases;
+            row.oracle = options.workload == "mem" ? "naive-mem-forward" :
+                         options.workload == "mam" ?
+                             "naive-reference-mam-forward" :
+                         options.workload == "smem" ?
+                             "naive-generalized-smem-forward" :
+                         options.workload == "mum" ? "naive-mum-forward" :
+                             "naive-right-maximal-forward";
+            RightMaximalOptions right_maximal_options;
+            right_maximal_options.min_length = min_length;
+            right_maximal_options.algorithm =
+                RightMaximalSearchAlgorithm::kBaseline;
+            std::uint64_t checksum = 0;
+            for (std::size_t query_id = 0; query_id < query_subset.size();
+                 ++query_id) {
+                if (options.workload == "smem") {
+                    const auto expected = naive_smem_matches(
+                        reference_subset, query_subset[query_id].sequence,
+                        min_length, min_occurrences);
+                    SmemOptions smem_options;
+                    smem_options.min_length = min_length;
+                    smem_options.min_occurrences = min_occurrences;
+                    smem_options.algorithm = MemSearchAlgorithm::kBaseline;
+                    const auto observed = index.FindSmems(
+                        query_subset[query_id].sequence, smem_options);
+                    std::set<std::tuple<Position, std::uint64_t, Strand>>
+                        expected_smems;
+                    for (const auto& match : expected) {
+                        expected_smems.emplace(match.query_position,
+                                               match.length, match.strand);
+                    }
+                    const auto equal_match = [](const auto& left,
+                                                const auto& right) {
+                        return std::tie(
+                                   left.query_position, left.sequence_id,
+                                   left.reference_position, left.length,
+                                   left.reference_occurrences, left.strand) ==
+                               std::tie(
+                                   right.query_position, right.sequence_id,
+                                   right.reference_position, right.length,
+                                   right.reference_occurrences, right.strand);
+                    };
+                    if (observed.total_smems != expected_smems.size() ||
+                        observed.total_matches != expected.size() ||
+                        observed.matches.size() != expected.size() ||
+                        !std::equal(observed.matches.begin(),
+                                    observed.matches.end(), expected.begin(),
+                                    equal_match)) {
+                        throw Error(ErrorCode::kBuildFailure,
+                            "naive SMEM oracle mismatch for " + dataset.name +
+                            " min_length=" + std::to_string(min_length) +
+                            " min_occurrences=" +
+                            std::to_string(min_occurrences) + " query=" +
+                            std::to_string(query_id));
+                    }
+                    row.total_matches += expected.size();
+                    row.total_smems += expected_smems.size();
+                    for (const auto& match : expected) {
+                        checksum += unordered_match_hash(query_id, match);
+                    }
+                    continue;
+                }
+
+                const auto expected = naive_matches(
+                    reference_subset, query_subset[query_id].sequence,
+                    min_length, options.workload);
+                std::vector<RightMaximalMatch> observed_matches;
+                std::uint64_t observed_total = 0;
+                if (options.workload == "mem") {
+                    MemOptions mem_options;
+                    mem_options.min_length = min_length;
+                    mem_options.algorithm = MemSearchAlgorithm::kBaseline;
+                    const auto observed = index.FindMems(
+                        query_subset[query_id].sequence, mem_options);
+                    observed_total = observed.total_matches;
+                    for (const auto& match : observed.matches)
+                        observed_matches.push_back(AsComparableMatch(match));
+                } else if (options.workload == "mam") {
+                    MamOptions mam_options;
+                    mam_options.min_length = min_length;
+                    mam_options.algorithm = MemSearchAlgorithm::kBaseline;
+                    const auto observed = index.FindMams(
+                        query_subset[query_id].sequence, mam_options);
+                    observed_total = observed.total_matches;
+                    for (const auto& match : observed.matches)
+                        observed_matches.push_back(AsComparableMatch(match));
+                } else if (options.workload == "mum") {
+                    MumOptions mum_options;
+                    mum_options.min_length = min_length;
+                    mum_options.algorithm = MemSearchAlgorithm::kBaseline;
+                    const auto observed = index.FindMums(
+                        query_subset[query_id].sequence, mum_options);
+                    observed_total = observed.total_matches;
+                    for (const auto& match : observed.matches)
+                        observed_matches.push_back(AsComparableMatch(match));
+                } else {
+                    const auto observed = index.FindRightMaximalMatches(
+                        query_subset[query_id].sequence,
+                        right_maximal_options);
+                    observed_total = observed.total_matches;
+                    observed_matches = observed.matches;
+                }
+                if (observed_total != expected.size() ||
+                    observed_matches.size() != expected.size() ||
+                    !std::equal(observed_matches.begin(),
+                        observed_matches.end(), expected.begin(),
+                        [](const auto& left, const auto& right) {
+                            return !right_maximal_match_less(left, right) &&
+                                   !right_maximal_match_less(right, left);
+                        })) {
+                    throw Error(ErrorCode::kBuildFailure,
+                        "naive maximal-match oracle mismatch for " +
+                        dataset.name + " min_length=" +
+                        std::to_string(min_length) + " query=" +
+                        std::to_string(query_id));
+                }
+                row.total_matches += expected.size();
+                for (const auto& match : expected)
+                    checksum += unordered_match_hash(query_id, match);
             }
-            if (observed_total != expected.size() ||
-                observed_matches.size() != expected.size() ||
-                !std::equal(observed_matches.begin(), observed_matches.end(),
-                    expected.begin(), [](const auto& left, const auto& right) {
-                        return !right_maximal_match_less(left, right) &&
-                               !right_maximal_match_less(right, left);
-                    }))
-                throw Error(ErrorCode::kBuildFailure,
-                    "naive maximal-match oracle mismatch for " + dataset.name +
-                    " min_length=" + std::to_string(min_length) +
-                    " query=" + std::to_string(query_id));
-            row.total_matches += expected.size();
-            for (const auto& match : expected)
-                checksum += unordered_match_hash(query_id, match);
+            row.checksum = checksum;
+            rows.push_back(std::move(row));
         }
-        row.checksum = checksum;
-        rows.push_back(std::move(row));
     }
     dataset.oracle_reference_bases = reference_bases;
     dataset.oracle_query_bases = query_bases;
@@ -830,10 +1063,13 @@ void accumulate_statistics(
 SaAcceleration acceleration_for(const std::string& method) {
     if (method.find("baseline") != std::string::npos)
         return SaAcceleration::kNone;
-    if (method == "mem-auto-fast" || method == "mam-auto-fast")
+    if (method == "mem-auto-fast" || method == "mam-auto-fast" ||
+        method == "smem-auto-fast" || method == "mum-auto-fast")
         return SaAcceleration::kLcpSuffixLink;
     if (method == "mem-auto-low-memory" ||
-        method == "mam-auto-low-memory")
+        method == "mam-auto-low-memory" ||
+        method == "smem-auto-low-memory" ||
+        method == "mum-auto-low-memory")
         return SaAcceleration::kLcp;
     // Query-strategy ablations with "-fast-" must use the same retained
     // SA+ISA+raw-LCP index. Only the query algorithm and skip policy differ.
@@ -854,7 +1090,9 @@ RightMaximalSearchAlgorithm algorithm_for(const std::string& method) {
     if (method.find("baseline") != std::string::npos)
         return RightMaximalSearchAlgorithm::kBaseline;
     if (method == "mem-auto-fast" || method == "mem-auto-low-memory" ||
-        method == "mam-auto-fast" || method == "mam-auto-low-memory")
+        method == "mam-auto-fast" || method == "mam-auto-low-memory" ||
+        method == "smem-auto-fast" || method == "smem-auto-low-memory" ||
+        method == "mum-auto-fast" || method == "mum-auto-low-memory")
         return RightMaximalSearchAlgorithm::kAutoSelect;
     if ((method.size() >= 4 && method.substr(method.size() - 4) == "-lcp") ||
         method.find("-lcp-") != std::string::npos)
@@ -957,6 +1195,7 @@ struct OperationMeasurement {
     double user_cpu_seconds = 0;
     double system_cpu_seconds = 0;
     std::uint64_t total_matches = 0;
+    std::uint64_t total_smems = 0;
     std::uint64_t reported_matches = 0;
     std::uint64_t count_checksum = checksum_seed();
     std::uint64_t result_checksum = 0;
@@ -1112,6 +1351,7 @@ struct QueryPhaseResult {
     double user_cpu_seconds = 0;
     double system_cpu_seconds = 0;
     std::uint64_t total_matches = 0;
+    std::uint64_t total_smems = 0;
     std::uint64_t reported_matches = 0;
     std::uint64_t count_checksum = 0;
     std::uint64_t result_checksum = 0;
@@ -1156,6 +1396,7 @@ OperationMeasurement measure_operation(
     const Options& benchmark_options,
     const std::string& method,
     std::uint64_t min_length,
+    std::uint64_t min_occurrences,
     StrandMode strands,
     const OperationSpec& operation) {
     OperationMeasurement measured;
@@ -1163,10 +1404,16 @@ OperationMeasurement measure_operation(
     const auto begin = Clock::now();
     for (std::size_t query_id = 0; query_id < dataset.queries.size(); ++query_id) {
         std::uint64_t query_total = 0;
+        std::set<std::tuple<Position, std::uint64_t, Strand>> smem_keys;
         const auto consume = [&](const auto& match) {
-                    ++query_total;
-                    ++measured.reported_matches;
-                    measured.result_checksum += unordered_match_hash(query_id, match);
+            ++query_total;
+            ++measured.reported_matches;
+            measured.result_checksum += unordered_match_hash(query_id, match);
+            using MatchType = std::decay_t<decltype(match)>;
+            if constexpr (std::is_same_v<MatchType, SmemMatch>) {
+                smem_keys.emplace(match.query_position, match.length,
+                                  match.strand);
+            }
         };
         if (benchmark_options.workload == "mem") {
             MemOptions options;
@@ -1209,6 +1456,57 @@ OperationMeasurement measure_operation(
                                  consume);
             } else {
                 const auto result = index.FindMams(
+                    dataset.queries[query_id].sequence, options,
+                    operation.max_matches);
+                query_total = result.total_matches;
+                measured.reported_matches += result.matches.size();
+                for (const auto& match : result.matches) {
+                    measured.result_checksum +=
+                        unordered_match_hash(query_id, match);
+                }
+            }
+        } else if (benchmark_options.workload == "smem") {
+            SmemOptions options;
+            options.min_length = min_length;
+            options.min_occurrences = min_occurrences;
+            options.strands = strands;
+            options.algorithm = static_cast<MemSearchAlgorithm>(
+                static_cast<std::uint8_t>(algorithm_for(method)));
+            if (method.find("-binary") != std::string::npos)
+                options.lookup_algorithm = SaSearchAlgorithm::kBinary;
+            else if (method.find("-sapling") != std::string::npos)
+                options.lookup_algorithm = SaSearchAlgorithm::kSaplingPwl;
+            if (operation.streaming) {
+                index.ForEachSmem(dataset.queries[query_id].sequence, options,
+                                  consume);
+                measured.total_smems += smem_keys.size();
+            } else {
+                const auto result = index.FindSmems(
+                    dataset.queries[query_id].sequence, options,
+                    operation.max_matches);
+                query_total = result.total_matches;
+                measured.total_smems += result.total_smems;
+                measured.reported_matches += result.matches.size();
+                for (const auto& match : result.matches) {
+                    measured.result_checksum +=
+                        unordered_match_hash(query_id, match);
+                }
+            }
+        } else if (benchmark_options.workload == "mum") {
+            MumOptions options;
+            options.min_length = min_length;
+            options.strands = strands;
+            options.algorithm = static_cast<MemSearchAlgorithm>(
+                static_cast<std::uint8_t>(algorithm_for(method)));
+            if (method.find("-binary") != std::string::npos)
+                options.lookup_algorithm = SaSearchAlgorithm::kBinary;
+            else if (method.find("-sapling") != std::string::npos)
+                options.lookup_algorithm = SaSearchAlgorithm::kSaplingPwl;
+            if (operation.streaming) {
+                index.ForEachMum(dataset.queries[query_id].sequence, options,
+                                 consume);
+            } else {
+                const auto result = index.FindMums(
                     dataset.queries[query_id].sequence, options,
                     operation.max_matches);
                 query_total = result.total_matches;
@@ -1422,6 +1720,9 @@ int run_clean_exec_phase(const std::vector<std::string>& arguments) {
         const auto min_length = parse_number(
             require_worker_argument(arguments, index, "minimum length"),
             "minimum length");
+        const auto min_occurrences = parse_number(
+            require_worker_argument(arguments, index, "minimum occurrences"),
+            "minimum occurrences");
         const auto operation = worker_operation(
             require_worker_argument(arguments, index, "operation"));
         const auto warmups = parse_worker_u32(
@@ -1442,16 +1743,17 @@ int run_clean_exec_phase(const std::vector<std::string>& arguments) {
         for (std::uint32_t warmup = 0; warmup < warmups; ++warmup) {
             (void)measure_operation(
                 loaded, dataset, options, method, min_length,
-                StrandMode::kForward, operation);
+                min_occurrences, StrandMode::kForward, operation);
         }
         const auto measured = measure_operation(
             loaded, dataset, options, method, min_length,
-            StrandMode::kForward, operation);
+            min_occurrences, StrandMode::kForward, operation);
         QueryPhaseResult phase;
         phase.seconds = measured.seconds;
         phase.user_cpu_seconds = measured.user_cpu_seconds;
         phase.system_cpu_seconds = measured.system_cpu_seconds;
         phase.total_matches = measured.total_matches;
+        phase.total_smems = measured.total_smems;
         phase.reported_matches = measured.reported_matches;
         phase.count_checksum = measured.count_checksum;
         phase.result_checksum = measured.result_checksum;
@@ -1608,8 +1910,12 @@ void benchmark_internal(const Dataset& dataset, const Options& options, const st
     build.load_peak_rss_mb = median(load_peak_rss);
     builds.push_back(build);
 
+    const auto occurrence_thresholds = options.workload == "smem"
+        ? options.min_occurrences : std::vector<std::uint64_t>{1};
     for (const auto min_length : options.min_lengths) {
+      for (const auto min_occurrences : occurrence_thresholds) {
         std::optional<std::uint64_t> streaming_total_matches;
+        std::optional<std::uint64_t> streaming_total_smems;
         std::optional<std::uint64_t> streaming_count_checksum;
         for (const auto& operation : operation_specs()) {
             if (!operation.streaming && !operation.max_matches &&
@@ -1622,9 +1928,11 @@ void benchmark_internal(const Dataset& dataset, const Options& options, const st
                 summary.acceleration = build.acceleration;
                 summary.operation = operation.name;
                 summary.min_length = min_length;
+                summary.min_occurrences = min_occurrences;
                 summary.query_count = dataset.queries.size();
                 summary.query_bases = dataset.query_bases;
                 summary.total_matches = *streaming_total_matches;
+                summary.total_smems = streaming_total_smems.value_or(0);
                 summary.count_checksum = *streaming_count_checksum;
                 summary.vector_skipped = true;
                 summary.peak_rss_scope = "not_applicable";
@@ -1637,6 +1945,7 @@ void benchmark_internal(const Dataset& dataset, const Options& options, const st
                     raw_row.method = method;
                     raw_row.operation = operation.name;
                     raw_row.min_length = min_length;
+                    raw_row.min_occurrences = min_occurrences;
                     raw_row.repetition = repetition;
                     raw_row.peak_rss_scope = "not_applicable";
                     raw_row.query_bases = dataset.query_bases;
@@ -1646,6 +1955,7 @@ void benchmark_internal(const Dataset& dataset, const Options& options, const st
                     raw_row.learned_index_bytes = build.learned_index_bytes;
                     raw_row.vector_skipped = true;
                     raw_row.total_matches = *streaming_total_matches;
+                    raw_row.total_smems = streaming_total_smems.value_or(0);
                     raw_row.count_checksum = *streaming_count_checksum;
                     raw_row.status = "skipped_high_frequency";
                     raw.push_back(std::move(raw_row));
@@ -1659,6 +1969,7 @@ void benchmark_internal(const Dataset& dataset, const Options& options, const st
             summary.acceleration = build.acceleration;
             summary.operation = operation.name;
             summary.min_length = min_length;
+            summary.min_occurrences = min_occurrences;
             summary.query_count = dataset.queries.size();
             summary.query_bases = dataset.query_bases;
             std::vector<double> query_peak_rss;
@@ -1673,11 +1984,13 @@ void benchmark_internal(const Dataset& dataset, const Options& options, const st
                 const auto usage = run_clean_exec_worker(error_path, {
                     "query", method, options.workload, query_path.string(),
                     canonical_path.string(), result_path.string(),
-                    std::to_string(min_length), operation.name,
+                    std::to_string(min_length),
+                    std::to_string(min_occurrences), operation.name,
                     std::to_string(options.warmups)});
                 const auto measured = read_phase_result<QueryPhaseResult>(result_path);
                 if (repetition != 0 &&
                     (summary.total_matches != measured.total_matches ||
+                     summary.total_smems != measured.total_smems ||
                      summary.reported_matches != measured.reported_matches ||
                      summary.count_checksum != measured.count_checksum ||
                      summary.checksum != measured.result_checksum))
@@ -1686,6 +1999,7 @@ void benchmark_internal(const Dataset& dataset, const Options& options, const st
                         method + " operation=" + operation.name);
                 summary.seconds.push_back(measured.seconds);
                 summary.total_matches = measured.total_matches;
+                summary.total_smems = measured.total_smems;
                 summary.reported_matches = measured.reported_matches;
                 summary.count_checksum = measured.count_checksum;
                 summary.checksum = measured.result_checksum;
@@ -1696,6 +2010,7 @@ void benchmark_internal(const Dataset& dataset, const Options& options, const st
                 raw_row.method = method;
                 raw_row.operation = operation.name;
                 raw_row.min_length = min_length;
+                raw_row.min_occurrences = min_occurrences;
                 raw_row.repetition = repetition;
                 raw_row.seconds = measured.seconds;
                 raw_row.user_cpu_seconds = measured.user_cpu_seconds;
@@ -1708,6 +2023,7 @@ void benchmark_internal(const Dataset& dataset, const Options& options, const st
                 raw_row.auxiliary_bytes = build.auxiliary_bytes;
                 raw_row.learned_index_bytes = build.learned_index_bytes;
                 raw_row.total_matches = measured.total_matches;
+                raw_row.total_smems = measured.total_smems;
                 raw_row.reported_matches = measured.reported_matches;
                 raw_row.count_checksum = measured.count_checksum;
                 raw_row.checksum = measured.result_checksum;
@@ -1718,9 +2034,12 @@ void benchmark_internal(const Dataset& dataset, const Options& options, const st
                 *std::max_element(query_peak_rss.begin(), query_peak_rss.end());
             if (operation.streaming) {
                 streaming_total_matches = summary.total_matches;
+                streaming_total_smems = summary.total_smems;
                 streaming_count_checksum = summary.count_checksum;
             } else if (!streaming_total_matches ||
                        summary.total_matches != *streaming_total_matches ||
+                       !streaming_total_smems ||
+                       summary.total_smems != *streaming_total_smems ||
                        summary.count_checksum != *streaming_count_checksum) {
                 throw Error(ErrorCode::kBuildFailure,
                     "right-maximal operation count differs from the required "
@@ -1728,6 +2047,7 @@ void benchmark_internal(const Dataset& dataset, const Options& options, const st
                     operation.name);
             }
             queries.push_back(std::move(summary));
+      }
         }
     }
 }
@@ -1818,9 +2138,11 @@ std::string read_worker_string(std::istream& input, const char* label) {
         write_worker_string(output, row.peak_rss_scope);
         write_worker_string(output, row.status);
         write_worker_value(output, row.min_length);
+        write_worker_value(output, row.min_occurrences);
         write_worker_value(output, row.query_count);
         write_worker_value(output, row.query_bases);
         write_worker_value(output, row.total_matches);
+        write_worker_value(output, row.total_smems);
         write_worker_value(output, row.reported_matches);
         write_worker_value(output, row.count_checksum);
         write_worker_value(output, row.checksum);
@@ -1839,6 +2161,7 @@ std::string read_worker_string(std::istream& input, const char* label) {
         write_worker_string(output, row.peak_rss_scope);
         write_worker_string(output, row.status);
         write_worker_value(output, row.min_length);
+        write_worker_value(output, row.min_occurrences);
         write_worker_value(output, row.repetition);
         write_worker_value(output, row.seconds);
         write_worker_value(output, row.user_cpu_seconds);
@@ -1852,6 +2175,7 @@ std::string read_worker_string(std::istream& input, const char* label) {
         write_worker_value(output, row.materialization_match_threshold);
         write_worker_value(output, row.vector_skipped);
         write_worker_value(output, row.total_matches);
+        write_worker_value(output, row.total_smems);
         write_worker_value(output, row.reported_matches);
         write_worker_value(output, row.count_checksum);
         write_worker_value(output, row.checksum);
@@ -1923,9 +2247,12 @@ std::string read_worker_string(std::istream& input, const char* label) {
         row.peak_rss_scope = read_worker_string(input, "query RSS scope");
         row.status = read_worker_string(input, "query status");
         row.min_length = read_worker_value<std::uint64_t>(input, "minimum length");
+        row.min_occurrences = read_worker_value<std::uint64_t>(
+            input, "minimum occurrences");
         row.query_count = read_worker_value<std::uint64_t>(input, "query cardinality");
         row.query_bases = read_worker_value<std::uint64_t>(input, "query bases");
         row.total_matches = read_worker_value<std::uint64_t>(input, "total matches");
+        row.total_smems = read_worker_value<std::uint64_t>(input, "total SMEMs");
         row.reported_matches = read_worker_value<std::uint64_t>(input, "reported matches");
         row.count_checksum = read_worker_value<std::uint64_t>(input, "count checksum");
         row.checksum = read_worker_value<std::uint64_t>(input, "query checksum");
@@ -1951,6 +2278,8 @@ std::string read_worker_string(std::istream& input, const char* label) {
         row.peak_rss_scope = read_worker_string(input, "raw RSS scope");
         row.status = read_worker_string(input, "raw status");
         row.min_length = read_worker_value<std::uint64_t>(input, "raw minimum length");
+        row.min_occurrences = read_worker_value<std::uint64_t>(
+            input, "raw minimum occurrences");
         row.repetition = read_worker_value<std::uint32_t>(input, "raw repetition");
         row.seconds = read_worker_value<double>(input, "raw seconds");
         row.user_cpu_seconds = read_worker_value<double>(input, "raw user CPU seconds");
@@ -1965,6 +2294,8 @@ std::string read_worker_string(std::istream& input, const char* label) {
             input, "raw materialization threshold");
         row.vector_skipped = read_worker_value<bool>(input, "raw vector skipped");
         row.total_matches = read_worker_value<std::uint64_t>(input, "raw matches");
+        row.total_smems = read_worker_value<std::uint64_t>(
+            input, "raw SMEMs");
         row.reported_matches = read_worker_value<std::uint64_t>(input, "raw reported matches");
         row.count_checksum = read_worker_value<std::uint64_t>(input, "raw count checksum");
         row.checksum = read_worker_value<std::uint64_t>(input, "raw checksum");
@@ -2025,6 +2356,284 @@ ProcessResult run_process(const std::vector<std::string>& arguments,
     return result;
 }
 
+bool is_elf_binary(const std::filesystem::path& path) {
+    std::ifstream input(path, std::ios::binary);
+    char magic[4]{};
+    input.read(magic, sizeof(magic));
+    return input.gcount() == static_cast<std::streamsize>(sizeof(magic)) &&
+           static_cast<unsigned char>(magic[0]) == 0x7fU &&
+           magic[1] == 'E' && magic[2] == 'L' && magic[3] == 'F';
+}
+
+std::string fingerprint_file(const std::filesystem::path& path,
+    const std::filesystem::path& scratch, const std::string& stem,
+    const std::string& label) {
+    const auto hash_out = scratch / (stem + "-sha256.txt");
+    const auto hash_err = scratch / (stem + "-sha256.err");
+    const auto hash_result = run_process(
+        {"/usr/bin/sha256sum", path.string()}, hash_out, hash_err);
+    std::ifstream hash_input(hash_out);
+    std::string hash;
+    hash_input >> hash;
+    if (hash_result.status != 0 || hash.size() != 64) {
+        throw Error(ErrorCode::kIoError,
+                    "cannot fingerprint the " + label);
+    }
+    return hash;
+}
+
+struct MiniBwaSmemOutput {
+    std::uint64_t total_smems = 0;
+    std::uint64_t total_matches = 0;
+    std::uint64_t reported_matches = 0;
+    std::uint64_t count_checksum = checksum_seed();
+    std::uint64_t result_checksum = 0;
+    bool complete_coordinates = true;
+    bool high_frequency_truncation = false;
+};
+
+MiniBwaSmemOutput parse_minibwa_smem_output(
+    const std::filesystem::path& path, std::size_t query_count) {
+    std::ifstream input(path);
+    if (!input)
+        throw Error(ErrorCode::kIoError, "cannot read MiniBWA SMEM output");
+    std::vector<std::uint64_t> per_query_matches(query_count, 0);
+    MiniBwaSmemOutput result;
+    std::optional<std::size_t> query_id;
+    std::string line;
+    while (std::getline(input, line)) {
+        if (line.rfind("SQ\t", 0) == 0) {
+            std::istringstream row(line);
+            std::string tag;
+            std::string name;
+            row >> tag >> name;
+            if (name.size() < 2 || name.front() != 'q') {
+                throw Error(ErrorCode::kBuildFailure,
+                            "unexpected MiniBWA query name");
+            }
+            const auto parsed = static_cast<std::size_t>(
+                parse_number(name.substr(1), "MiniBWA query id"));
+            if (parsed >= query_count)
+                throw Error(ErrorCode::kBuildFailure,
+                            "MiniBWA query id is out of range");
+            query_id = parsed;
+            continue;
+        }
+        if (line.rfind("EM\t", 0) != 0) continue;
+        if (!query_id)
+            throw Error(ErrorCode::kBuildFailure,
+                        "MiniBWA emitted an SMEM before a query header");
+        std::istringstream row(line);
+        std::string tag;
+        std::uint64_t begin = 0;
+        std::uint64_t end = 0;
+        std::uint64_t occurrences = 0;
+        if (!(row >> tag >> begin >> end >> occurrences) || end < begin) {
+            throw Error(ErrorCode::kBuildFailure,
+                        "invalid MiniBWA SMEM row");
+        }
+        ++result.total_smems;
+        result.total_matches += occurrences;
+        per_query_matches[*query_id] += occurrences;
+        auto interval_hash = checksum_seed();
+        mix(interval_hash, *query_id);
+        mix(interval_hash, begin);
+        mix(interval_hash, end);
+        mix(interval_hash, occurrences);
+        std::string coordinate;
+        std::uint64_t coordinates = 0;
+        while (row >> coordinate) {
+            if (coordinate == "*") {
+                result.complete_coordinates = false;
+                result.high_frequency_truncation = true;
+                continue;
+            }
+            if (coordinate == ".") {
+                result.complete_coordinates = false;
+                continue;
+            }
+            ++coordinates;
+            interval_hash = hash_bytes(interval_hash, coordinate);
+        }
+        if (coordinates != occurrences) {
+            result.complete_coordinates = false;
+        }
+        result.reported_matches += coordinates;
+        result.result_checksum += interval_hash;
+    }
+    for (std::size_t id = 0; id < per_query_matches.size(); ++id) {
+        mix(result.count_checksum, id);
+        mix(result.count_checksum, per_query_matches[id]);
+    }
+    return result;
+}
+
+std::string minibwa_external_status(const MiniBwaSmemOutput& output) {
+    if (output.complete_coordinates) return "external_fmd_scope";
+    return output.high_frequency_truncation
+        ? "external_high_frequency"
+        : "external_incomplete_coordinates";
+}
+
+void benchmark_minibwa(
+    const Dataset& dataset, const Options& options,
+    const std::filesystem::path& scratch, std::vector<BuildResult>& builds,
+    std::vector<QueryResultRow>& queries, std::vector<RawRow>& raw) {
+    constexpr std::uint64_t kCoordinateLimit = 1'000'000;
+    const auto executable = options.minibwa->string();
+    const auto reference_path = scratch / "minibwa-reference.fa";
+    const auto query_path = scratch / "minibwa-queries.fa";
+    write_fasta(reference_path, dataset.reference);
+    auto numbered_queries = dataset.queries;
+    for (std::size_t index = 0; index < numbered_queries.size(); ++index) {
+        numbered_queries[index].name = "q" + std::to_string(index);
+    }
+    write_fasta(query_path, numbered_queries);
+
+    BuildResult build;
+    build.dataset = dataset.name;
+    build.method = "minibwa";
+    build.algorithm = "minibwa-fmd-smem";
+    build.acceleration = "external-fmd-index";
+    build.repetitions = options.build_repetitions;
+    build.build_peak_rss_scope = "minibwa_index_process";
+    build.save_peak_rss_scope = "included_in_external_index_build";
+    build.load_peak_rss_scope = "included_in_external_fastmap_query";
+    std::vector<double> build_times;
+    std::vector<double> build_rss;
+    std::filesystem::path prefix;
+    for (std::uint32_t repetition = 0;
+         repetition < options.build_repetitions; ++repetition) {
+        prefix = scratch / ("minibwa-index-" + std::to_string(repetition));
+        const auto output = scratch /
+            ("minibwa-build-" + std::to_string(repetition) + ".out");
+        const auto error = scratch /
+            ("minibwa-build-" + std::to_string(repetition) + ".err");
+        const auto measured = run_process(
+            {executable, "index", "-t1", reference_path.string(),
+             prefix.string()}, output, error);
+        if (measured.status != 0)
+            throw Error(ErrorCode::kBuildFailure,
+                        "MiniBWA index construction failed");
+        build_times.push_back(measured.seconds);
+        build_rss.push_back(measured.peak_rss_mb);
+        append_phase_raw(raw, dataset.name, "minibwa", "build", repetition,
+                         measured.seconds,
+                         {measured.user_cpu_seconds,
+                          measured.system_cpu_seconds, measured.peak_rss_mb},
+                         build.build_peak_rss_scope);
+    }
+    build.build_seconds = median(build_times);
+    build.build_peak_rss_mb = median(build_rss);
+    for (const auto& entry : std::filesystem::directory_iterator(scratch)) {
+        if (entry.path().filename().string().find(
+                prefix.filename().string() + ".") != 0) {
+            continue;
+        }
+        build.serialized_bytes += serialized_size(entry.path());
+        build.allocated_disk_bytes += allocated_disk_size(entry.path());
+    }
+    builds.push_back(build);
+
+    for (const auto min_length : options.min_lengths) {
+        for (const auto min_occurrences : options.min_occurrences) {
+            QueryResultRow summary;
+            summary.dataset = dataset.name;
+            summary.method = "minibwa";
+            summary.algorithm = build.algorithm;
+            summary.acceleration = build.acceleration;
+            summary.operation = "external-load+query";
+            summary.min_length = min_length;
+            summary.min_occurrences = min_occurrences;
+            summary.query_count = dataset.queries.size();
+            summary.query_bases = dataset.query_bases;
+            summary.peak_rss_scope = "minibwa_fastmap_process_load_plus_query";
+            summary.status = "external_fmd_scope";
+            for (std::uint32_t warmup = 0; warmup < options.warmups; ++warmup) {
+                const auto output = scratch / ("minibwa-warmup-" +
+                    std::to_string(min_length) + "-" +
+                    std::to_string(min_occurrences) + "-" +
+                    std::to_string(warmup) + ".out");
+                const auto error = output.string() + ".err";
+                const auto process = run_process(
+                    {executable, "fastmap", "-l",
+                     std::to_string(min_length), "-s",
+                     std::to_string(min_occurrences), "-w",
+                     std::to_string(kCoordinateLimit), prefix.string(),
+                     query_path.string()}, output, error);
+                if (process.status != 0)
+                    throw Error(ErrorCode::kBuildFailure,
+                                "MiniBWA SMEM warm-up failed");
+            }
+            std::vector<double> query_rss;
+            for (std::uint32_t repetition = 0;
+                 repetition < options.query_repetitions; ++repetition) {
+                const auto output = scratch / ("minibwa-query-" +
+                    std::to_string(min_length) + "-" +
+                    std::to_string(min_occurrences) + "-" +
+                    std::to_string(repetition) + ".out");
+                const auto error = output.string() + ".err";
+                const auto process = run_process(
+                    {executable, "fastmap", "-l",
+                     std::to_string(min_length), "-s",
+                     std::to_string(min_occurrences), "-w",
+                     std::to_string(kCoordinateLimit), prefix.string(),
+                     query_path.string()}, output, error);
+                if (process.status != 0)
+                    throw Error(ErrorCode::kBuildFailure,
+                                "MiniBWA SMEM query failed");
+                const auto parsed = parse_minibwa_smem_output(
+                    output, dataset.queries.size());
+                if (repetition != 0 &&
+                    (summary.total_smems != parsed.total_smems ||
+                     summary.total_matches != parsed.total_matches ||
+                     summary.reported_matches != parsed.reported_matches ||
+                     summary.count_checksum != parsed.count_checksum ||
+                     summary.checksum != parsed.result_checksum ||
+                     summary.status != minibwa_external_status(parsed))) {
+                    throw Error(ErrorCode::kBuildFailure,
+                                "MiniBWA SMEM checksum changed between repetitions");
+                }
+                summary.seconds.push_back(process.seconds);
+                summary.total_smems = parsed.total_smems;
+                summary.total_matches = parsed.total_matches;
+                summary.reported_matches = parsed.reported_matches;
+                summary.count_checksum = parsed.count_checksum;
+                summary.checksum = parsed.result_checksum;
+                summary.status = minibwa_external_status(parsed);
+                query_rss.push_back(process.peak_rss_mb);
+                RawRow raw_row;
+                raw_row.dataset = dataset.name;
+                raw_row.method = "minibwa";
+                raw_row.operation = summary.operation;
+                raw_row.min_length = min_length;
+                raw_row.min_occurrences = min_occurrences;
+                raw_row.repetition = repetition;
+                raw_row.seconds = process.seconds;
+                raw_row.user_cpu_seconds = process.user_cpu_seconds;
+                raw_row.system_cpu_seconds = process.system_cpu_seconds;
+                raw_row.peak_rss_mb = process.peak_rss_mb;
+                raw_row.peak_rss_scope = summary.peak_rss_scope;
+                raw_row.query_bases = dataset.query_bases;
+                raw_row.serialized_bytes = build.serialized_bytes;
+                raw_row.allocated_disk_bytes = build.allocated_disk_bytes;
+                raw_row.total_smems = parsed.total_smems;
+                raw_row.total_matches = parsed.total_matches;
+                raw_row.reported_matches = parsed.reported_matches;
+                raw_row.count_checksum = parsed.count_checksum;
+                raw_row.checksum = parsed.result_checksum;
+                // Keep every external row visibly outside the internal
+                // forward-only parity group while retaining its raw timing.
+                raw_row.status = minibwa_external_status(parsed);
+                raw.push_back(std::move(raw_row));
+            }
+            summary.peak_rss_mb = query_rss.empty() ? 0.0 :
+                *std::max_element(query_rss.begin(), query_rss.end());
+            queries.push_back(std::move(summary));
+        }
+    }
+}
+
 void parse_mummer_output(const std::filesystem::path& path,
     const std::map<std::string, SequenceId>& reference_ids,
     const std::vector<SequenceRecord>& queries,
@@ -2081,13 +2690,16 @@ void benchmark_mummer(const Dataset& dataset, const Options& options,
     for (std::size_t id = 0; id < dataset.reference.size(); ++id)
         reference_ids.emplace(dataset.reference[id].name, static_cast<SequenceId>(id));
     const auto min_length = options.min_lengths.front();
-    std::vector<std::string> common{executable,
-        options.workload == "mam" ? "-mumreference" : "-maxmatch",
+    const auto mummer_mode = options.workload == "mam" ? "-mumreference" :
+                             options.workload == "mum" ? "-mum" :
+                                                         "-maxmatch";
+    std::vector<std::string> common{executable, mummer_mode,
         "-n", "-F", "-k", "1"};
-    if (options.workload != "mam") {
+    if (options.workload != "mam" && options.workload != "mum") {
         common.insert(common.end(), {"-skip", "1"});
     }
-    common.insert(common.end(), {"-kmer", "0", "-threads", "1",
+    common.insert(common.end(), {"-suflink", "1", "-child", "0",
+                                 "-kmer", "0", "-threads", "1",
                                  "-qthreads", "1"});
     BuildResult build;
     build.dataset = dataset.name;
@@ -2157,11 +2769,11 @@ void benchmark_mummer(const Dataset& dataset, const Options& options,
         summary.peak_rss_scope = "mummer4_process_load_plus_query";
         const auto forward_preflight = measure_operation(
             verification_index, dataset, options,
-            options.workload + "-baseline", length, StrandMode::kForward,
+            options.workload + "-baseline", length, 1, StrandMode::kForward,
             operation_specs().front());
         const auto reverse_preflight = measure_operation(
             verification_index, dataset, options,
-            options.workload + "-baseline", length,
+            options.workload + "-baseline", length, 1,
             StrandMode::kReverseComplement, operation_specs().front());
         if (forward_preflight.total_matches >
                 kVectorMaterializationMatchThreshold ||
@@ -2309,6 +2921,16 @@ void benchmark_mummer(const Dataset& dataset, const Options& options,
                 internal_count = internal.total_matches;
                 for (const auto& match : internal.matches)
                     internal_matches.push_back(AsComparableMatch(match));
+            } else if (options.workload == "mum") {
+                MumOptions internal_options;
+                internal_options.min_length = length;
+                internal_options.strands = StrandMode::kReverseComplement;
+                internal_options.algorithm = MemSearchAlgorithm::kBaseline;
+                const auto internal = verification_index.FindMums(
+                    dataset.queries[query_id].sequence, internal_options);
+                internal_count = internal.total_matches;
+                for (const auto& match : internal.matches)
+                    internal_matches.push_back(AsComparableMatch(match));
             } else {
                 RightMaximalOptions internal_options;
                 internal_options.min_length = length;
@@ -2350,8 +2972,11 @@ void add_fm_capability_rows(
     std::vector<RawRow>& raw) {
     static const std::array<const char*, 3> fm_methods{{
         "fm-huff", "fm-balanced", "fm-epr"}};
+    const auto thresholds = options.workload == "smem"
+        ? options.min_occurrences : std::vector<std::uint64_t>{1};
     for (const auto& dataset : datasets) {
         for (const auto min_length : options.min_lengths) {
+          for (const auto min_occurrences : thresholds) {
             for (const auto* method : fm_methods) {
                 for (const auto& operation : operation_specs()) {
                     QueryResultRow row;
@@ -2361,6 +2986,7 @@ void add_fm_capability_rows(
                     row.acceleration = "fm-index";
                     row.operation = operation.name;
                     row.min_length = min_length;
+                    row.min_occurrences = min_occurrences;
                     row.query_count = dataset.queries.size();
                     row.query_bases = dataset.query_bases;
                     row.peak_rss_scope = "not_applicable";
@@ -2371,23 +2997,31 @@ void add_fm_capability_rows(
                     raw_row.method = method;
                     raw_row.operation = operation.name;
                     raw_row.min_length = min_length;
+                    raw_row.min_occurrences = min_occurrences;
                     raw_row.peak_rss_scope = "not_applicable";
                     raw_row.query_bases = dataset.query_bases;
                     raw_row.status = "not_supported";
                     raw.push_back(std::move(raw_row));
                 }
+          }
             }
         }
     }
 }
 
 void validate(const std::vector<QueryResultRow>& rows) {
-    using ResultKey = std::tuple<std::string, std::uint64_t, std::string>;
-    using ResultValue = std::tuple<std::uint64_t, std::uint64_t, std::uint64_t, std::uint64_t>;
+    using ResultKey = std::tuple<std::string, std::uint64_t, std::uint64_t,
+                                 std::string>;
+    using ResultValue = std::tuple<std::uint64_t, std::uint64_t,
+                                   std::uint64_t, std::uint64_t,
+                                   std::uint64_t>;
     std::map<ResultKey, ResultValue> expected;
-    std::map<std::tuple<std::string, std::uint64_t, std::string>,
-             std::pair<std::uint64_t, std::uint64_t>> counts_by_method;
-    std::map<std::tuple<std::string, std::uint64_t, std::string>, std::uint64_t>
+    std::map<std::tuple<std::string, std::uint64_t, std::uint64_t,
+                        std::string>,
+             std::tuple<std::uint64_t, std::uint64_t, std::uint64_t>>
+        counts_by_method;
+    std::map<std::tuple<std::string, std::uint64_t, std::uint64_t,
+                        std::string>, std::uint64_t>
         complete_results_by_method;
     std::vector<const QueryResultRow*> skipped_vectors;
     for (const auto& row : rows) {
@@ -2417,9 +3051,11 @@ void validate(const std::vector<QueryResultRow>& rows) {
         if (row.reported_matches > row.total_matches)
             throw Error(ErrorCode::kBuildFailure,
                 "right-maximal benchmark reported more matches than it enumerated");
-        const auto key = std::make_tuple(row.dataset, row.min_length, row.operation);
+        const auto key = std::make_tuple(row.dataset, row.min_length,
+                                         row.min_occurrences, row.operation);
         const auto value = std::make_tuple(
-            row.total_matches, row.reported_matches, row.count_checksum, row.checksum);
+            row.total_matches, row.total_smems, row.reported_matches,
+            row.count_checksum, row.checksum);
         const auto it = expected.find(key);
         if (it == expected.end()) expected.emplace(key, value);
         else if (it->second != value)
@@ -2427,8 +3063,10 @@ void validate(const std::vector<QueryResultRow>& rows) {
                 " min_length=" + std::to_string(row.min_length) + " method=" + row.method +
                 " operation=" + row.operation);
 
-        const auto method_key = std::make_tuple(row.dataset, row.min_length, row.method);
-        const auto count = std::make_pair(row.total_matches, row.count_checksum);
+        const auto method_key = std::make_tuple(
+            row.dataset, row.min_length, row.min_occurrences, row.method);
+        const auto count = std::make_tuple(
+            row.total_matches, row.total_smems, row.count_checksum);
         const auto count_it = counts_by_method.find(method_key);
         if (count_it == counts_by_method.end()) counts_by_method.emplace(method_key, count);
         else if (count_it->second != count)
@@ -2445,11 +3083,12 @@ void validate(const std::vector<QueryResultRow>& rows) {
     }
     for (const auto* row : skipped_vectors) {
         const auto method_key = std::make_tuple(
-            row->dataset, row->min_length, row->method);
+            row->dataset, row->min_length, row->min_occurrences, row->method);
         const auto count_it = counts_by_method.find(method_key);
         bool matches_preflight = count_it != counts_by_method.end() &&
-            count_it->second.first == row->total_matches &&
-            count_it->second.second == row->count_checksum;
+            std::get<0>(count_it->second) == row->total_matches &&
+            std::get<1>(count_it->second) == row->total_smems &&
+            std::get<2>(count_it->second) == row->count_checksum;
         // MUMmer4 cannot expose a streaming callback. Its high-frequency row
         // is guarded by the private SuffixArray streaming preflight executed
         // immediately before the external process would be launched.
@@ -2457,10 +3096,12 @@ void validate(const std::vector<QueryResultRow>& rows) {
             matches_preflight = row->count_checksum != 0;
         if (!matches_preflight) {
             const auto streaming_it = expected.find(std::make_tuple(
-                row->dataset, row->min_length, std::string("streaming")));
+                row->dataset, row->min_length, row->min_occurrences,
+                std::string("streaming")));
             matches_preflight = streaming_it != expected.end() &&
                 std::get<0>(streaming_it->second) == row->total_matches &&
-                std::get<2>(streaming_it->second) == row->count_checksum;
+                std::get<1>(streaming_it->second) == row->total_smems &&
+                std::get<3>(streaming_it->second) == row->count_checksum;
         }
         if (!matches_preflight) {
             throw Error(ErrorCode::kBuildFailure,
@@ -2482,7 +3123,8 @@ void write_outputs(const Options& options, const std::vector<Dataset>& datasets,
                "\tvector_materialization_match_threshold"
                "\tnaive_right_maximal_oracle_status\toracle_reference_bases\toracle_query_bases"
                "\tlearned_k\tlearned_memory_overhead_basis_points\tlearned_bucket_bits"
-               "\tcompiler\tcmake_version\tbuild_type\tos\tarchitecture\tlogical_cpus\tmummer_version\tmummer_sha256\tworkload\tworker_process_model\n";
+               "\tcompiler\tcmake_version\tbuild_type\tos\tarchitecture\tlogical_cpus\tmummer_version\tmummer_launcher_sha256\tmummer_runtime_sha256\tworkload\tworker_process_model"
+               "\tmin_occurrences\tminibwa_version\tminibwa_sha256\n";
         for (const auto& dataset : datasets) {
             out << options.profile << '\t' << dataset.scenario
             << '\t' << options.seed << '\t' << dataset.name << '\t' << std::hex << dataset.fingerprint << std::dec
@@ -2496,19 +3138,25 @@ void write_outputs(const Options& options, const std::vector<Dataset>& datasets,
             << (options.learned_bucket_bits ? std::to_string(*options.learned_bucket_bits) : "auto") << '\t'
             << __VERSION__ << '\t' << SUFKIT_BENCH_CMAKE_VERSION << '\t' << SUFKIT_BENCH_BUILD_TYPE
             << "\tLinux\tx86_64\t" << sysconf(_SC_NPROCESSORS_ONLN) << '\t'
-            << options.mummer_version << '\t' << options.mummer_sha256 << '\t'
-            << options.workload << "\tclean-exec-phase-v1\n";
+            << options.mummer_version << '\t'
+            << options.mummer_launcher_sha256 << '\t'
+            << options.mummer_runtime_sha256 << '\t'
+            << options.workload << "\tclean-exec-phase-v1\t"
+            << join_numbers(options.min_occurrences)
+            << '\t' << options.minibwa_version << '\t'
+            << options.minibwa_sha256 << '\n';
         }
     }
     {
         std::ofstream out(options.output_directory / "correctness_summary.tsv");
-        out << "dataset\tscenario\toracle\tmin_length\treference_bases\tquery_count\tquery_bases\ttotal_matches\tresult_checksum\tstatus\n";
+        out << "dataset\tscenario\toracle\tmin_length\treference_bases\tquery_count\tquery_bases\ttotal_matches\tresult_checksum\tstatus\tmin_occurrences\ttotal_smems\n";
         for (const auto& row : correctness) {
             out << row.dataset << '\t' << row.scenario << '\t' << row.oracle << '\t'
                 << row.min_length << '\t' << row.reference_bases << '\t'
                 << row.query_count << '\t' << row.query_bases << '\t'
                 << row.total_matches << '\t' << std::hex << row.checksum << std::dec
-                << '\t' << row.status << '\n';
+                << '\t' << row.status << '\t' << row.min_occurrences << '\t'
+                << row.total_smems << '\n';
         }
     }
     {
@@ -2542,7 +3190,7 @@ void write_outputs(const Options& options, const std::vector<Dataset>& datasets,
     }
     {
         std::ofstream out(options.output_directory / "query_results.tsv");
-        out << "dataset\tmethod\talgorithm\tsa_acceleration\toperation\tmin_length\tquery_count\tquery_bases\tseconds_median\tseconds_min\tseconds_max\tquery_bases_per_second\tmatches_per_second\tquery_peak_rss_mb_max\tpeak_rss_scope\ttotal_matches\treported_matches\tcount_checksum\tresult_checksum\tlookup_calls\tbinary_lookup_calls\tlearned_lookup_calls\tsuffix_link_attempts\tsuffix_link_successes\tsuffix_link_success_rate\tsuffix_link_fallbacks\tprevious_empty_lookups\tlookup_character_comparisons\tlookup_sa_row_accesses\tpredictions\tprediction_error_mean\tprediction_error_max\tlocal_window_rows_mean\tlocal_window_rows_max\tfull_binary_fallbacks\tmaterialization_match_threshold\tvector_skipped\tstatus\n";
+        out << "dataset\tmethod\talgorithm\tsa_acceleration\toperation\tmin_length\tquery_count\tquery_bases\tseconds_median\tseconds_min\tseconds_max\tquery_bases_per_second\tmatches_per_second\tquery_peak_rss_mb_max\tpeak_rss_scope\ttotal_matches\treported_matches\tcount_checksum\tresult_checksum\tlookup_calls\tbinary_lookup_calls\tlearned_lookup_calls\tsuffix_link_attempts\tsuffix_link_successes\tsuffix_link_success_rate\tsuffix_link_fallbacks\tprevious_empty_lookups\tlookup_character_comparisons\tlookup_sa_row_accesses\tpredictions\tprediction_error_mean\tprediction_error_max\tlocal_window_rows_mean\tlocal_window_rows_max\tfull_binary_fallbacks\tmaterialization_match_threshold\tvector_skipped\tstatus\tmin_occurrences\ttotal_smems\tsmems_per_second\n";
         out << std::fixed << std::setprecision(6);
         for (const auto& row : queries) {
             out << row.dataset << '\t' << row.method << '\t' << row.algorithm << '\t'
@@ -2556,7 +3204,9 @@ void write_outputs(const Options& options, const std::vector<Dataset>& datasets,
                     << std::dec;
                 for (int column = 0; column < 16; ++column) out << "\t0";
                 out << '\t' << row.materialization_match_threshold << '\t'
-                    << (row.vector_skipped ? 1 : 0) << '\t' << row.status << '\n';
+                    << (row.vector_skipped ? 1 : 0) << '\t' << row.status
+                    << '\t' << row.min_occurrences << '\t' << row.total_smems
+                    << "\tNA\n";
                 continue;
             }
             const auto med = median(row.seconds);
@@ -2587,17 +3237,21 @@ void write_outputs(const Options& options, const std::vector<Dataset>& datasets,
                 << row.statistics.lookup.local_window_rows_max << '\t'
                 << row.statistics.lookup.full_binary_fallbacks << '\t'
                 << row.materialization_match_threshold << '\t'
-                << (row.vector_skipped ? 1 : 0) << '\t' << row.status << '\n';
+                << (row.vector_skipped ? 1 : 0) << '\t' << row.status << '\t'
+                << row.min_occurrences << '\t' << row.total_smems << '\t'
+                << static_cast<double>(row.total_smems) / med << '\n';
         }
     }
     {
         std::ofstream out(options.output_directory / "raw_repetitions.tsv");
-        out << "dataset\tmethod\toperation\tmin_length\trepetition\tseconds\tuser_cpu_seconds\tsystem_cpu_seconds\tpeak_rss_mb\tpeak_rss_scope\tquery_bases\tserialized_bytes\tallocated_disk_bytes\tauxiliary_bytes\tlearned_index_bytes\tmaterialization_match_threshold\tvector_skipped\ttotal_matches\treported_matches\tcount_checksum\tresult_checksum\tlookup_calls\tbinary_lookup_calls\tlearned_lookup_calls\tsuffix_link_attempts\tsuffix_link_successes\tsuffix_link_fallbacks\tprevious_empty_lookups\tlookup_character_comparisons\tlookup_sa_row_accesses\tpredictions\tprediction_error_sum\tprediction_error_max\tlocal_window_rows\tlocal_window_rows_max\tfull_binary_fallbacks\tstatus\n";
+        out << "dataset\tmethod\toperation\tmin_length\trepetition\tseconds\tuser_cpu_seconds\tsystem_cpu_seconds\tpeak_rss_mb\tpeak_rss_scope\tquery_bases\tserialized_bytes\tallocated_disk_bytes\tauxiliary_bytes\tlearned_index_bytes\tmaterialization_match_threshold\tvector_skipped\ttotal_matches\treported_matches\tcount_checksum\tresult_checksum\tlookup_calls\tbinary_lookup_calls\tlearned_lookup_calls\tsuffix_link_attempts\tsuffix_link_successes\tsuffix_link_fallbacks\tprevious_empty_lookups\tlookup_character_comparisons\tlookup_sa_row_accesses\tpredictions\tprediction_error_sum\tprediction_error_max\tlocal_window_rows\tlocal_window_rows_max\tfull_binary_fallbacks\tstatus\tmin_occurrences\ttotal_smems\n";
         out << std::fixed << std::setprecision(6);
         for (const auto& row : raw) {
             out << row.dataset << '\t' << row.method << '\t' << row.operation << '\t'
                 << row.min_length << '\t' << row.repetition;
-            if (row.status != "ok") {
+            const bool has_measurements =
+                row.status == "ok" || row.status.rfind("external_", 0) == 0;
+            if (!has_measurements) {
                 out << "\tNA\tNA\tNA\tNA\t" << row.peak_rss_scope << '\t'
                     << row.query_bases << '\t' << row.serialized_bytes << '\t'
                     << row.allocated_disk_bytes << '\t' << row.auxiliary_bytes << '\t'
@@ -2608,7 +3262,8 @@ void write_outputs(const Options& options, const std::vector<Dataset>& datasets,
                     << std::hex << row.count_checksum << '\t' << row.checksum
                     << std::dec;
                 for (int column = 0; column < 15; ++column) out << "\t0";
-                out << '\t' << row.status << '\n';
+                out << '\t' << row.status << '\t' << row.min_occurrences << '\t'
+                    << row.total_smems << '\n';
                 continue;
             }
             out << '\t' << row.seconds << '\t' << row.user_cpu_seconds << '\t'
@@ -2629,7 +3284,9 @@ void write_outputs(const Options& options, const std::vector<Dataset>& datasets,
                 << row.statistics.lookup.prediction_absolute_error_max << '\t'
                 << row.statistics.lookup.local_window_rows << '\t'
                 << row.statistics.lookup.local_window_rows_max << '\t'
-                << row.statistics.lookup.full_binary_fallbacks << '\t' << row.status << '\n';
+                << row.statistics.lookup.full_binary_fallbacks << '\t' << row.status
+                << '\t' << row.min_occurrences << '\t' << row.total_smems
+                << '\n';
         }
     }
 }
@@ -2650,14 +3307,46 @@ int run(const std::vector<std::string>& arguments) {
         std::getline(version_input, options.mummer_version);
         if (version_result.status != 0 || options.mummer_version != "4.0.1")
             throw Error(ErrorCode::kUnsupportedBackend, "right-maximal exact match benchmark requires MUMmer4 version 4.0.1");
-        const auto hash_out = scratch / "mummer-sha256.txt";
-        const auto hash_err = scratch / "mummer-sha256.err";
+        options.mummer_launcher_sha256 = fingerprint_file(
+            *options.mummer4, scratch, "mummer-launcher", "MUMmer4 launcher");
+        if (!options.mummer4_runtime && is_elf_binary(*options.mummer4)) {
+            options.mummer4_runtime = options.mummer4;
+        }
+        if (!options.mummer4_runtime) {
+            throw Error(ErrorCode::kInvalidInput,
+                "MUMmer4 launcher is not an ELF binary; provide the actual "
+                "runtime ELF with --mummer4-runtime PATH");
+        }
+        if (!is_elf_binary(*options.mummer4_runtime)) {
+            throw Error(ErrorCode::kInvalidInput,
+                "--mummer4-runtime must name an ELF binary");
+        }
+        options.mummer_runtime_sha256 = fingerprint_file(
+            *options.mummer4_runtime, scratch, "mummer-runtime",
+            "MUMmer4 runtime ELF");
+    }
+    if (options.minibwa) {
+        const auto version_out = scratch / "minibwa-version.txt";
+        const auto version_err = scratch / "minibwa-version.err";
+        const auto version_result = run_process(
+            {options.minibwa->string(), "version"}, version_out, version_err);
+        std::ifstream version_input(version_out);
+        std::getline(version_input, options.minibwa_version);
+        if (version_result.status != 0 || options.minibwa_version.empty()) {
+            throw Error(ErrorCode::kUnsupportedBackend,
+                        "cannot read the MiniBWA version");
+        }
+        const auto hash_out = scratch / "minibwa-sha256.txt";
+        const auto hash_err = scratch / "minibwa-sha256.err";
         const auto hash_result = run_process(
-            {"/usr/bin/sha256sum", options.mummer4->string()}, hash_out, hash_err);
+            {"/usr/bin/sha256sum", options.minibwa->string()}, hash_out,
+            hash_err);
         std::ifstream hash_input(hash_out);
-        hash_input >> options.mummer_sha256;
-        if (hash_result.status != 0 || options.mummer_sha256.size() != 64)
-            throw Error(ErrorCode::kIoError, "cannot fingerprint the MUMmer4 executable");
+        hash_input >> options.minibwa_sha256;
+        if (hash_result.status != 0 || options.minibwa_sha256.size() != 64) {
+            throw Error(ErrorCode::kIoError,
+                        "cannot fingerprint the MiniBWA executable");
+        }
     }
     std::vector<Dataset> datasets;
     std::vector<BuildResult> builds;
@@ -2677,6 +3366,8 @@ int run(const std::vector<std::string>& arguments) {
         for (const auto& method : options.methods) {
             std::cerr << "benchmarking " << dataset.name << " with " << method << "...\n";
             if (method == "mummer4") benchmark_mummer(dataset, options, dataset_scratch, builds, queries, raw);
+            else if (method == "minibwa") benchmark_minibwa(
+                dataset, options, dataset_scratch, builds, queries, raw);
             else benchmark_internal_clean_exec(
                 dataset, options, method, dataset_scratch, builds, queries, raw);
         }
@@ -2696,7 +3387,8 @@ int run(const std::vector<std::string>& arguments) {
     std::error_code cleanup_error;
     std::filesystem::remove_all(scratch, cleanup_error);
     if (cleanup_error) throw Error(ErrorCode::kIoError, "cannot remove right-maximal exact match benchmark scratch directory");
-    std::cerr << "right-maximal exact match benchmark results written to " << options.output_directory << '\n';
+    std::cerr << options.workload << " benchmark results written to "
+              << options.output_directory << '\n';
     return 0;
 }
 

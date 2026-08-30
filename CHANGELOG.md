@@ -12,10 +12,17 @@ All notable changes to sufkit are documented in this file.
 - Added reference-unique `Mam*` APIs and `sufkit mam`, matching MUMmer4
   `-mumreference` semantics: uniqueness is required across the combined
   reference, but repeated occurrences in the query remain valid.
+- Added generalized `(l,c)-SMEM` APIs and `sufkit smem`. A seed has length at
+  least `l`, occurs at least `c` times in the combined reference, and is not
+  contained in another qualifying query interval. Results expand to every
+  reference coordinate while retaining the interval occurrence count.
+- Added strict `Mum*` APIs and `sufkit mum`. MUMs are two-sided maximal and
+  unique in both the combined reference and the current query record.
 - Kept the existing `RightMaximal*` interface and output behavior unchanged.
   CHILD remains explicit and is never selected automatically.
-- Added independent MEM/MAM oracles, MUMmer4 4.0.1 black-box differential
-  tests, and correctness-gated `mem`/`mam` smoke benchmark workloads.
+- Added independent MEM/MAM/SMEM/MUM oracles, MUMmer4 4.0.1 black-box
+  differential tests, and correctness-gated maximal-match benchmark
+  workloads. MiniBWA remains an optional SMEM black-box comparator.
 - Added independent construction and storage widths for standalone SAs. A
   64-bit constructor may now be validated and down-packed to native 32-bit,
   split low32/high8 40-bit, or split low32/high16 48-bit storage.
@@ -25,6 +32,10 @@ All notable changes to sufkit are documented in this file.
 - Made automatic maximal-match selection workload-specific: both profiles use
   LCP with MUMmer-style query skipping for MEM, while Fast retains suffix-link
   auto selection for reference-MAM and Low-memory uses LCP.
+- Reworked Fast reference-MAM suffix-link search to retain the complete match
+  depth and exact SA interval across adjacent query starts. Unique shifted
+  intervals are skipped until they branch, avoiding repeated long LCE scans
+  without changing reference uniqueness or two-sided maximality.
 - Added a private exact k-mer interval directory for complete Fast indexes.
   It is derived from text+ISA after build/load, is never serialized, and seeds
   exact, MEM, MAM, and right-maximal root searches without changing results.
@@ -39,8 +50,9 @@ All notable changes to sufkit are documented in this file.
   isolation. A native32 microbial comparison is documented; real-scale
   `>2^32`, cold-start, and universal MUMmer4 superiority claims remain gated on
   future representative measurements.
-- MEM/MAM continue to use normalized text and existing SA/ISA/LCP/CHILD/PWL
-  data and do not depend on SeqPro.
+- MEM/MAM/SMEM/MUM continue to use normalized text and existing
+  SA/ISA/LCP/CHILD/PWL data and do not depend on SeqPro. SMEM and MUM add no
+  `.sufidx` section and require a complete standalone SA.
 
 ## 0.2.0 - 2026-08-24
 
@@ -129,6 +141,5 @@ implementation does not guarantee left maximality.
   correctness-gated count/locate workloads.
 
 The project uses pinned vendored SDSL, libdivsufsort, CaPS-SA, ParlayLib, and
-kseq snapshots. Disk-backed construction, strict query-and-reference-unique
-MUM, direct sparse-SA construction, r-index/RLBWT, and BigBWT/PFP remain
-future work.
+kseq snapshots. Disk-backed construction, direct sparse-SA construction,
+r-index/RLBWT, and BigBWT/PFP remain future work.

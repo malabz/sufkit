@@ -5,9 +5,10 @@ SDSL compressed suffix arrays (FM-indexes), exact pattern search, and maximal
 exact-match enumeration.
 
 The current source tree adds the 0.3.0 `Mem*` API for two-sided maximal exact
-matches and `Mam*` for MEMs whose matched string is unique in the combined
-reference. The existing `RightMaximal*` API remains available under its weaker
-right-only public contract.
+matches, `Mam*` for reference-unique MEMs, generalized `(l,c)-SMEM` search,
+and strict query-and-reference-unique `Mum*` search. The existing
+`RightMaximal*` API remains available under its weaker right-only public
+contract.
 
 ## Capabilities
 
@@ -21,7 +22,7 @@ right-only public contract.
 - Fast SA with raw LCP and Low-memory SA with byte-coded LCP;
 - fixed SDSL Huffman, balanced, and DNA EPR CSA backends;
 - scalar and batched FM count, exact locate, right-maximal compatibility,
-  formal MEM, and reference-MAM streaming;
+  formal MEM, reference-MAM, generalized SMEM, and strict MUM search;
 - CRC-protected, self-contained `.sufidx` persistence and inspection; and
 - `add_subdirectory` and installed `find_package` CMake integration.
 
@@ -68,7 +69,7 @@ contig separators, and sentinel), not the FASTA base count alone.
 
 See the [five-minute quick start](docs/getting-started/quickstart.md) and
 [CLI reference](docs/user-guide/cli-reference.md) for SA construction,
-right-maximal/MEM/MAM search, batch queries, and inspection.
+right-maximal/MEM/MAM/SMEM/MUM search, batch queries, and inspection.
 
 ## C++ integration
 
@@ -96,8 +97,8 @@ auto hits = loaded.Locate("ACGTACGT");
 ```
 
 Public coordinates are zero-based and contig-local. Exact patterns accept only
-A/C/G/T after case normalization; right-maximal, MEM, and MAM queries treat
-every other symbol as a hard break.
+A/C/G/T after case normalization; maximal-match queries treat every other
+symbol as a hard break.
 
 ## Compatibility and documentation
 

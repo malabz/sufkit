@@ -104,8 +104,8 @@ by K, preserving lexicographic order. Build ISA by assigning row to
 The generalized Kasai scan visits sampled positions `p=sample*K`. For row r>0,
 compare against `SA[r-1]` from the previous retained common-prefix length,
 store `LCP[r]`, then reduce retained length by K with saturation at zero. K=1
-is ordinary Kasai. Hard encoded symbols participate in suffix ordering but right-maximal exact match
-code treats them as boundaries.
+is ordinary Kasai. Hard encoded symbols participate in suffix ordering but
+right-maximal exact match code treats them as boundaries.
 
 CaPS produces complete LCP during merging. When K>1, the LCP between adjacent
 retained rows is the minimum complete LCP over the intervening row interval;
@@ -328,16 +328,58 @@ retain a final sort/unique correctness guard; bounded results can therefore
 count exactly while keeping only an N-element heap. Independent brute-force
 tests, rather than MUMmer4 source, define the public result set.
 
-## Reference-MAM uniqueness
+## Reference-MAM and strict MUM uniqueness
 
-Reference-MAM is supported only for a complete SA. After a two-sided MEM is
-identified, its full matched string must have a complete-SA interval of size
-one across all contigs. Query occurrence count is intentionally ignored. This
-matches MUMmer4 `-mumreference`, not strict MUM semantics.
+Reference-MAM is supported only for a complete SA. Its full matched string
+must have a complete-SA interval of size one across all contigs. Query
+occurrence count is intentionally ignored. This matches MUMmer4
+`-mumreference` semantics.
 
-MEM/MAM do not call SeqPro and add no dedicated persisted section. They use the
-encoded reference text and contig metadata already inside `.sufidx`; old
-1.0-1.3 SA files therefore require no conversion.
+The Fast suffix-link path maintains this invariant for each query start:
+
+```text
+interval = the complete SA interval for query[q : q + depth)
+```
+
+Traversal retains the full right-match depth rather than collapsing the state
+to the minimum seed length. After the right mismatch, a singleton interval
+proves reference uniqueness; one guarded predecessor comparison proves left
+maximality. The next query start is derived by shifting the interval endpoints
+through SA and ISA and expanding through LCP at depth `depth-1`.
+
+If both the original and shifted intervals are singletons, the shifted match
+has the same right endpoint and is necessarily left-extendable by the removed
+base. It cannot be a MAM, so the implementation continues linking without
+repeating LCE, coordinate mapping, or callback work. The first shift that
+expands the interval immediately resumes right traversal because a newly
+admitted reference suffix may extend farther and form an internal MAM. This
+optimization changes only the amount of work; baseline and LCP paths remain
+independent result oracles.
+
+Strict MUM adds uniqueness in one directional query record. Candidate MAMs are
+sorted by reference start and decreasing end. Exact duplicate intervals are
+all rejected; intervals contained in an earlier candidate are rejected as
+well. This clean-room containment sweep is checked against a separate oracle
+that directly counts every overlapping query occurrence.
+
+## Generalized SMEM containment
+
+For each legal query start, the SMEM kernel keeps extending its exact SA
+interval while the interval contains at least `c` rows. Only the longest such
+substring at that start can be supermaximal. A run-local monotone maximum of
+candidate end positions rejects every interval contained in an earlier
+qualifying interval. Hard breaks reset the skyline.
+
+The surviving query interval is expanded over every SA row. Its interval size
+is copied into `SmemMatch::reference_occurrences`; distinct seed count and
+expanded coordinate count are maintained separately. The occurrence
+threshold cannot be implemented by filtering MEMs, because a c-supported
+seed can stop when the interval falls below c even if one occurrence remains
+right-extendable.
+
+MEM/MAM/SMEM/MUM do not call SeqPro and add no dedicated persisted section.
+They use the encoded reference text and contig metadata already inside
+`.sufidx`; old 1.0-1.3 SA files therefore require no conversion.
 
 ## Persistence and backend identities
 

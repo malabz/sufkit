@@ -156,7 +156,9 @@ third-party state. Unknown or damaged required data is never silently ignored.
 - Public index objects are move-only, preventing accidental expensive copies.
 - Const queries are concurrent. Mutable caller-owned statistics are outside
   that guarantee.
-- Synchronous right-maximal exact match callbacks execute on the calling thread.
+- Synchronous maximal-match callbacks execute on the calling thread. Strict
+  MUM may buffer MAM candidates before callback delivery because query
+  uniqueness is a whole-record property.
 
 ## Dependency direction
 

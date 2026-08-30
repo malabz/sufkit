@@ -132,7 +132,7 @@ Both reference and query positions are zero-based. Reverse matches use the
 original forward-query coordinate system. Unlike exact both-strand search,
 forward and reverse right-maximal exact matches remain orientation-distinct.
 
-## `sufkit mem` and `sufkit mam`
+## `sufkit mem`, `mam`, `smem`, and `mum`
 
 ```text
 sufkit mem --index PATH --query Q.fa[.gz]
@@ -146,13 +146,32 @@ sufkit mam --index PATH --query Q.fa[.gz]
   [--algorithm auto|baseline|lcp|child|suffix-link|full]
   [--lookup-algorithm auto|binary|lcp-binary|sapling-pwl|child]
   [--max-matches N]
+
+sufkit smem --index PATH --query Q.fa[.gz]
+  [--min-length N] [--min-occurrences C]
+  [--strand forward|reverse|both]
+  [--algorithm auto|baseline|lcp|child|suffix-link|full]
+  [--lookup-algorithm auto|binary|lcp-binary|sapling-pwl|child]
+  [--max-matches N]
+
+sufkit mum --index PATH --query Q.fa[.gz]
+  [--min-length N] [--strand forward|reverse|both]
+  [--algorithm auto|baseline|lcp|child|suffix-link|full]
+  [--lookup-algorithm auto|binary|lcp-binary|sapling-pwl|child]
+  [--max-matches N]
 ```
 
 `mem` reports two-sided maximal exact matches. `mam` additionally requires
 the matched string to occur exactly once across the combined reference; query
-uniqueness is not required. `--skip` is MEM-only. MAM requires a complete SA,
-and both commands reject FM indexes. Output columns and coordinate conventions
-are identical to `right-maximal`.
+uniqueness is not required. `mum` additionally requires uniqueness in the
+current query record. `smem` reports generalized `(l,c)` supermaximal query
+intervals expanded to reference coordinates; `--min-occurrences` defaults to
+one. `--skip` is MEM-only. MAM, SMEM, and MUM require a complete SA, and all
+four commands reject FM indexes.
+
+MEM, MAM, and MUM use the seven `right-maximal` columns. SMEM inserts
+`reference_occurrences` between `length` and `strand` and reports the complete
+SA-interval size on every coordinate row.
 
 ## `sufkit inspect`
 
@@ -192,17 +211,24 @@ maximal-match workloads:
 
 ```text
 sufkit bench --workload right-maximal --profile smoke|quick|standard \
-  --strands forward,reverse-complement,both \
   --output-dir DIR [options]
 ```
 
-The right-maximal compatibility default is `--strands forward`. Internal
-methods emit an independent summary/raw row for every explicitly selected
-orientation. MUMmer4 timed rows retain their historical forward-only scope.
+Maximal-match benchmark workloads currently use the forward strand. Strand
+semantics for the public query APIs are covered by unit and CLI integration
+tests; the benchmark command does not expose a strand selector. MUMmer4 timed
+rows retain their historical forward-only scope.
 
-Formal workloads use `--workload mem` or `--workload mam` and method prefixes
-`mem-*` or `mam-*`. MUMmer4 uses `-maxmatch` for MEM and `-mumreference` for
-reference-MAM; all measured methods must pass the same checksum gate.
+Formal workloads use `--workload mem|mam|smem|mum` and the corresponding
+method prefix. `--min-occurrences` also controls SMEM benchmark thresholds.
+MUMmer4 uses `-maxmatch`, `-mumreference`, and `-mum` for MEM, reference-MAM,
+and strict MUM. MiniBWA is an optional external SMEM comparator. All measured
+internal methods must pass the same checksum gate.
+
+`--mummer4 PATH` records the launcher SHA-256. If that path is a script, also
+provide `--mummer4-runtime ELF_PATH`; if it is already an ELF executable, the
+runtime path is inferred as the launcher itself. The two hashes are written as
+`mummer_launcher_sha256` and `mummer_runtime_sha256` in `run_metadata.tsv`.
 
 See [benchmark methodology](../benchmarks/methodology.md) for profiles,
 methods, schemas, correctness gates, and timing boundaries.

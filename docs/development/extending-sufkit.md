@@ -55,7 +55,8 @@ auto threshold.
    fields, and legacy-file tests.
 8. LCP encodings must implement exact value reconstruction and threshold
    queries over the same logical LCP. Compare decoded values, CHILD tables,
-   exact/MEM/MAM results, and save/load checksums against raw LCP.
+   exact and all maximal-match results, and save/load checksums against raw
+   LCP.
 9. Report logical payload bytes separately from RSS/PSS and construction peak.
    Do not claim large-reference or MUMmer4 superiority from formulas alone.
 
@@ -108,7 +109,7 @@ compatible edit.
 8. Benchmark query bases/s, matches/s, lookup/reuse counters, index size, and
    construction phases separately.
 
-## Extend MEM, MAM, or add strict MUM
+## Extend MEM, MAM, SMEM, or MUM
 
 1. Preserve the formal two-sided MEM oracle and the weaker legacy
    `RightMaximalMatch` contract independently.
@@ -116,10 +117,14 @@ compatible edit.
    lookup modes, strands, hard breaks, and persistence.
 3. Keep reference-MAM uniqueness global across contigs and independent of
    query occurrence count.
-4. A future strict MUM API must add an independently tested query-uniqueness
-   filter; it must not silently change `MamMatch`.
-5. Use MUMmer4 only as a black-box ACGT single-contig differential tool and
-   report the first tuple difference on failure.
+4. Keep strict MUM query uniqueness scoped to one query record and test it by
+   direct overlapping-occurrence counting, independently of MAM containment
+   cleanup.
+5. Generalized SMEM must enforce the occurrence threshold while extending;
+   filtering ordinary MEMs is not correct for `c>1`. Preserve both seed and
+   expanded-coordinate totals.
+6. Use MUMmer4 and MiniBWA only as black-box ACGT single-contig differential
+   tools and report the first tuple difference on failure.
 
 ## Add a `.sufidx` section or format version
 

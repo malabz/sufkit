@@ -211,6 +211,68 @@ class SUFKIT_API SuffixArray {
       std::string_view query, const MamOptions& options = {},
       std::optional<std::uint64_t> max_matches = {}) const;
 
+  /**
+   * Stream every located occurrence of a generalized directional SMEM.
+   * A qualifying query interval has at least `options.min_length` bases and
+   * at least `options.min_occurrences` occurrences in the joined reference;
+   * it is retained only when no other qualifying query interval contains it.
+   * @param query Query whose non-ACGT symbols are hard breaks.
+   * @param options Positive length/occurrence thresholds and search policy.
+   * @param callback Synchronous callback; enumeration order is unspecified.
+   * @throws Error with ErrorCode::kInvalidInput for invalid options or an
+   * empty callback.
+   * @throws Error with ErrorCode::kUnsupportedBackend for sampled SA or a
+   * missing explicitly requested capability.
+   * Exceptions raised by `callback` propagate unchanged.
+   * @since 0.3.0
+   */
+  void ForEachSmem(std::string_view query, const SmemOptions& options,
+                   const SmemCallback& callback) const;
+
+  /**
+   * Return deterministic query-first generalized SMEM coordinates.
+   * @param query Query whose non-ACGT symbols are hard breaks.
+   * @param options Positive length/occurrence thresholds and search policy.
+   * @param max_matches Number of coordinate matches retained; absent means all.
+   * @return Complete SMEM/coordinate counts plus retained sorted matches.
+   * @throws Error for invalid options, sampled SA, or missing capability.
+   * @since 0.3.0
+   */
+  SmemResult FindSmems(
+      std::string_view query, const SmemOptions& options = {},
+      std::optional<std::uint64_t> max_matches = {}) const;
+
+  /**
+   * Stream strict reference- and query-unique directional MUMs.
+   * Every result is a two-sided maximal exact match whose string occurs once
+   * in the joined reference and once in this query record, counting
+   * overlapping query occurrences within canonical runs.
+   * @param query One query record; query uniqueness is record-local.
+   * @param options Positive minimum length, strands, and search policy.
+   * @param callback Synchronous callback; enumeration order is unspecified.
+   * @throws Error with ErrorCode::kInvalidInput for invalid options or an
+   * empty callback.
+   * @throws Error with ErrorCode::kUnsupportedBackend for sampled SA or a
+   * missing explicitly requested capability.
+   * Exceptions raised by `callback` propagate unchanged.
+   * @since 0.3.0
+   */
+  void ForEachMum(std::string_view query, const MumOptions& options,
+                  const MumCallback& callback) const;
+
+  /**
+   * Return deterministic query-first strict MUMs.
+   * @param query One query record; query uniqueness is record-local.
+   * @param options Positive minimum length, strands, and search policy.
+   * @param max_matches Number of sorted matches retained; absent means all.
+   * @return Complete count plus retained sorted vector.
+   * @throws Error for invalid options, sampled SA, or missing capability.
+   * @since 0.3.0
+   */
+  MumResult FindMums(
+      std::string_view query, const MumOptions& options = {},
+      std::optional<std::uint64_t> max_matches = {}) const;
+
   /** @return Persisted ESA auxiliary layout. */
   SaAcceleration Acceleration() const noexcept;
   /** @return Binary or present PWL lookup capability. */

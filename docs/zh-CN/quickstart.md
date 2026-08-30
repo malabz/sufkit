@@ -59,6 +59,10 @@ right-maximal、MEM 和完整 SA 上的 reference-MAM 仍可使用，但自动�
   --query queries.fa.gz --min-length 20 --strand both
 ./build/release/sufkit mam --index reference.sa.sufidx \
   --query queries.fa.gz --min-length 20
+./build/release/sufkit smem --index reference.sa.sufidx \
+  --query queries.fa.gz --min-length 20 --min-occurrences 2
+./build/release/sufkit mum --index reference.sa.sufidx \
+  --query queries.fa.gz --min-length 20
 ```
 
 对大型参考显式使用 CaPS：
@@ -73,7 +77,9 @@ right-maximal、MEM 和完整 SA 上的 reference-MAM 仍可使用，但自动�
 
 - FASTA reference 会规范化成 A/C/G/T/N。
 - exact pattern 只允许 A/C/G/T。
-- right-maximal、MEM 和 MAM query 的非 A/C/G/T 字符是 hard break。
+- 所有 maximal-match query 的非 A/C/G/T 字符是 hard break。
+- SMEM 和 MUM 只支持完整 SA；MUM 的 query 唯一性按每条 FASTA record
+  独立计算。
 - N、contig separator 和 sentinel 都不能被匹配跨越。
 - 坐标是 0-based、contig-local；CLI exact end 是 exclusive。
 - `--max-hits` 或 `--max-matches` 截断输出，但结果对象仍报告完整总数。

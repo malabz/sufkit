@@ -16,7 +16,9 @@ set(sampled "${OUTPUT_ROOT}/sampled.sufidx")
 set(fm "${OUTPUT_ROOT}/reference-fm.sufidx")
 set(low_memory "${OUTPUT_ROOT}/low-memory.sufidx")
 file(WRITE "${reference}" ">r0\nTTGATTACAGGACGTACGT\n>r1\nCCCCAAAATTTT\n")
-file(WRITE "${queries}" ">q0\nAAGATTACACCGATTACA\n")
+file(WRITE "${queries}"
+    ">q0\nAAGATTACACCGATTACA\n>q_smem\nACGTACGT\n"
+    ">q_mum\nGATTACA\n>q_mum2\nGATTACA\n")
 
 execute_process(
     COMMAND "${SUFKIT_EXECUTABLE}" build --type sa --input "${reference}"
@@ -65,6 +67,77 @@ foreach(conflict IN ITEMS acceleration learned sampling)
     endif()
 endforeach()
 
+execute_process(
+    COMMAND "${SUFKIT_EXECUTABLE}" smem --index "${index}"
+            --query "${queries}" --min-length 4 --min-occurrences 2
+            --algorithm full
+    RESULT_VARIABLE smem_status OUTPUT_VARIABLE smem_output
+    ERROR_VARIABLE smem_error)
+if(NOT smem_status EQUAL 0)
+    message(FATAL_ERROR "smem CLI failed: ${smem_error}")
+endif()
+set(smem_header
+    "query_id\tsequence_id\tsequence_name\treference_start\tquery_start\tlength\treference_occurrences\tstrand")
+if(NOT smem_output MATCHES
+   "${smem_header}" OR
+   NOT smem_output MATCHES "q_smem\t0\tr0")
+    message(FATAL_ERROR "smem CLI output schema or matches are incorrect")
+endif()
+
+execute_process(
+    COMMAND "${SUFKIT_EXECUTABLE}" mum --index "${index}"
+            --query "${queries}" --min-length 7 --algorithm full
+    RESULT_VARIABLE mum_status OUTPUT_VARIABLE mum_output
+    ERROR_VARIABLE mum_error)
+if(NOT mum_status EQUAL 0)
+    message(FATAL_ERROR "mum CLI failed: ${mum_error}")
+endif()
+set(maximal_header
+    "query_id\tsequence_id\tsequence_name\treference_start\tquery_start\tlength\tstrand")
+if(NOT mum_output MATCHES
+   "${maximal_header}" OR
+   NOT mum_output MATCHES "q_mum\t0\tr0" OR
+   NOT mum_output MATCHES "q_mum2\t0\tr0")
+    message(FATAL_ERROR "mum CLI output schema or matches are incorrect")
+endif()
+
+execute_process(
+    COMMAND "${SUFKIT_EXECUTABLE}" smem --index "${index}"
+            --query "${queries}" --min-length 4 --min-occurrences 0
+    RESULT_VARIABLE invalid_occurrences
+    OUTPUT_VARIABLE invalid_occurrences_output)
+if(invalid_occurrences EQUAL 0 OR NOT invalid_occurrences_output STREQUAL "")
+    message(FATAL_ERROR
+        "smem accepted --min-occurrences 0 or polluted stdout")
+endif()
+
+foreach(invalid_case IN ITEMS min-length skip)
+    if(invalid_case STREQUAL "min-length")
+        set(invalid_command mum)
+        set(invalid_arguments --min-length 0)
+    else()
+        set(invalid_command mem)
+        set(invalid_arguments --min-length 4 --skip 0)
+    endif()
+    execute_process(
+        COMMAND "${SUFKIT_EXECUTABLE}" ${invalid_command} --index "${index}"
+                --query "${queries}" ${invalid_arguments}
+        RESULT_VARIABLE invalid_status
+        OUTPUT_VARIABLE invalid_output)
+    if(invalid_status EQUAL 0 OR NOT invalid_output STREQUAL "")
+        message(FATAL_ERROR
+            "${invalid_command} accepted invalid ${invalid_case} or polluted stdout")
+    endif()
+endforeach()
+
+execute_process(
+    COMMAND "${SUFKIT_EXECUTABLE}" mum --index "${index}"
+            --query "${queries}" --min-length 4 --min-occurrences 2
+    RESULT_VARIABLE mum_occurrences)
+if(mum_occurrences EQUAL 0)
+    message(FATAL_ERROR "mum accepted the SMEM-only --min-occurrences option")
+endif()
+
 foreach(command IN ITEMS mem mam)
     execute_process(
         COMMAND "${SUFKIT_EXECUTABLE}" ${command} --index "${index}"
@@ -96,6 +169,15 @@ execute_process(
 if(sampled_mam EQUAL 0)
     message(FATAL_ERROR "mam accepted a sampled suffix array")
 endif()
+foreach(command IN ITEMS smem mum)
+    execute_process(
+        COMMAND "${SUFKIT_EXECUTABLE}" ${command} --index "${sampled}"
+                --query "${queries}" --min-length 4
+        RESULT_VARIABLE sampled_status)
+    if(sampled_status EQUAL 0)
+        message(FATAL_ERROR "${command} accepted a sampled suffix array")
+    endif()
+endforeach()
 
 execute_process(
     COMMAND "${SUFKIT_EXECUTABLE}" build --type fm --input "${reference}"
@@ -111,3 +193,12 @@ execute_process(
 if(fm_mem EQUAL 0)
     message(FATAL_ERROR "mem accepted an FM index")
 endif()
+foreach(command IN ITEMS smem mum)
+    execute_process(
+        COMMAND "${SUFKIT_EXECUTABLE}" ${command} --index "${fm}"
+                --query "${queries}" --min-length 4
+        RESULT_VARIABLE fm_status)
+    if(fm_status EQUAL 0)
+        message(FATAL_ERROR "${command} accepted an FM index")
+    endif()
+endforeach()

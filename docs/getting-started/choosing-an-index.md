@@ -10,6 +10,8 @@ operation first, then by build time, query throughput, and memory budget.
 | Exact count with a compressed index | Huffman FM | Smallest available FM backend and stable default |
 | Faster FM count/locate, space is secondary | EPR FM | Faster in current DNA quick runs, but much larger and slower to load |
 | right-maximal exact match search | SA+ISA+LCP | Suffix-link right-maximal exact match is the current default and strongest general path |
+| MEM or reference-MAM | Fast SA | Complete SA plus LCP/ISA acceleration; MAM requires K=1 |
+| Generalized SMEM or strict MUM | Complete Fast or Low-memory SA | These workloads require exact complete-SA occurrence counts |
 | Lowest standalone-SA resident memory | Low-memory SA | Complete SA+byte-coded LCP; no resident ISA, CHILD, or PWL |
 | Direct SA row access or ESA research | Standalone SA | Exposes `SuffixAt` and supports optional auxiliary structures |
 | Large, multithreaded SA construction | CaPS-SA | Shared-memory parallel construction; measure peak memory first |

@@ -245,6 +245,7 @@ sufkit bench \
   --methods right-maximal-baseline,right-maximal-lcp,right-maximal-child,right-maximal-suffix-link,right-maximal-full,mummer4 \
   --min-lengths 20,50,100 \
   --mummer4 /path/to/mummer \
+  --mummer4-runtime /path/to/.libs/mummer \
   --output-dir results/right-maximal-quick
 ```
 
@@ -285,11 +286,13 @@ for the historical release run.
 sufkit bench --workload mem --profile smoke \
   --methods mem-baseline,mem-lcp,mem-child,mem-suffix-link,mem-full,mummer4 \
   --min-lengths 20,50 --mummer4 /path/to/mummer-4.0.1/mummer \
+  --mummer4-runtime /path/to/mummer-4.0.1/.libs/mummer \
   --output-dir results/mem-smoke
 
 sufkit bench --workload mam --profile smoke \
   --methods mam-baseline,mam-lcp,mam-child,mam-suffix-link,mam-full,mummer4 \
   --min-lengths 20,50 --mummer4 /path/to/mummer-4.0.1/mummer \
+  --mummer4-runtime /path/to/mummer-4.0.1/.libs/mummer \
   --output-dir results/mam-smoke
 ```
 
@@ -301,6 +304,60 @@ startup, index loading, querying, and output-file writing; parsing and checksum
 calculation happen afterward and are not timed. Sufkit rows measure the
 preloaded in-process query kernel. Every method must produce the same total and
 checksum for each comparison group.
+
+## Generalized SMEM and strict MUM smoke
+
+```bash
+sufkit bench --workload smem --profile smoke \
+  --methods smem-baseline,smem-lcp,smem-child,smem-suffix-link,smem-full,minibwa \
+  --min-lengths 20,50 --min-occurrences 1,2 \
+  --minibwa /path/to/pinned/minibwa \
+  --output-dir results/smem-smoke
+
+sufkit bench --workload mum --profile smoke \
+  --methods mum-baseline,mum-lcp,mum-child,mum-suffix-link,mum-full,mummer4 \
+  --min-lengths 20,50 --mummer4 /path/to/mummer-4.0.1/mummer \
+  --mummer4-runtime /path/to/mummer-4.0.1/.libs/mummer \
+  --output-dir results/mum-smoke
+```
+
+SMEM rows append `min_occurrences`, `total_smems`, and
+`smems_per_second` to the established query schema. `total_smems` counts
+directional query intervals; `total_matches` counts expanded reference
+coordinates. Raw repetition and correctness output append
+`min_occurrences` and `total_smems`; `smems_per_second` is a derived summary
+field in `query_results.tsv`. Existing columns retain their positions.
+
+MUMmer4 `-mum` is the strict-MUM black-box comparator. Run metadata records
+separate `mummer_launcher_sha256` and `mummer_runtime_sha256` fields. When
+`--mummer4` already names an ELF binary, it is also the runtime. When it names
+a script such as an uninstalled libtool launcher, pass the actual ELF through
+`--mummer4-runtime`; the benchmark validates ELF magic and never guesses by
+parsing launcher text.
+
+MiniBWA `fastmap` is an optional SMEM timing/provenance row selected with
+`--minibwa PATH`; because its
+FMD index counts both reference orientations, it is labeled
+`external_fmd_scope` and is not pooled into the forward-only internal checksum
+group. Build MiniBWA from a recorded source commit in an isolated directory;
+the benchmark records the resulting executable version and SHA-256. Its
+`index` and `fastmap` subprocesses include load/startup and are not presented
+as in-process sufkit kernel times. Measured `external_fmd_scope` repetitions
+retain wall time, CPU time, and peak RSS in `raw_repetitions.tsv`. A `fastmap`
+`*` coordinate list is labeled `external_high_frequency`; a `.` coordinate or
+any mismatch between the declared occurrence count and reported coordinates is
+labeled `external_incomplete_coordinates`. These external rows retain their
+measured wall time, CPU time, and peak RSS. The labels describe output
+completeness only: MiniBWA remains a separate FMD timing/provenance peer and is
+not a coordinate-correctness differential. Capability placeholders such as
+`not_supported` and skipped operations keep `NA` timing.
+
+Before accepting performance results, every internal SMEM/MUM method must
+match the independent small oracle for each `(min_length,min_occurrences)`
+group. A published MUMmer4 differential must use an ACGT-only single-contig
+reference so input-normalization differences cannot masquerade as an algorithm
+difference. Standard/full runs are opt-in and are not part of routine
+validation.
 
 ## Headline and server execution scopes
 

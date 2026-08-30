@@ -18,6 +18,55 @@
 
 namespace {
 
+enum class MaximalCommand {
+  kMem,
+  kMam,
+  kSmem,
+  kMum,
+};
+
+const char* MaximalCommandName(MaximalCommand command) {
+  switch (command) {
+    case MaximalCommand::kMem:
+      return "mem";
+    case MaximalCommand::kMam:
+      return "mam";
+    case MaximalCommand::kSmem:
+      return "smem";
+    case MaximalCommand::kMum:
+      return "mum";
+  }
+  return "maximal";
+}
+
+const char* MaximalSearchName(MaximalCommand command) {
+  switch (command) {
+    case MaximalCommand::kMem:
+      return "MEM";
+    case MaximalCommand::kMam:
+      return "reference-MAM";
+    case MaximalCommand::kSmem:
+      return "SMEM";
+    case MaximalCommand::kMum:
+      return "MUM";
+  }
+  return "maximal-match";
+}
+
+const char* MaximalResultName(MaximalCommand command) {
+  switch (command) {
+    case MaximalCommand::kMem:
+      return "MEMs";
+    case MaximalCommand::kMam:
+      return "reference-MAMs";
+    case MaximalCommand::kSmem:
+      return "SMEM coordinate matches";
+    case MaximalCommand::kMum:
+      return "MUMs";
+  }
+  return "maximal matches";
+}
+
 struct ParsedOptions {
   std::map<std::string, std::string> values;
   std::set<std::string> flags;
@@ -161,7 +210,7 @@ sufkit::MemSearchAlgorithm ParseMemAlgorithm(const std::string& value) {
     return sufkit::MemSearchAlgorithm::kFull;
   }
   throw sufkit::Error(sufkit::ErrorCode::kInvalidInput,
-                      "invalid MEM/MAM search algorithm: " + value);
+                      "invalid maximal-match search algorithm: " + value);
 }
 
 sufkit::SaSearchAlgorithm ParseSaSearchAlgorithm(const std::string& value) {
@@ -197,6 +246,8 @@ void PrintUsage(std::ostream& output) {
             "[options]\n"
             "  sufkit mem --index REF.sufidx --query Q.fa[.gz] [options]\n"
             "  sufkit mam --index REF.sufidx --query Q.fa[.gz] [options]\n"
+            "  sufkit smem --index REF.sufidx --query Q.fa[.gz] [options]\n"
+            "  sufkit mum --index REF.sufidx --query Q.fa[.gz] [options]\n"
             "  sufkit inspect --index REF.sufidx\n"
             "  sufkit bench --profile smoke|quick|standard|full --output-dir "
             "DIR\n\n"
@@ -465,17 +516,55 @@ int RunRightMaximal(const std::vector<std::string>& arguments) {
   return 0;
 }
 
-int RunMemOrMam(const std::vector<std::string>& arguments, bool mam) {
-  const auto command = mam ? "mam" : "mem";
+template <class Match>
+void EmitMaximalMatch(const sufkit::SuffixArray& index,
+                      const std::string& query_name, const Match& match) {
+  const auto sequence = index.GetSequenceInfo(match.sequence_id);
+  std::cout << query_name << '\t' << match.sequence_id << '\t' << sequence.name
+            << '\t' << match.reference_position << '\t' << match.query_position
+            << '\t' << match.length << '\t' << sufkit::ToString(match.strand)
+            << '\n';
+}
+
+void EmitMaximalMatch(const sufkit::SuffixArray& index,
+                      const std::string& query_name,
+                      const sufkit::SmemMatch& match) {
+  const auto sequence = index.GetSequenceInfo(match.sequence_id);
+  std::cout << query_name << '\t' << match.sequence_id << '\t' << sequence.name
+            << '\t' << match.reference_position << '\t' << match.query_position
+            << '\t' << match.length << '\t' << match.reference_occurrences
+            << '\t' << sufkit::ToString(match.strand) << '\n';
+}
+
+template <class Result>
+void EmitMaximalResult(const sufkit::SuffixArray& index,
+                       const std::string& query_name, const Result& result,
+                       MaximalCommand command) {
+  for (const auto& match : result.matches) {
+    EmitMaximalMatch(index, query_name, match);
+  }
+  if (result.truncated) {
+    std::cerr << "query " << query_name << " truncated: reported "
+              << result.matches.size() << " of " << result.total_matches << ' '
+              << MaximalResultName(command) << '\n';
+  }
+}
+
+int RunMaximal(const std::vector<std::string>& arguments,
+               MaximalCommand command) {
+  const auto command_name = MaximalCommandName(command);
   if (arguments.size() == 1 && arguments.front() == "--help") {
-    std::cout << "sufkit " << command
+    std::cout << "sufkit " << command_name
               << " --index PATH --query Q.fa[.gz] [--min-length N]\n"
                  "  [--strand forward|reverse|both]\n"
                  "  [--algorithm auto|baseline|lcp|child|suffix-link|full]\n"
                  "  [--lookup-algorithm "
                  "auto|binary|lcp-binary|sapling-pwl|child]\n";
-    if (!mam) {
+    if (command == MaximalCommand::kMem) {
       std::cout << "  [--skip N]\n";
+    }
+    if (command == MaximalCommand::kSmem) {
+      std::cout << "  [--min-occurrences N]\n";
     }
     std::cout << "  [--max-matches N]\n";
     return 0;
@@ -484,19 +573,30 @@ int RunMemOrMam(const std::vector<std::string>& arguments, bool mam) {
       ParseOptions(arguments,
                    {"--index", "--query", "--min-length", "--strand",
                     "--algorithm", "--lookup-algorithm", "--skip",
-                    "--max-matches"},
+                    "--min-occurrences", "--max-matches"},
                    {});
-  if (mam && options.Has("--skip")) {
+  if (command != MaximalCommand::kMem && options.Has("--skip")) {
     throw sufkit::Error(sufkit::ErrorCode::kInvalidInput,
                         "--skip is valid only for MEM search");
+  }
+  if (command != MaximalCommand::kSmem &&
+      options.Has("--min-occurrences")) {
+    throw sufkit::Error(sufkit::ErrorCode::kInvalidInput,
+                        "--min-occurrences is valid only for SMEM search");
   }
   const auto index_path = std::filesystem::path(options.Require("--index"));
   const auto info = sufkit::InspectIndex(index_path);
   if (info.kind != sufkit::IndexKind::kSuffixArray) {
-    throw sufkit::Error(
-        sufkit::ErrorCode::kUnsupportedBackend,
-        std::string(mam ? "reference-MAM" : "MEM") +
-            " search requires a suffix-array index");
+    throw sufkit::Error(sufkit::ErrorCode::kUnsupportedBackend,
+                        std::string(MaximalSearchName(command)) +
+                            " search requires a suffix-array index");
+  }
+  if ((command == MaximalCommand::kSmem ||
+       command == MaximalCommand::kMum) &&
+      info.sa_sampling_rate != 1) {
+    throw sufkit::Error(sufkit::ErrorCode::kUnsupportedBackend,
+                        std::string(MaximalSearchName(command)) +
+                            " search requires a complete suffix array");
   }
   auto queries = sufkit::app::ReadFastaRecords(options.Require("--query"));
   if (queries.empty()) {
@@ -505,11 +605,24 @@ int RunMemOrMam(const std::vector<std::string>& arguments, bool mam) {
   }
   const auto min_length = sufkit::app::ParseUnsigned(
       options.ValueOr("--min-length", "20"), "--min-length");
+  if (min_length == 0) {
+    throw sufkit::Error(sufkit::ErrorCode::kInvalidInput,
+                        "--min-length must be greater than zero");
+  }
   const auto strands = ParseStrand(options.ValueOr("--strand", "forward"));
   const auto algorithm =
       ParseMemAlgorithm(options.ValueOr("--algorithm", "auto"));
   const auto lookup = ParseSaSearchAlgorithm(
       options.ValueOr("--lookup-algorithm", "auto"));
+  std::uint64_t min_occurrences = 1;
+  if (command == MaximalCommand::kSmem) {
+    min_occurrences = sufkit::app::ParseUnsigned(
+        options.ValueOr("--min-occurrences", "1"), "--min-occurrences");
+    if (min_occurrences == 0) {
+      throw sufkit::Error(sufkit::ErrorCode::kInvalidInput,
+                          "--min-occurrences must be greater than zero");
+    }
+  }
   std::optional<std::uint64_t> max_matches;
   if (options.Has("--max-matches")) {
     max_matches = sufkit::app::ParseUnsigned(options.Require("--max-matches"),
@@ -523,47 +636,77 @@ int RunMemOrMam(const std::vector<std::string>& arguments, bool mam) {
       throw sufkit::Error(sufkit::ErrorCode::kInvalidInput,
                           "--skip exceeds the supported range");
     }
+    if (parsed == 0) {
+      throw sufkit::Error(sufkit::ErrorCode::kInvalidInput,
+                          "--skip must be greater than zero");
+    }
     skip = static_cast<std::uint32_t>(parsed);
   }
 
   const auto index = sufkit::SuffixArray::Load(index_path);
   std::unordered_set<std::string> names;
-  std::cout << "query_id\tsequence_id\tsequence_name\treference_start\tquery_"
-               "start\tlength\tstrand\n";
   for (const auto& query : queries) {
     if (query.name.empty() || !names.insert(query.name).second) {
       throw sufkit::Error(sufkit::ErrorCode::kInvalidInput,
                           "query names must be non-empty and unique");
     }
-    const auto emit = [&](const auto& result) {
-      for (const auto& match : result.matches) {
-        const auto sequence = index.GetSequenceInfo(match.sequence_id);
-        std::cout << query.name << '\t' << match.sequence_id << '\t'
-                  << sequence.name << '\t' << match.reference_position << '\t'
-                  << match.query_position << '\t' << match.length << '\t'
-                  << sufkit::ToString(match.strand) << '\n';
+  }
+  if (command == MaximalCommand::kSmem) {
+    std::cout
+        << "query_id\tsequence_id\tsequence_name\treference_start\tquery_"
+           "start\tlength\treference_occurrences\tstrand\n";
+  } else {
+    std::cout << "query_id\tsequence_id\tsequence_name\treference_start\tquery_"
+                 "start\tlength\tstrand\n";
+  }
+  for (const auto& query : queries) {
+    switch (command) {
+      case MaximalCommand::kMem: {
+        sufkit::MemOptions search;
+        search.min_length = min_length;
+        search.strands = strands;
+        search.algorithm = algorithm;
+        search.lookup_algorithm = lookup;
+        search.skip_multiplier = skip;
+        EmitMaximalResult(
+            index, query.name,
+            index.FindMems(query.sequence, search, max_matches), command);
+        break;
       }
-      if (result.truncated) {
-        std::cerr << "query " << query.name << " truncated: reported "
-                  << result.matches.size() << " of " << result.total_matches
-                  << (mam ? " reference-MAMs\n" : " MEMs\n");
+      case MaximalCommand::kMam: {
+        sufkit::MamOptions search;
+        search.min_length = min_length;
+        search.strands = strands;
+        search.algorithm = algorithm;
+        search.lookup_algorithm = lookup;
+        EmitMaximalResult(
+            index, query.name,
+            index.FindMams(query.sequence, search, max_matches), command);
+        break;
       }
-    };
-    if (mam) {
-      sufkit::MamOptions search;
-      search.min_length = min_length;
-      search.strands = strands;
-      search.algorithm = algorithm;
-      search.lookup_algorithm = lookup;
-      emit(index.FindMams(query.sequence, search, max_matches));
-    } else {
-      sufkit::MemOptions search;
-      search.min_length = min_length;
-      search.strands = strands;
-      search.algorithm = algorithm;
-      search.lookup_algorithm = lookup;
-      search.skip_multiplier = skip;
-      emit(index.FindMems(query.sequence, search, max_matches));
+      case MaximalCommand::kSmem: {
+        sufkit::SmemOptions search;
+        search.min_length = min_length;
+        search.min_occurrences = min_occurrences;
+        search.strands = strands;
+        search.algorithm = algorithm;
+        search.lookup_algorithm = lookup;
+        EmitMaximalResult(
+            index, query.name,
+            index.FindSmems(query.sequence, search, max_matches), command);
+        break;
+      }
+      case MaximalCommand::kMum: {
+        sufkit::MumOptions search;
+        search.min_length = min_length;
+        search.strands = strands;
+        search.algorithm = algorithm;
+        search.lookup_algorithm = lookup;
+        EmitMaximalResult(
+            index, query.name,
+            index.FindMums(query.sequence, search, max_matches), command);
+        break;
+      }
     }
   }
   return 0;
@@ -808,10 +951,16 @@ int main(int argc, char** argv) {
       return RunRightMaximal(arguments);
     }
     if (command == "mem") {
-      return RunMemOrMam(arguments, false);
+      return RunMaximal(arguments, MaximalCommand::kMem);
     }
     if (command == "mam") {
-      return RunMemOrMam(arguments, true);
+      return RunMaximal(arguments, MaximalCommand::kMam);
+    }
+    if (command == "smem") {
+      return RunMaximal(arguments, MaximalCommand::kSmem);
+    }
+    if (command == "mum") {
+      return RunMaximal(arguments, MaximalCommand::kMum);
     }
     if (command == "inspect") {
       return RunInspect(arguments);

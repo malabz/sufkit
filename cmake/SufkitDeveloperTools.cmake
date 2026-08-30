@@ -56,9 +56,13 @@ set(_sufkit_format_files
     tests/test_caps_backend.cpp
     tests/test_coordinate_storage.cpp
     tests/test_lcp_storage.cpp
+    tests/test_mam_full_depth.cpp
+    tests/test_mam_mummer4_full_depth.cpp
     tests/test_mem_mam.cpp
+    tests/test_mummer4_differential.cpp
     tests/test_sa_codec.cpp
     tests/test_sampled_sa.cpp
+    tests/test_smem_mum.cpp
     tests/test_sufkit.cpp
     examples/add_subdirectory/main.cpp
     examples/basic.cpp
@@ -116,7 +120,14 @@ if(SUFKIT_BUILD_TESTS)
     list(APPEND _sufkit_tidy_files
         tests/test_caps_backend.cpp
         tests/test_sampled_sa.cpp
+        tests/test_smem_mum.cpp
         tests/test_sufkit.cpp)
+    if(SUFKIT_MUMMER4_EXECUTABLE AND
+            EXISTS "${SUFKIT_MUMMER4_EXECUTABLE}")
+        list(APPEND _sufkit_tidy_files
+            tests/test_mam_mummer4_full_depth.cpp
+            tests/test_mummer4_differential.cpp)
+    endif()
 endif()
 if(SUFKIT_BUILD_EXAMPLES)
     list(APPEND _sufkit_tidy_files

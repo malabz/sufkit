@@ -67,6 +67,9 @@ vendored or benchmark source. See the [C++ style guide](cpp-style.md).
 | SA sampling/LCP | K=1/K>1 order, raw/byte-coded parity, anchor validation, recovery parity, 1.3/1.4 corruption |
 | Exact algorithm | Range/count/sorted locate parity for all strands |
 | right-maximal exact match algorithm | Brute-force random oracle plus all internal-mode parity |
+| MEM/reference-MAM | Independent two-sided oracle, complete/sampled parity where supported, MUMmer4 differential |
+| generalized SMEM | Direct substring/occurrence/containment oracle, seed and expanded-coordinate totals |
+| strict MUM | Direct overlapping query-occurrence oracle plus MUMmer4 `-mum` differential |
 | FM backend/batch | Scalar/width/backend range, count, locate checksum parity |
 | Persistence | Round trip, old fixtures, corruption and allocation-bound tests |
 | Concurrency | Shared immutable index with thread-local statistics |

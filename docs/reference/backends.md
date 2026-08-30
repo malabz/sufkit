@@ -79,8 +79,8 @@ Both backends still form the complete suffix order before compaction. Sampling
 therefore reduces loaded/serialized size, not the fundamental full-SA
 constructor peak. Exact `Count`/`Locate`, right-maximal compatibility search,
 and MEM recover complete results; direct `EqualRange` is unavailable because
-the result is not one row interval. Reference-MAM requires K=1. See the
-[search guide](../user-guide/search.md).
+the result is not one row interval. Reference-MAM, SMEM, and MUM require K=1.
+See the [search guide](../user-guide/search.md).
 
 ## FM-index backends
 
@@ -111,10 +111,12 @@ not exposed. A template or sampling-density change requires a new backend ID.
 | Suffix-link MEM | SA+ISA+LCP | Explicit MEM path; automatic Fast MAM path |
 | CHILD/full MEM | CHILD combinations | Explicit only |
 | Reference-MAM | Complete SA; optional ESA data | Fast auto uses suffix-link; Low-memory auto uses LCP; K=1 only |
+| Generalized SMEM | Complete SA; optional ESA data | Suffix-link, then LCP, then baseline; K=1 only |
+| Strict MUM | Complete SA; optional ESA data | Reference-MAM plus query-uniqueness cleanup; K=1 only |
 
 For a sampled SA, all row-based accelerations operate over sampled order.
 Sampled right-maximal and MEM search additionally require `min_length >= K`.
-FM indexes do not expose right-maximal, MEM, or MAM operations.
+FM indexes do not expose maximal-match operations.
 
 See [index selection](../getting-started/choosing-an-index.md) and the
 [benchmark summary](../benchmarks/README.md) for policy evidence.

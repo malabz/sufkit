@@ -138,10 +138,14 @@ reference (but allowed to repeat in the query), use `mam`:
   --query queries.fa --min-length 20
 ./build/release/sufkit mam --index reference.sa.sufidx \
   --query queries.fa --min-length 20
+./build/release/sufkit smem --index reference.sa.sufidx \
+  --query queries.fa --min-length 20 --min-occurrences 2
+./build/release/sufkit mum --index reference.sa.sufidx \
+  --query queries.fa --min-length 20
 ```
 
-MEM supports complete and sampled standalone SAs. Reference-MAM requires a
-complete SA.
+MEM supports complete and sampled standalone SAs. Reference-MAM, generalized
+SMEM, and strict MUM require a complete SA.
 
 ## C++ equivalent
 

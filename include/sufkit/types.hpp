@@ -180,9 +180,9 @@ enum class RightMaximalSearchAlgorithm : std::uint8_t {
   kFull = 5
 };
 
-/** MEM interval-discovery/reuse algorithm. @since 0.3.0 */
+/** Maximal-match interval-discovery/reuse algorithm. @since 0.3.0 */
 enum class MemSearchAlgorithm : std::uint8_t {
-  /** MEM chooses LCP then baseline; MAM chooses suffix-link, LCP, baseline. */
+  /** Select the workload-specific best path; never auto-select CHILD. */
   kAutoSelect = 0,
   /** Start every canonical query anchor with an SA root lookup. */
   kBaseline = 1,
@@ -413,6 +413,32 @@ struct MamOptions {
   SaSearchAlgorithm lookup_algorithm = SaSearchAlgorithm::kAutoSelect;
 };
 
+/** Generalized `(length,occurrences)` SMEM configuration. @since 0.3.0 */
+struct SmemOptions {
+  /** Positive minimum query-interval length. */
+  std::uint64_t min_length = 20;
+  /** Positive minimum number of occurrences in the joined reference. */
+  std::uint64_t min_occurrences = 1;
+  /** Query orientations to enumerate independently. */
+  StrandMode strands = StrandMode::kForward;
+  /** Interval-discovery/reuse path. */
+  MemSearchAlgorithm algorithm = MemSearchAlgorithm::kAutoSelect;
+  /** Exact lookup used for initialization and suffix-link fallback. */
+  SaSearchAlgorithm lookup_algorithm = SaSearchAlgorithm::kAutoSelect;
+};
+
+/** Strict reference- and query-unique MUM configuration. @since 0.3.0 */
+struct MumOptions {
+  /** Positive minimum reported match length. */
+  std::uint64_t min_length = 20;
+  /** Query orientations to enumerate independently. */
+  StrandMode strands = StrandMode::kForward;
+  /** Interval-discovery/reuse path. */
+  MemSearchAlgorithm algorithm = MemSearchAlgorithm::kAutoSelect;
+  /** Exact lookup used for initialization and suffix-link fallback. */
+  SaSearchAlgorithm lookup_algorithm = SaSearchAlgorithm::kAutoSelect;
+};
+
 /** One directional two-sided maximal exact match. @since 0.3.0 */
 struct MemMatch {
   /** Matched reference contig. */
@@ -429,6 +455,36 @@ struct MemMatch {
 
 /** One MEM whose matched string is unique in the reference. @since 0.3.0 */
 struct MamMatch {
+  /** Matched reference contig. */
+  SequenceId sequence_id = 0;
+  /** Zero-based contig-local reference start. */
+  Position reference_position = 0;
+  /** Zero-based start in the original forward query. */
+  Position query_position = 0;
+  /** Match length in canonical bases. */
+  std::uint64_t length = 0;
+  /** Directional orientation; never Strand::kBoth. */
+  Strand strand = Strand::kForward;
+};
+
+/** One located occurrence of a generalized SMEM. @since 0.3.0 */
+struct SmemMatch {
+  /** Matched reference contig. */
+  SequenceId sequence_id = 0;
+  /** Zero-based contig-local reference start. */
+  Position reference_position = 0;
+  /** Zero-based start in the original forward query. */
+  Position query_position = 0;
+  /** Match length in canonical bases. */
+  std::uint64_t length = 0;
+  /** Number of occurrences of this SMEM in the joined reference. */
+  std::uint64_t reference_occurrences = 0;
+  /** Directional orientation; never Strand::kBoth. */
+  Strand strand = Strand::kForward;
+};
+
+/** One strict reference- and query-unique maximal match. @since 0.3.0 */
+struct MumMatch {
   /** Matched reference contig. */
   SequenceId sequence_id = 0;
   /** Zero-based contig-local reference start. */
@@ -461,10 +517,36 @@ struct MamResult {
   bool truncated = false;
 };
 
+/** Deterministic coordinate-level generalized-SMEM result. @since 0.3.0 */
+struct SmemResult {
+  /** Complete number of unique directional query SMEM intervals. */
+  std::uint64_t total_smems = 0;
+  /** Complete number of located reference-coordinate tuples. */
+  std::uint64_t total_matches = 0;
+  /** Retained query-first sorted coordinate matches. */
+  std::vector<SmemMatch> matches;
+  /** True when retained matches are fewer than total_matches. */
+  bool truncated = false;
+};
+
+/** Deterministic vector result for strict MUM search. @since 0.3.0 */
+struct MumResult {
+  /** Complete number of unique directional MUM tuples. */
+  std::uint64_t total_matches = 0;
+  /** Retained query-first sorted MUMs. */
+  std::vector<MumMatch> matches;
+  /** True when retained matches are fewer than total_matches. */
+  bool truncated = false;
+};
+
 /** Synchronous callback invoked by SuffixArray::ForEachMem(). */
 using MemCallback = std::function<void(const MemMatch&)>;
 /** Synchronous callback invoked by SuffixArray::ForEachMam(). */
 using MamCallback = std::function<void(const MamMatch&)>;
+/** Synchronous callback invoked by SuffixArray::ForEachSmem(). */
+using SmemCallback = std::function<void(const SmemMatch&)>;
+/** Synchronous callback invoked by SuffixArray::ForEachMum(). */
+using MumCallback = std::function<void(const MumMatch&)>;
 
 /** Fixed FM-index construction configuration. */
 struct FmIndexBuildOptions {
