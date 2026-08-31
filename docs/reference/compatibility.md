@@ -2,7 +2,7 @@
 
 ## Version status
 
-The current released version is 0.2.0.
+The current released version is 0.3.0.
 
 ## Source and binary compatibility
 
@@ -10,29 +10,35 @@ sufkit follows semantic-version intent, but the 0.x series does not promise
 ABI compatibility across minor releases. `SOVERSION` is 0. Rebuild consumers
 when upgrading a development or minor version.
 
-Public headers are C++17 and hide third-party types. Version 0.2.0 is source
-incompatible with 0.1.x because public functions and enumerators were renamed
-to the Google-style convention without compatibility wrappers. Consumers must
-update their source using the naming migration guide and recompile. The public
-include paths, `sufkit::sufkit` CMake target, main CLI interface, enum underlying
-values, coordinate and strand semantics, error categories, and
-no-silent-fallback contract remain unchanged.
+Public headers are C++17 and hide third-party types. Version 0.3.0 retains the
+0.2 public names and adds MEM, reference-MAM, generalized SMEM, and strict MUM
+APIs. Version 0.2.0 was source incompatible with 0.1.x because public functions
+and enumerators were renamed to the Google-style convention without
+compatibility wrappers. Consumers migrating directly from 0.1.x must update
+their source using the naming migration guide. The public include paths,
+`sufkit::sufkit` CMake target, main CLI interface, enum underlying values,
+coordinate and strand semantics, error categories, and no-silent-fallback
+contract remain unchanged.
+
+The 0.x series still makes no cross-minor ABI promise. Consumers should
+recompile when moving from 0.2 to 0.3 even when their source uses only APIs
+that were already present in 0.2.
 
 ## `.sufidx` compatibility
 
-The Unreleased MEM/reference-MAM/SMEM/MUM APIs add no sections or identifiers.
-The adaptive-storage work adds format 1.4 section codecs while preserving
-section and backend IDs. Existing 1.0-1.3 standalone SA files retain their
+The 0.3.0 MEM/reference-MAM/SMEM/MUM APIs add no sections or identifiers.
+Adaptive storage adds format 1.4 section codecs while preserving section and
+backend IDs. Existing 1.0-1.3 standalone SA files retain their
 legacy 32/64-bit interpretation and can run the same supported searches when
 they contain the auxiliary structures required by the selected algorithm.
 
 | Reader | 1.0 | 1.1 | 1.2 | 1.3 | 1.4 |
 |---|---:|---:|---:|---:|---:|
 | Released 0.2.0 | Yes | Yes | Yes | Yes | No |
-| Current source-tree SA | Yes | Yes | Yes | Yes | Yes |
-| Current source-tree FM | Yes | Header-only compatibility | Header-only compatibility | Header-only compatibility | Header-only compatibility; writer remains 1.0 |
+| Released 0.3.0 SA | Yes | Yes | Yes | Yes | Yes |
+| Released 0.3.0 FM | Yes | Header-only compatibility | Header-only compatibility | Header-only compatibility | Header-only compatibility; writer remains 1.0 |
 
-Current source-tree output selection:
+Released 0.3.0 output selection:
 
 - all newly saved standalone SAs: 1.4, with explicit coordinate and LCP
   codecs plus resource profile;

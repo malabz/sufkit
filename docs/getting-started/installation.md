@@ -120,7 +120,7 @@ cmake --install build/release --prefix /opt/sufkit
 Consumer CMake:
 
 ```cmake
-find_package(sufkit CONFIG REQUIRED)
+find_package(sufkit 0.3 CONFIG REQUIRED)
 target_link_libraries(consumer PRIVATE sufkit::sufkit)
 ```
 
@@ -129,7 +129,8 @@ not in CMake's normal search path. ZLIB is a public package dependency. A
 package built with CaPS enabled also records the Threads dependency.
 
 The install contains the public headers, library, CMake package files, CLI and
-SA construction benchmark when built, licenses, and Markdown documentation.
+SA construction benchmark when built, licenses, Markdown documentation, and
+the standalone `examples/smem_mum.cpp` source.
 
 ## Sanitizer build
 

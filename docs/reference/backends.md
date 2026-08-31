@@ -1,5 +1,8 @@
 # Backend reference
 
+This matrix describes the released 0.3.0 capabilities. Experimental labels
+describe validation scope, not a different source-tree version.
+
 ## Suffix-array constructors
 
 | Public backend | Stored backend | Availability | Threads | Implementation |

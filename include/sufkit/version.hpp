@@ -9,8 +9,8 @@
 /** Released major library version. */
 #define SUFKIT_VERSION_MAJOR 0
 /** Released minor library version. */
-#define SUFKIT_VERSION_MINOR 2
+#define SUFKIT_VERSION_MINOR 3
 /** Released patch library version. */
 #define SUFKIT_VERSION_PATCH 0
 /** Released dotted library version string. */
-#define SUFKIT_VERSION_STRING "0.2.0"
+#define SUFKIT_VERSION_STRING "0.3.0"

@@ -19,7 +19,7 @@
 英文文档是详细接口与实现契约的权威版本。中文文档提供快速上手、索引选择和性能结论概览。
 
 `RightMaximal*` 保留历史兼容的较弱契约；需要正式左、右双侧极大保证时使用
-0.3.0 开发中的 `Mem*` API。`Mam*` 进一步要求匹配串在全部 reference contig
+0.3.0 的 `Mem*` API。`Mam*` 进一步要求匹配串在全部 reference contig
 中只出现一次，但允许它在 query 中重复；`Mum*` 同时要求当前 query record
 中唯一，`Smem*` 提供至少出现 `c` 次且不被其他合格 query 区间包含的种子。
 
@@ -33,10 +33,12 @@
 
 ## 当前版本口径
 
-当前发布版本是 `0.2.0`。CaPS、采样 SA、balanced/EPR FM-index、FM batch
-count 和 Sapling PWL 均已随 0.2.0 发布；其中采样 SA 和 Sapling PWL 仍是
-默认关闭的实验性能力。0.2.0 相对 0.1.x 是源码不兼容升级，旧调用方需要按
-命名迁移指南修改源码。
+当前发布版本是 `0.3.0`。该版本正式提供 MEM、reference-MAM、广义 SMEM、
+严格 MUM、自适应 32/40/48/64 位 SA 存储，以及 Fast/Low-memory profile。
+CaPS、采样 SA、balanced/EPR FM-index、FM batch count 和 Sapling PWL 继续
+可用；其中采样 SA、Sapling PWL 和超 `2^32` 的 split40/48 实际规模性能仍应
+视为实验性能力。0.2.0 相对 0.1.x 的命名升级是源码不兼容的，旧调用方仍需
+按命名迁移指南修改源码；0.3.0 保留了 0.2 的公共名称。
 
 默认选择保持保守：
 
@@ -85,6 +87,12 @@ ctest --preset release --output-on-failure
 
 ./build/release/sufkit mam --index reference.sa.sufidx \
   --query queries.fa.gz --min-length 20
+
+./build/release/sufkit smem --index reference.sa.sufidx \
+  --query queries.fa.gz --min-length 20 --min-occurrences 2
+
+./build/release/sufkit mum --index reference.sa.sufidx \
+  --query queries.fa.gz --min-length 20
 ```
 
 低内存 SA：
@@ -102,12 +110,15 @@ split48 或 64 位。自动判断依据是“碱基 + 每条 contig 的 separato
 完整逻辑符号数，而不只是 FASTA 碱基数。因此可以用 64 位构建器安全构建，
 再在完整校验后压成更窄的最终索引。
 
-当前源码的 `.sufidx` 1.4 已支持这些 codec，并继续读取 1.0–1.3。split40/48
+0.3.0 的 `.sufidx` 1.4 已支持这些 codec，并继续读取 1.0–1.3。split40/48
 已经通过小规模正确性测试，但尚未完成超过 `2^32` 逻辑符号的真实规模验证，
 也不能据此宣称内存和速度已经全面超过 MUMmer4；这些范围仍属于实验能力。
 
+可直接编译运行的 [SMEM/MUM C++ 示例](examples/smem_mum.cpp) 展示了广义
+SMEM 的 reference-coordinate 输出和严格 MUM 查询。
+
 所有公开坐标都是 0-based、contig-local。exact pattern 只接受 A/C/G/T；
-右极大、MEM 和 MAM query 中的其他字符会成为 hard break。
+右极大、MEM、MAM、SMEM 和 MUM query 中的其他字符会成为 hard break。
 
 下一步建议阅读：
 

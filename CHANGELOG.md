@@ -4,7 +4,9 @@ All notable changes to sufkit are documented in this file.
 
 ## Unreleased
 
-### Planned for 0.3.0
+## 0.3.0 - 2026-08-31
+
+### Maximal-match search
 
 - Added formal two-sided `Mem*` APIs and the `sufkit mem` command. MEM search
   uses SA interval traversal, LCP-assisted candidate recovery, ISA+LCP
@@ -23,6 +25,9 @@ All notable changes to sufkit are documented in this file.
 - Added independent MEM/MAM/SMEM/MUM oracles, MUMmer4 4.0.1 black-box
   differential tests, and correctness-gated maximal-match benchmark
   workloads. MiniBWA remains an optional SMEM black-box comparator.
+
+### Adaptive suffix-array storage
+
 - Added independent construction and storage widths for standalone SAs. A
   64-bit constructor may now be validated and down-packed to native 32-bit,
   split low32/high8 40-bit, or split low32/high16 48-bit storage.
@@ -32,6 +37,9 @@ All notable changes to sufkit are documented in this file.
 - Made automatic maximal-match selection workload-specific: both profiles use
   LCP with MUMmer-style query skipping for MEM, while Fast retains suffix-link
   auto selection for reference-MAM and Low-memory uses LCP.
+
+### Query and persistence performance
+
 - Reworked Fast reference-MAM suffix-link search to retain the complete match
   depth and exact SA interval across adjacent query starts. Unique shifted
   intervals are skipped until they branch, avoiding repeated long LCE scans
@@ -50,6 +58,9 @@ All notable changes to sufkit are documented in this file.
   isolation. A native32 microbial comparison is documented; real-scale
   `>2^32`, cold-start, and universal MUMmer4 superiority claims remain gated on
   future representative measurements.
+- Hardened SMEM/MUM fallback validation and benchmark provenance so malformed
+  intervals or incomparable external-tool runs fail closed instead of being
+  summarized as successful performance evidence.
 - MEM/MAM/SMEM/MUM continue to use normalized text and existing
   SA/ISA/LCP/CHILD/PWL data and do not depend on SeqPro. SMEM and MUM add no
   `.sufidx` section and require a complete standalone SA.

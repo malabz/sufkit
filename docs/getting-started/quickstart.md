@@ -147,6 +147,9 @@ reference (but allowed to repeat in the query), use `mam`:
 MEM supports complete and sampled standalone SAs. Reference-MAM, generalized
 SMEM, and strict MUM require a complete SA.
 
+For a small in-memory C++ program that exercises both generalized SMEM and
+strict MUM, see [`examples/smem_mum.cpp`](../../examples/smem_mum.cpp).
+
 ## C++ equivalent
 
 ```cpp

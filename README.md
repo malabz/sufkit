@@ -1,12 +1,12 @@
 # sufkit
 
-`sufkit` 0.2.0 is a C++17 library and CLI for genome-oriented suffix arrays,
+`sufkit` 0.3.0 is a C++17 library and CLI for genome-oriented suffix arrays,
 SDSL compressed suffix arrays (FM-indexes), exact pattern search, and maximal
 exact-match enumeration.
 
-The current source tree adds the 0.3.0 `Mem*` API for two-sided maximal exact
-matches, `Mam*` for reference-unique MEMs, generalized `(l,c)-SMEM` search,
-and strict query-and-reference-unique `Mum*` search. The existing
+Version 0.3.0 provides the `Mem*` API for two-sided maximal exact matches,
+`Mam*` for reference-unique MEMs, generalized `(l,c)-SMEM` search, and strict
+query-and-reference-unique `Mum*` search. The existing
 `RightMaximal*` API remains available under its weaker right-only public
 contract.
 
@@ -81,7 +81,7 @@ target_link_libraries(my_program PRIVATE sufkit::sufkit)
 or install the project and use:
 
 ```cmake
-find_package(sufkit 0.2 CONFIG REQUIRED)
+find_package(sufkit 0.3 CONFIG REQUIRED)
 target_link_libraries(my_program PRIVATE sufkit::sufkit)
 ```
 
@@ -100,14 +100,20 @@ Public coordinates are zero-based and contig-local. Exact patterns accept only
 A/C/G/T after case normalization; maximal-match queries treat every other
 symbol as a hard break.
 
+The standalone [SMEM/MUM example](examples/smem_mum.cpp) demonstrates
+generalized reference-coordinate SMEM output and strict MUM output using only
+the public API.
+
 ## Compatibility and documentation
 
-Version 0.2.0 is source-incompatible with 0.1.x because public functions and
-enumerators adopted Google-style names without compatibility wrappers. Public
-include paths, the `sufkit::sufkit` target, main CLI interface, enum values,
-and `.sufidx` 1.0–1.3 reading remain stable. The current source tree adds
-format 1.4 codecs for adaptive SA coordinates and raw/byte-coded LCP. See the
-[migration guide](docs/development/api-naming-migration-0.2.0.md).
+Version 0.3.0 retains the 0.2 public names and adds MEM, reference-MAM,
+generalized SMEM, and strict MUM APIs. Version 0.2.0 was source-incompatible
+with 0.1.x because public functions and enumerators adopted Google-style names
+without compatibility wrappers; affected consumers should use the
+[migration guide](docs/development/api-naming-migration-0.2.0.md). Public
+include paths, the `sufkit::sufkit` target, main CLI interface, enum underlying
+values, and `.sufidx` 1.0–1.4 reading remain stable. New standalone SAs use
+format 1.4 codecs; FM indexes continue to use their 1.0 outer layout.
 
 Split 40/48-bit layouts are implemented and correctness-tested, but real-scale
 references above `2^32` logical symbols and end-to-end memory/performance

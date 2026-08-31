@@ -23,7 +23,7 @@ symbols.
 
 ## Adaptive SA profiles
 
-The current Unreleased implementation was measured on 2026-08-29 with clean
+The 0.3.0 implementation was measured on 2026-08-29 with clean
 phase workers pinned to one logical CPU. Fast stores native32 SA+ISA+raw LCP;
 Low-memory stores native32 SA+byte-coded LCP and does not retain ISA. All paired
 exact, MEM, and reference-MAM result checksums agreed.
@@ -89,7 +89,7 @@ experimental until a representative reference above `2^32` symbols is run.
 
 ## SA construction: divsufsort and CaPS
 
-Unreleased CaPS result on the 64 MiB quick profile:
+0.2.0 development evidence for CaPS on the 64 MiB quick profile:
 
 | Builder | Threads | Build median | Peak RSS | Relative to div32 |
 |---|---:|---:|---:|---:|
@@ -110,7 +110,8 @@ and
 
 ## Sampled standalone SA
 
-Unreleased 1 MiB smoke evidence with `acceleration=full`:
+0.2.0 development evidence on the 1 MiB smoke profile with
+`acceleration=full`:
 
 | Builder | K | Stored rows | Peak RSS | Serialized size |
 |---|---:|---:|---:|---:|
@@ -131,7 +132,8 @@ and the
 
 ## Exact suffix-array lookup
 
-Unreleased 4 MiB quick results; QPS aggregates selected pattern lengths and
+0.2.0 development evidence on the 4 MiB quick profile; QPS aggregates selected
+pattern lengths and
 strands:
 
 | Scenario | Operation | Binary | LCP-aware | PWL | CHILD |
@@ -171,19 +173,19 @@ and
 
 ## MEM, reference-MAM, SMEM, and MUM
 
-The Unreleased `mem` and `mam` workloads call the formal `FindMems()` and
+The 0.3.0 `mem` and `mam` workloads call the formal `FindMems()` and
 `FindMams()` APIs. MEM rows are checked against MUMmer4 `-maxmatch`;
 reference-MAM rows use `-mumreference`. Baseline, LCP, CHILD, suffix-link, and
 full methods must agree on total matches and sorted-result checksum before a
 run is accepted.
 
-The current source tree also provides `smem` and `mum` workloads. Generalized
+Version 0.3.0 also provides `smem` and `mum` workloads. Generalized
 SMEM rows report both distinct query-interval seeds and expanded reference
 coordinates for each occurrence threshold. Strict MUM rows can be checked
 against MUMmer4 `-mum`. MiniBWA is optional and is kept in a separately
 labeled FMD `load+query` scope; it is not treated as an in-process or
-forward-only timing peer. No release-level SMEM/MUM performance result is
-claimed here until the smoke/quick evidence package is completed.
+forward-only timing peer. No broad SMEM/MUM performance claim is made here;
+the available smoke/quick runs are correctness-gated development evidence.
 
 Smoke validation uses seed 20260822, a 16 KiB synthetic reference, 100
 queries, minimum lengths 20 and 50, one warm-up, and three measured
@@ -196,7 +198,7 @@ their SHA-256 values separately.
 
 ## FM-index
 
-Unreleased quick averages across four 4 MiB scenarios:
+0.2.0 development evidence averaged across four 4 MiB quick scenarios:
 
 | Backend | Build | Load | Serialized | Count throughput | locate(1000) QPS |
 |---|---:|---:|---:|---:|---:|

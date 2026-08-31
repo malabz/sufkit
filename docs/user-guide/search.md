@@ -226,6 +226,10 @@ auto result = index.FindSmems(query, options);
 `SmemMatch` reports `reference_occurrences`, so all rows produced by one SMEM
 carry the same interval cardinality.
 
+The standalone [SMEM/MUM example](../../examples/smem_mum.cpp) builds a small
+multi-contig index and prints both generalized SMEM coordinates and strict
+MUMs using these vector APIs.
+
 SMEM requires a complete standalone SA. It examines every legal query start;
 there is no skip option. Auto selection uses suffix-link when ISA+LCP is
 available, then LCP, then baseline. CHILD/full remain explicit. A sampled SA

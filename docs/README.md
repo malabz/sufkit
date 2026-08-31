@@ -1,7 +1,6 @@
 # sufkit documentation
 
-The English pages are authoritative for the current source tree. Released
-0.2.0 behavior and unreleased 0.3.0 additions are identified explicitly. The
+The English pages are authoritative for the released 0.3.0 interface. The
 concise [Chinese guide](zh-CN/README.md) covers initial use and index
 selection.
 

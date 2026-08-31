@@ -14,6 +14,7 @@
 8. [英文贡献者扩展指南](../development/extending-sufkit.md)
 9. [0.2.0 C++ API 命名迁移](../development/api-naming-migration-0.2.0.md)
 
-版本说明：当前发布版本是 `0.2.0`。CaPS、balanced/EPR FM-index、FM batch、
-Sapling PWL 和采样 SA 已经发布，其中 Sapling PWL 与采样 SA 仍为默认关闭的
-实验性能力。详细历史测量只保留在源码归档中，不进入普通用户文档路径。
+版本说明：当前发布版本是 `0.3.0`。正式 MEM、reference-MAM、广义 SMEM、
+严格 MUM、自适应 SA 存储和 Fast/Low-memory profile 均已发布。Sapling PWL、
+采样 SA 与超 `2^32` 的 split40/48 实际规模性能仍按实验能力看待。详细历史
+测量只保留在源码归档中，不进入普通用户文档路径。

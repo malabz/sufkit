@@ -70,7 +70,8 @@ set(_sufkit_format_files
     examples/find_package/main.cpp
     examples/fm_batch.cpp
     examples/inspect_error.cpp
-    examples/right_maximal_stream.cpp)
+    examples/right_maximal_stream.cpp
+    examples/smem_mum.cpp)
 
 list(TRANSFORM _sufkit_format_files
     PREPEND "${CMAKE_CURRENT_SOURCE_DIR}/")
@@ -135,7 +136,8 @@ if(SUFKIT_BUILD_EXAMPLES)
         examples/exact_sa.cpp
         examples/fm_batch.cpp
         examples/inspect_error.cpp
-        examples/right_maximal_stream.cpp)
+        examples/right_maximal_stream.cpp
+        examples/smem_mum.cpp)
 endif()
 list(TRANSFORM _sufkit_tidy_files
     PREPEND "${CMAKE_CURRENT_SOURCE_DIR}/")

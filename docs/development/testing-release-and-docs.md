@@ -48,7 +48,9 @@ cmake --build build/docs --target sufkit_docs
 
 Acceptance requires zero Doxygen warnings, no private third-party types in the
 public reference, valid relative Markdown links, and successful compilation of
-every canonical example. Generated HTML is not committed.
+every canonical example. The installed-package and `add_subdirectory`
+consumers must also compile the standalone SMEM/MUM example. Generated HTML is
+not committed.
 
 ### Source style
 
@@ -92,7 +94,7 @@ vendored or benchmark source. See the [C++ style guide](cpp-style.md).
 9. Confirm no local paths, hostnames, build products, raw benchmark TSVs,
    generated HTML, or plans are tracked.
 10. Run sampled-SA and adaptive-storage differential tests. Confirm formats
-    1.0-1.3 remain readable and all newly saved standalone SAs use valid 1.4
+    1.0-1.4 remain readable and all newly saved standalone SAs use valid 1.4
     codecs whenever SA sampling, coordinate layout, or LCP construction
     changes.
 11. Create commit, tag, push, or release only with explicit authorization.

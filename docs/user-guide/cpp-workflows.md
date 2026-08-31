@@ -250,6 +250,8 @@ reference coordinate; MUM requires uniqueness in both the reference and the
 current query record. Streaming callbacks are synchronous; vector results are
 sorted and can retain a bounded prefix while reporting complete counts.
 
+See the complete, runnable [SMEM/MUM example](../../examples/smem_mum.cpp).
+
 ## Error handling
 
 ```cpp

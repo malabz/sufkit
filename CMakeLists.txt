@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 
-project(sufkit VERSION 0.2.0 LANGUAGES C CXX)
+project(sufkit VERSION 0.3.0 LANGUAGES C CXX)
 
 include(CMakePackageConfigHelpers)
 include(GNUInstallDirs)
@@ -480,6 +480,8 @@ if(SUFKIT_BUILD_EXAMPLES)
     target_link_libraries(sufkit_example_fm_batch PRIVATE sufkit::sufkit)
     add_executable(sufkit_example_right_maximal_stream examples/right_maximal_stream.cpp)
     target_link_libraries(sufkit_example_right_maximal_stream PRIVATE sufkit::sufkit)
+    add_executable(sufkit_example_smem_mum examples/smem_mum.cpp)
+    target_link_libraries(sufkit_example_smem_mum PRIVATE sufkit::sufkit)
     add_executable(sufkit_example_inspect_error examples/inspect_error.cpp)
     target_link_libraries(sufkit_example_inspect_error PRIVATE sufkit::sufkit)
 endif()
@@ -588,6 +590,8 @@ install(FILES LICENSE THIRD_PARTY_NOTICES.md
     DESTINATION ${CMAKE_INSTALL_DATADIR}/sufkit)
 install(FILES README.md README.zh-CN.md CHANGELOG.md CONTRIBUTING.md
     DESTINATION ${CMAKE_INSTALL_DATADIR}/sufkit)
+install(FILES examples/smem_mum.cpp
+    DESTINATION ${CMAKE_INSTALL_DATADIR}/sufkit/examples)
 install(DIRECTORY docs/
     DESTINATION ${CMAKE_INSTALL_DATADIR}/sufkit/docs
     FILES_MATCHING
