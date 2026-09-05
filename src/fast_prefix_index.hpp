@@ -18,6 +18,7 @@ namespace sufkit::detail {
 // The defaults cap the directory at 25% of the already-resident core arrays
 // and avoid paying a fixed directory cost for small references.
 struct FastPrefixIndexOptions {
+  std::uint32_t threads = 1;
   std::uint32_t min_k = 8;
   std::uint32_t max_k = 10;
   std::uint32_t memory_budget_basis_points = 2500;

@@ -2,6 +2,7 @@
 
 #include <sufkit/sufkit.hpp>
 
+#include <algorithm>
 #include <array>
 #include <cerrno>
 #include <charconv>
@@ -70,6 +71,7 @@ struct WorkerReport {
 struct PhaseResult {
   WorkerReport report;
   std::uint64_t peak_rss_bytes = 0;
+  std::uint64_t wait4_peak_rss_bytes = 0;
 };
 
 class TemporaryDirectory {
@@ -517,7 +519,13 @@ PhaseResult RunPhase(const std::string& phase,
   }
   PhaseResult result;
   result.report = ReadWorkerReport(report_path);
-  result.peak_rss_bytes = PeakRssBytes(usage);
+  result.wait4_peak_rss_bytes = PeakRssBytes(usage);
+  // Linux's batched RSS accounting can leave wait4's high-water estimate
+  // below an actual /proc sample for short-lived workers. Preserve both
+  // measurements and report the maximum observed lifetime RSS.
+  result.peak_rss_bytes = std::max({result.wait4_peak_rss_bytes,
+      result.report.current_rss_bytes, result.report.index_ready_rss_bytes,
+      result.report.after_rss_bytes});
   return result;
 }
 
@@ -594,7 +602,8 @@ void WriteRow(std::ostream& output,
          << result.report.reported_hits << '\t'
          << (result.report.query_count == 0 ? "NA"
                                             : Hex(result.report.checksum))
-         << "\tok\n";
+         << "\tok\t" << RssMib(result.wait4_peak_rss_bytes)
+         << "\tmax-wait4-and-proc-samples\n";
 }
 
 int RunParent(const Options& original_options) {
@@ -643,7 +652,8 @@ int RunParent(const Options& original_options) {
             "after_pss_mb\tpeak_rss_mb\tpeak_rss_scope\tserialized_bytes\t"
             "construction_coordinate_width\tstored_coordinate_width\t"
             "sa_profile\tlcp_encoding\tresident_core_bytes\t"
-            "query_count\ttotal_hits\treported_hits\tresult_checksum\tstatus\n";
+            "query_count\ttotal_hits\treported_hits\tresult_checksum\tstatus\t"
+            "wait4_peak_rss_mb\tpeak_rss_source\n";
   WriteRow(output, options.method, "build", build.report, build);
   WriteRow(output, options.method, "load", build.report, load);
   WriteRow(output, options.method, "query", build.report, query);

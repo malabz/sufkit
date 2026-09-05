@@ -2,6 +2,8 @@
 
 #include "fast_prefix_index.hpp"
 
+#include <exception>
+#include <thread>
 #include <algorithm>
 #include <limits>
 #include <string>
@@ -149,13 +151,14 @@ std::uint64_t CoordinateAtUnchecked(const Values& values,
 }
 
 template <class Tables, class SaValues, class IsaValues>
-void Populate(
+void PopulatePartition(
     Tables& tables, const std::vector<std::uint8_t>& text,
     const SaValues& suffix_array, const IsaValues& inverse_suffix_array,
     const std::vector<Position>& contig_starts,
     const std::vector<Position>& contig_lengths, std::uint32_t k,
     std::uint64_t suffix_count, std::uint64_t& indexed_kmers,
-    std::uint64_t& nonempty_entries) {
+    std::uint64_t& nonempty_entries,
+    std::uint64_t worker, std::uint64_t workers) {
   const auto key_mask = (std::uint64_t{1} << (2U * k)) - 1U;
   for (std::size_t sequence_id = 0; sequence_id < contig_starts.size();
        ++sequence_id) {
@@ -163,7 +166,13 @@ void Populate(
     const auto length = contig_lengths[sequence_id];
     std::uint64_t key = 0;
     std::uint32_t valid = 0;
-    for (std::uint64_t local = 0; local < length; ++local) {
+    const auto chunk_begin = (length / workers) * worker +
+                             std::min(worker, length % workers);
+    const auto chunk_end = chunk_begin + length / workers +
+                           (worker < length % workers ? 1U : 0U);
+    if (chunk_begin == chunk_end) continue;
+    const auto scan_begin = chunk_begin >= k - 1U ? chunk_begin - (k - 1U) : 0;
+    for (std::uint64_t local = scan_begin; local < chunk_end; ++local) {
       const auto symbol = text[static_cast<std::size_t>(begin + local)];
       if (!IsCanonical(symbol)) {
         key = 0;
@@ -176,7 +185,7 @@ void Populate(
       if (valid < k) {
         ++valid;
       }
-      if (valid < k) {
+      if (valid < k || local < chunk_begin) {
         continue;
       }
 
@@ -192,6 +201,67 @@ void Populate(
       RecordRow(tables, key, row, suffix_count, nonempty_entries);
       ++indexed_kmers;
     }
+  }
+}
+
+template <class Tables>
+auto MergeTables(Tables& target, const Tables& source, std::uint64_t count,
+                 std::uint64_t& nonempty) -> decltype(source.intervals, void()) {
+  for (std::size_t key = 0; key < source.intervals.size(); ++key) {
+    const auto interval = UnpackInterval32(source.intervals[key]);
+    if (interval.begin == count) continue;
+    RecordRow(target, key, interval.begin, count, nonempty);
+    RecordRow(target, key, interval.end - 1U, count, nonempty);
+  }
+}
+template <class Tables>
+auto MergeTables(Tables& target, const Tables& source, std::uint64_t count,
+                 std::uint64_t& nonempty) -> decltype(source.begin, void()) {
+  for (std::size_t key = 0; key < source.begin.size(); ++key) {
+    if (source.begin[key] == count) continue;
+    RecordRow(target, key, source.begin[key], count, nonempty);
+    RecordRow(target, key, source.end[key] - 1U, count, nonempty);
+  }
+}
+template <class Tables, class SaValues, class IsaValues>
+void Populate(Tables& tables, const std::vector<std::uint8_t>& text,
+    const SaValues& sa, const IsaValues& isa,
+    const std::vector<Position>& starts, const std::vector<Position>& lengths,
+    std::uint32_t k, std::uint64_t count, std::uint64_t& indexed,
+    std::uint64_t& nonempty, std::uint32_t threads) {
+  const auto workers = std::min<std::uint64_t>(
+      std::max<std::uint32_t>(1, threads),
+      std::max<std::uint64_t>(1, text.size() >> 20U));
+  if (workers == 1) {
+    PopulatePartition(tables, text, sa, isa, starts, lengths, k, count,
+                      indexed, nonempty, 0, 1);
+    return;
+  }
+  std::vector<Tables> partial(static_cast<std::size_t>(workers), tables);
+  std::vector<std::uint64_t> counts(static_cast<std::size_t>(workers));
+  std::vector<std::exception_ptr> errors(static_cast<std::size_t>(workers));
+  std::vector<std::thread> team;
+  team.reserve(static_cast<std::size_t>(workers));
+  try {
+    for (std::uint64_t worker = 0; worker < workers; ++worker) {
+      team.emplace_back([&, worker] {
+        try {
+          std::uint64_t local_nonempty = 0;
+          PopulatePartition(partial[worker], text, sa, isa, starts, lengths,
+                            k, count, counts[worker], local_nonempty,
+                            worker, workers);
+        } catch (...) { errors[worker] = std::current_exception(); }
+      });
+    }
+  } catch (...) {
+    for (auto& thread : team) thread.join();
+    throw;
+  }
+  for (auto& thread : team) thread.join();
+  for (std::uint64_t worker = 0; worker < workers; ++worker) {
+    if (errors[worker]) std::rethrow_exception(errors[worker]);
+    indexed += counts[worker];
+    MergeTables(tables, partial[worker], count, nonempty);
   }
 }
 
@@ -284,7 +354,7 @@ FastPrefixIndex FastPrefixIndex::Build(
       inverse_suffix_array.Visit([&](const auto& isa_values) {
         Populate(tables, text, sa_values, isa_values, contig_starts,
                  contig_lengths, result.k_, suffix_count,
-                 result.indexed_kmers_, result.nonempty_entries_);
+                 result.indexed_kmers_, result.nonempty_entries_, options.threads);
       });
     });
     result.tables_ = std::move(tables);
@@ -296,7 +366,7 @@ FastPrefixIndex FastPrefixIndex::Build(
       inverse_suffix_array.Visit([&](const auto& isa_values) {
         Populate(tables, text, sa_values, isa_values, contig_starts,
                  contig_lengths, result.k_, suffix_count,
-                 result.indexed_kmers_, result.nonempty_entries_);
+                 result.indexed_kmers_, result.nonempty_entries_, options.threads);
       });
     });
     result.tables_ = std::move(tables);

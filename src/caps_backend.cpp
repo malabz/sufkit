@@ -2,6 +2,7 @@
 
 #include "caps_backend.hpp"
 
+#include <chrono>
 #include <algorithm>
 #include <limits>
 #include <new>
@@ -18,7 +19,8 @@ namespace {
 
 template <class Index>
 CapsBuildResult<Index> BuildCaps(const std::vector<std::uint8_t>& text,
-                                 std::uint32_t threads, bool retain_lcp) {
+                                 std::uint32_t threads, bool retain_lcp,
+                                 const SuffixArrayBuildOptions* options) {
 #if SUFKIT_HAS_CAPS
   if (text.size() < 16) {
     throw Error(
@@ -35,19 +37,32 @@ CapsBuildResult<Index> BuildCaps(const std::vector<std::uint8_t>& text,
 
   const auto subproblems = CapsSubproblemCount(text.size(), threads);
   try {
+    using Clock = std::chrono::steady_clock;
+    auto elapsed = [](Clock::time_point t) {
+      return std::chrono::duration<double>(Clock::now() - t).count();
+    };
+    const auto allocate_begin = Clock::now();
+    CapsBuildResult<Index> result;
+    result.suffix_array.resize(text.size());
+    result.lcp.resize(text.size());
+    if (options && options->statistics) {
+      options->statistics->caps_output_allocation_seconds = elapsed(allocate_begin);
+    }
+    const auto construct_begin = Clock::now();
     CaPS_SA::Suffix_Array<Index> suffix_array(
         reinterpret_cast<const char*>(text.data()),
-        static_cast<Index>(text.size()), static_cast<Index>(subproblems), 0);
+        static_cast<Index>(text.size()), static_cast<Index>(subproblems), 0,
+        result.suffix_array.data(), result.lcp.data());
+    if (options) {
+      suffix_array.set_stage_callback(options->stage_callback,
+                                      options->stage_context);
+    }
     parlay::execute_with_scheduler(threads, [&] { suffix_array.construct(); });
-    CapsBuildResult<Index> result;
-    result.suffix_array.assign(suffix_array.SA(),
-                               suffix_array.SA() + text.size());
-    if (retain_lcp) {
-      // Reuse CaPS's native-width LCP when CHILD construction needs a raw
-      // row array. Other layouts rebuild byte-coded LCP after this object is
-      // destroyed, avoiding an extra full LCP plane at the CaPS peak.
-      result.lcp.assign(suffix_array.LCP(),
-                        suffix_array.LCP() + text.size());
+    if (options && options->statistics) {
+      options->statistics->caps_construct_seconds = elapsed(construct_begin);
+    }
+    if (!retain_lcp) {
+      std::vector<Index>().swap(result.lcp);
     }
     return result;
   } catch (const std::bad_alloc&) {
@@ -62,6 +77,7 @@ CapsBuildResult<Index> BuildCaps(const std::vector<std::uint8_t>& text,
   (void)text;
   (void)threads;
   (void)retain_lcp;
+  (void)options;
   throw Error(ErrorCode::kUnsupportedBackend,
               "CaPS-SA support was disabled when sufkit was built");
 #endif
@@ -79,14 +95,14 @@ bool CapsBuildAvailable() noexcept {
 
 CapsBuildResult<std::uint32_t> BuildCaps32(
     const std::vector<std::uint8_t>& text, std::uint32_t threads,
-    bool retain_lcp) {
-  return BuildCaps<std::uint32_t>(text, threads, retain_lcp);
+    bool retain_lcp, const SuffixArrayBuildOptions* options) {
+  return BuildCaps<std::uint32_t>(text, threads, retain_lcp, options);
 }
 
 CapsBuildResult<std::uint64_t> BuildCaps64(
     const std::vector<std::uint8_t>& text, std::uint32_t threads,
-    bool retain_lcp) {
-  return BuildCaps<std::uint64_t>(text, threads, retain_lcp);
+    bool retain_lcp, const SuffixArrayBuildOptions* options) {
+  return BuildCaps<std::uint64_t>(text, threads, retain_lcp, options);
 }
 
 }  // namespace sufkit::detail

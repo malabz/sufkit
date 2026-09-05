@@ -39,6 +39,53 @@ void CheckError(sufkit::ErrorCode expected, Function&& function) {
   }
 }
 
+#if SUFKIT_TEST_CAPS_ENABLED
+void TestExactRunSkipping() {
+  // Independent lexicographic sort and scalar adjacent LCP, including runs
+  // straddling the SIMD probe threshold and multiple hard-boundary symbols.
+  std::vector<std::vector<std::uint8_t>> inputs;
+  for (const std::size_t length : {16U, 255U, 256U, 257U, 1024U, 4096U}) {
+    std::vector<std::uint8_t> text(length, 6);
+    text.push_back(1); text.push_back(0); inputs.push_back(text);
+    text.insert(text.begin(), 2); text[length / 2] = 3;
+    inputs.push_back(text);
+    text.insert(text.end() - 1, length + 1, 2);
+    inputs.push_back(text);
+  }
+  std::uint64_t random = 947123;
+  for (unsigned trial = 0; trial < 96; ++trial) {
+    std::vector<std::uint8_t> text(16 + trial * 13);
+    for (auto& value : text) {
+      random ^= random << 13; random ^= random >> 7; random ^= random << 17;
+      value = static_cast<std::uint8_t>(1 + random % 6);
+    }
+    if (trial % 3 == 0) text.insert(text.begin() + 7, 777, 6);
+    text.push_back(0); inputs.push_back(std::move(text));
+  }
+  for (const auto& text : inputs) {
+    std::vector<std::uint32_t> expected(text.size());
+    for (std::size_t i = 0; i < text.size(); ++i) expected[i] = static_cast<std::uint32_t>(i);
+    std::sort(expected.begin(), expected.end(), [&](auto a, auto b) {
+      return std::lexicographical_compare(text.begin() + a, text.end(),
+                                          text.begin() + b, text.end());
+    });
+    std::vector<std::uint32_t> lcp(text.size());
+    for (std::size_t row = 1; row < text.size(); ++row) {
+      std::size_t common = 0, a = expected[row-1], b = expected[row];
+      while (a + common < text.size() && b + common < text.size() &&
+             text[a+common] == text[b+common]) ++common;
+      lcp[row] = static_cast<std::uint32_t>(common);
+    }
+    const auto a = sufkit::detail::BuildCaps32(text, 1, true);
+    const auto b = sufkit::detail::BuildCaps64(text, 3, true);
+    CHECK(a.suffix_array == expected);
+    CHECK(a.lcp == lcp);
+    CHECK(std::equal(b.suffix_array.begin(), b.suffix_array.end(), expected.begin(), expected.end()));
+    CHECK(std::equal(b.lcp.begin(), b.lcp.end(), lcp.begin(), lcp.end()));
+  }
+}
+#endif
+
 sufkit::SuffixArrayBuildOptions Options(
     sufkit::SaBackend backend, sufkit::CoordinateWidth width,
     std::uint32_t threads,
@@ -377,6 +424,7 @@ int main() {
       ("sufkit-caps-tests-" + std::to_string(static_cast<long long>(getpid())));
   std::filesystem::create_directories(directory);
 #if SUFKIT_TEST_CAPS_ENABLED
+  TestExactRunSkipping();
   TestCapsBuilds(directory);
   TestConcurrentBuilds();
 #else

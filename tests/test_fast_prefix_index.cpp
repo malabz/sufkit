@@ -333,9 +333,40 @@ void TestValidation() {
   });
 }
 
+void TestParallelDirectory() {
+  std::mt19937_64 random(918273);
+  std::string sequence((2U << 20U) + 137U, 'A');
+  constexpr char bases[] = {'A','C','G','T'};
+  for (auto& base : sequence) base = bases[random() & 3U];
+  sequence.replace(sequence.size() / 2 - 3, 17, "NNNNNNNNNNNNNNNNN");
+  const auto reference = MakeReference({sequence, "ACGTNNACGTACGT", "AC"});
+  for (const bool wide : {false, true}) {
+    const auto sa = MakeCoordinates(reference.sa, wide);
+    const auto isa = MakeCoordinates(reference.isa, wide);
+    auto options = FixedK(4);
+    const auto serial = sufkit::detail::FastPrefixIndex::Build(
+        reference.text, sa, isa, reference.starts, reference.lengths,
+        std::numeric_limits<std::uint64_t>::max(), options);
+    options.threads = 4;
+    const auto parallel = sufkit::detail::FastPrefixIndex::Build(
+        reference.text, sa, isa, reference.starts, reference.lengths,
+        std::numeric_limits<std::uint64_t>::max(), options);
+    CHECK(serial.IndexedKmers() == parallel.IndexedKmers());
+    CHECK(serial.NonemptyEntries() == parallel.NonemptyEntries());
+    CHECK(serial.ResidentBytes() == parallel.ResidentBytes());
+    for (std::uint64_t key = 0; key < 256; ++key) {
+      const auto query = DecodeKey(key, 4);
+      const auto a = serial.Lookup(query), b = parallel.Lookup(query);
+      CHECK(a.has_value() && b.has_value());
+      CHECK(a->begin == b->begin && a->end == b->end);
+    }
+  }
+}
+
 }  // namespace
 
 int main() {
+  TestParallelDirectory();
   TestSelectionAndWidths();
   TestRepeatedAndEmptyKeys();
   TestHardBoundaries();

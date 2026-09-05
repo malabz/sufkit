@@ -1,5 +1,6 @@
 
 #include "Suffix_Array.hpp"
+#include <memory>
 #include "parlay/parallel.h"
 
 #include <cstring>
@@ -26,6 +27,7 @@ Suffix_Array<T_idx_>::Suffix_Array(const char* const T, const idx_t n, const idx
     n_(n),
     SA_(allocate<idx_t>(n_)),
     LCP_(allocate<idx_t>(n_)),
+    owns_output_(true),
     SA_w(nullptr),
     LCP_w(nullptr),
     p_(std::min(subproblem_count > 0 ? subproblem_count : default_subproblem_count, n / 16)),   // TODO: fix subproblem-count for small `n`.
@@ -45,9 +47,32 @@ Suffix_Array<T_idx_>::Suffix_Array(const char* const T, const idx_t n, const idx
 
 
 template <typename T_idx_>
+Suffix_Array<T_idx_>::Suffix_Array(const char* const T, const idx_t n,
+    const idx_t subproblem_count, const idx_t max_context,
+    idx_t* const sa, idx_t* const lcp):
+    T_(T), n_(n), SA_(sa), LCP_(lcp), owns_output_(false),
+    SA_w(nullptr), LCP_w(nullptr),
+    p_(std::min(subproblem_count > 0 ? subproblem_count : default_subproblem_count, n / 16)),
+    max_context(max_context ? max_context : n_), pivot_(nullptr),
+    pivot_per_part_(p_ == 0 ? 0 : std::min(static_cast<idx_t>(std::ceil(32.0 * std::log(n_))), n_ / p_ - 1)),
+    part_size_scan_(nullptr), part_ruler_(nullptr)
+{
+    if (T_ == nullptr || n_ < 16 || SA_ == nullptr || LCP_ == nullptr || SA_ == LCP_)
+        throw std::invalid_argument("CaPS requires complete independent output buffers and n >= 16");
+    part_size_scan_ = allocate<idx_t>(p_ + 1);
+    try { part_ruler_ = allocate<idx_t>(p_ * (p_ + 1)); }
+    catch (...) { deallocate(part_size_scan_); throw; }
+}
+
+template <typename T_idx_>
 Suffix_Array<T_idx_>::~Suffix_Array()
 {
-    deallocate(SA_), deallocate(LCP_);
+    if (owns_output_) { deallocate(SA_); deallocate(LCP_); }
+    deallocate(SA_w);
+    deallocate(LCP_w);
+    deallocate(pivot_);
+    deallocate(part_size_scan_);
+    deallocate(part_ruler_);
 }
 
 
@@ -76,7 +101,7 @@ void Suffix_Array<T_idx_>::merge(const idx_t* X, idx_t len_x, const idx_t* Y, id
         {
             const idx_t max_n = n_ - std::max(X[i], Y[j]);  // Length of the shorter suffix.
             const idx_t context = std::min(max_context, max_n); // Prefix-context length for the suffixes.
-            const idx_t n = m + LCP(T_ + (X[i] + m), T_ + (Y[j] + m), context - m); // LCP(X_i, Y_j)
+            const idx_t n = m + exact_lcp(T_ + (X[i] + m), T_ + (Y[j] + m), context - m); // LCP(X_i, Y_j)
 
             // Whether the shorter suffix is a prefix of the longer one.
             Z[k] = (n == max_n ?    std::max(X[i], Y[j]) :
@@ -278,7 +303,7 @@ T_idx_ Suffix_Array<T_idx_>::upper_bound(const idx_t* const X, const idx_t n, co
         lcp_c = std::min(lcp_c, cutoff);
         auto max_lcp = std::min(std::min(suf_len, P_len), max_context); // Maximum possible LCP, i.e. length of the shorter string.
         max_lcp = std::min(max_lcp, cutoff);
-        lcp_c += LCP(suf + lcp_c, P + lcp_c, max_lcp - lcp_c);  // Skip an informed number of character comparisons.
+        lcp_c += exact_lcp(suf + lcp_c, P + lcp_c, max_lcp - lcp_c);  // Skip an informed number of character comparisons.
 
         if(lcp_c == max_lcp)    // One is a prefix of the other, or they align at least up-to the context- or the cutoff-length.
         {
@@ -445,7 +470,7 @@ void Suffix_Array<T_idx_>::compute_partition_boundary_lcp()
         [&](const idx_t j)
         {
             const auto part_idx = part_size_scan_[j];
-            LCP_[part_idx] = LCP(T_ + SA_[part_idx - 1], T_ + SA_[part_idx], n_ - std::max(SA_[part_idx - 1], SA_[part_idx]));
+            LCP_[part_idx] = exact_lcp(T_ + SA_[part_idx - 1], T_ + SA_[part_idx], n_ - std::max(SA_[part_idx - 1], SA_[part_idx]));
         };
 
     parlay::parallel_for(1, p_, compute_boundary_lcp, 1);
@@ -461,10 +486,12 @@ void Suffix_Array<T_idx_>::clean_up()
     const auto t_s = now();
 
     deallocate(SA_w), deallocate(LCP_w);
+    SA_w = nullptr; LCP_w = nullptr;
 
     deallocate(pivot_);
     deallocate(part_size_scan_);
     deallocate(part_ruler_);
+    pivot_ = nullptr; part_size_scan_ = nullptr; part_ruler_ = nullptr;
 
     const auto t_e = now();
     CAPS_SA_LOG(std::cerr << "Released the temporary data structures. Time taken: " << duration(t_e - t_s) << " seconds.\n");
@@ -475,26 +502,39 @@ template <typename T_idx_>
 void Suffix_Array<T_idx_>::construct()
 {
     const auto t_start = now();
+    notify("index-caps-run-directory");
+    index_long_runs();
+    CAPS_SA_LOG(std::cerr << "Indexed exact long runs. Time taken: " << duration(now() - t_start) << " seconds. Runs: " << long_runs_.size() << "\n");
 
+    notify("index-caps-initialize");
     initialize();
 
+    notify("index-caps-permutation");
     permute();
 
     // merge_sort(SA_w, SA_, n_, LCP_, LCP_w);  // Monolithic construction.
 
+    notify("index-caps-subarray-sort");
     sort_subarrays();
 
+    notify("index-caps-pivot-select");
     select_pivots();
 
-    idx_t* const P = allocate<idx_t>(p_ * (p_ + 1));  // Collection of pivot locations in the subarrays.
-    locate_pivots(P);
-    partition_sub_subarrays(P);
-    deallocate(P);
+    std::unique_ptr<idx_t, decltype(&std::free)> P(
+        allocate<idx_t>(p_ * (p_ + 1)), &std::free);
+    notify("index-caps-pivot-locate");
+    locate_pivots(P.get());
+    notify("index-caps-partition");
+    partition_sub_subarrays(P.get());
+    P.reset();
 
+    notify("index-caps-merge");
     merge_sub_subarrays();
 
+    notify("index-caps-boundary-lcp");
     compute_partition_boundary_lcp();
 
+    notify("index-caps-cleanup");
     clean_up();
 
     const auto t_end = now();

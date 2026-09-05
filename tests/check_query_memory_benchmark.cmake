@@ -78,7 +78,7 @@ foreach(method IN ITEMS
     foreach(line IN LISTS lines)
         string(REPLACE "\t" ";" fields "${line}")
         list(LENGTH fields field_count)
-        if(NOT field_count EQUAL 25)
+        if(NOT field_count EQUAL 27)
             message(FATAL_ERROR
                 "${method} phase-RSS row has ${field_count} fields")
         endif()
@@ -105,6 +105,12 @@ foreach(method IN ITEMS
         list(GET fields 22 reported_hits)
         list(GET fields 23 checksum)
         list(GET fields 24 row_status)
+        list(GET fields 25 wait4_peak)
+        list(GET fields 26 peak_source)
+        if(NOT peak_source STREQUAL "max-wait4-and-proc-samples" OR
+           peak_rss LESS wait4_peak OR NOT wait4_peak GREATER 0)
+            message(FATAL_ERROR "phase-RSS raw peak provenance is invalid")
+        endif()
         if(NOT recorded_method STREQUAL method OR
            NOT row_status STREQUAL "ok")
             message(FATAL_ERROR "${method} phase-RSS row is not successful")

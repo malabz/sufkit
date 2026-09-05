@@ -9,6 +9,9 @@
 #include <cstdlib>
 #include <fstream>
 #include <chrono>
+#include <algorithm>
+#include <utility>
+#include <vector>
 #include <limits>
 #include <new>
 
@@ -34,10 +37,53 @@ private:
     const idx_t n_; // Length of the input text.
     idx_t* const SA_;   // The suffix array.
     idx_t* const LCP_;  // The LCP array.
+    const bool owns_output_;
     idx_t* SA_w;    // Working space for the SA construction.
     idx_t* LCP_w;   // Working space for the LCP construction.
     const idx_t p_; // Count of subproblems used in construction.
     const idx_t max_context;    // Maximum prefix-context length for comparing suffixes.
+    std::vector<std::pair<idx_t, idx_t>> long_runs_;
+    void (*stage_callback_)(const char*, void*) = nullptr;
+    void* stage_context_ = nullptr;
+    void notify(const char* stage) const {
+        if (stage_callback_) stage_callback_(stage, stage_context_);
+    }
+    void index_long_runs() {
+        long_runs_.clear();
+        for (idx_t begin = 0; begin < n_;) {
+            idx_t end = begin + 1;
+            while (end < n_ && T_[end] == T_[begin]) ++end;
+            if (end - begin >= 256) long_runs_.emplace_back(begin, end);
+            begin = end;
+        }
+    }
+    idx_t run_end(idx_t position) const {
+        const auto it = std::upper_bound(long_runs_.begin(), long_runs_.end(),
+            position, [](idx_t p, const auto& run) { return p < run.first; });
+        if (it == long_runs_.begin()) return position;
+        const auto& run = *std::prev(it);
+        return position < run.second ? run.second : position;
+    }
+    // Skip only proven equal runs. Every text symbol and suffix is retained.
+    idx_t exact_lcp(const char* x, const char* y, idx_t limit) const {
+        const idx_t probe = std::min<idx_t>(limit, 256);
+        idx_t common = LCP(x, y, probe);
+        if (common < probe || common == limit || long_runs_.empty()) {
+            return common == probe && common < limit
+                ? common + LCP(x + common, y + common, limit - common)
+                : common;
+        }
+        const idx_t left = static_cast<idx_t>(x - T_);
+        const idx_t right = static_cast<idx_t>(y - T_);
+        while (common < limit && x[common] == y[common]) {
+            const idx_t a = run_end(left + common) - left - common;
+            const idx_t b = run_end(right + common) - right - common;
+            const idx_t skip = std::min({a, b, static_cast<idx_t>(limit - common)});
+            if (skip == 0) return common + LCP(x + common, y + common, limit - common);
+            common += skip;
+        }
+        return common;
+    }
     idx_t* pivot_;  // Pivots for the global suffix array.
     const idx_t pivot_per_part_;    // Number of pivots to sample per subarray.
     idx_t* part_size_scan_; // Inclusive scan (prefix sum) of the sizes of the pivoted final partitions containing appropriate sorted sub-subarrays.
@@ -169,6 +215,10 @@ public:
     // `max_context`.
     Suffix_Array(const char* T, idx_t n, idx_t subproblem_count = 0, idx_t max_context = 0);
 
+    // Caller retains ownership of complete, non-overlapping n-element buffers.
+    Suffix_Array(const char* T, idx_t n, idx_t subproblem_count,
+                 idx_t max_context, idx_t* sa, idx_t* lcp);
+
     Suffix_Array(const Suffix_Array&) = delete;
     Suffix_Array& operator=(const Suffix_Array&) = delete;
     Suffix_Array(Suffix_Array&&) = delete;
@@ -189,6 +239,10 @@ public:
     const idx_t* LCP() const { return LCP_; }
 
     // Constructs the suffix array and the LCP array.
+    void set_stage_callback(void (*callback)(const char*, void*), void* context) {
+        stage_callback_ = callback;
+        stage_context_ = context;
+    }
     void construct();
 
     // Dumps the suffix array and the LCP array into the stream `output`.

@@ -4,6 +4,19 @@ All notable changes to sufkit are documented in this file.
 
 ## Unreleased
 
+- Build CaPS SA/LCP directly into caller-owned output buffers.
+- Accelerate exact long equal-symbol LCP comparisons without dropping bases,
+  suffixes, or changing lexicographic order.
+- Build Fast prefix directories deterministically with the build thread budget.
+- Add optional synchronous build stage callbacks and non-overlapping auxiliary
+  timings; the existing SA timing remains an aggregate containing CaPS work.
+- Keep suffix-index format 1.4 and query semantics unchanged. All consumers
+  must rebuild against the extended build-options/statistics source interface.
+- The memory microbenchmark preserves raw wait4 peak RSS in a new column and
+  reports peak_rss_mb as the maximum of wait4 and observed /proc RSS samples;
+  peak_rss_source identifies this definition. Kernel RSS estimates can differ
+  for short-lived workers. Historical benchmark files are unchanged.
+
 ## 0.3.0 - 2026-08-31
 
 ### Maximal-match search

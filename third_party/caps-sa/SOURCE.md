@@ -20,10 +20,14 @@ ParlayLib at configure time and applies machine-specific compiler flags.
 - Treat a zero-pivot sampling request as an empty operation, avoiding the
   upstream `n / 0` failure when a valid small input uses one subproblem.
 
-No partitioning, suffix comparison, merge, SA, or LCP algorithm semantics were
-otherwise changed. The patched file hashes are:
+The construction patch adds caller-owned output buffers with exception cleanup,
+an immutable directory of exact equal-symbol runs (at least 256 symbols), and
+optional synchronous stage notifications. Run skipping preserves complete LCP
+values and every input symbol; it never truncates context or drops suffixes.
+Partitioning, lexicographic ordering, and SA/LCP output semantics are unchanged.
+The patched file hashes are:
 
 - `include/Suffix_Array.hpp`:
-  `01de30ec02f2e7b234a5b649073c075b083c87404b8d4b588b004b4761687d68`
+  `4ee040c365ec421e765aa44382b9a7d546759695f504f678902c91c9269e610b`
 - `src/Suffix_Array.cpp`:
-  `043521f307d8a9c3fe675741fcd131dd5fba4e5639ae143847a4ada290bf8684`
+  `a3fb88bb44de4067d02cdf0747cd48579cc4f015b009ecce3052f0d404b3aede`

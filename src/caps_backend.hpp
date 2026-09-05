@@ -92,10 +92,10 @@ inline std::uint64_t CapsSubproblemCount(std::uint64_t text_symbols,
 
 CapsBuildResult<std::uint32_t> BuildCaps32(
     const std::vector<std::uint8_t>& text, std::uint32_t threads,
-    bool retain_lcp);
+    bool retain_lcp, const SuffixArrayBuildOptions* options = nullptr);
 
 CapsBuildResult<std::uint64_t> BuildCaps64(
     const std::vector<std::uint8_t>& text, std::uint32_t threads,
-    bool retain_lcp);
+    bool retain_lcp, const SuffixArrayBuildOptions* options = nullptr);
 
 }  // namespace sufkit::detail

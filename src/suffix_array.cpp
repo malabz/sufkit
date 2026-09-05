@@ -2084,14 +2084,16 @@ struct SuffixArray::Impl {
 
   void RefreshLcpAccess() noexcept { lcp_access = MakeLcpAccess(lcp); }
 
-  void BuildFastPrefix() {
+  void BuildFastPrefix(std::uint32_t threads = 1) {
     if (index_info.sa_resource_profile != SaResourceProfile::kFast ||
         sampling_rate != 1 || !HasIsa() || HasLearned()) {
       return;
     }
+    detail::FastPrefixIndexOptions prefix_options;
+    prefix_options.threads = threads;
     fast_prefix = detail::FastPrefixIndex::Build(
         text, suffix_array, isa, reference.contig_starts,
-        reference.contig_lengths, index_info.resident_core_bytes);
+        reference.contig_lengths, index_info.resident_core_bytes, prefix_options);
     const auto bytes = fast_prefix.ResidentBytes();
     if (bytes > std::numeric_limits<std::uint64_t>::max() -
                     index_info.auxiliary_bytes ||
@@ -4083,6 +4085,11 @@ SuffixArray::~SuffixArray() = default;
 
 SuffixArray SuffixArray::Build(const GenomeReference& reference,
                                const SuffixArrayBuildOptions& options) {
+  const auto total_begin = BuildClock::now();
+  const auto notify = [&](const char* stage) {
+    if (options.stage_callback) options.stage_callback(stage, options.stage_context);
+  };
+  notify("index-text-prepare");
   if (options.threads == 0) {
     throw Error(ErrorCode::kInvalidInput,
                 "suffix-array thread count must be greater than zero");
@@ -4148,6 +4155,10 @@ SuffixArray SuffixArray::Build(const GenomeReference& reference,
           ? 32
           : 64);
   const auto sa_begin = BuildClock::now();
+  if (options.statistics) {
+    options.statistics->text_prepare_seconds = BuildElapsed(total_begin);
+  }
+  notify("index-sa-lcp");
   const bool retain_lcp = effective_acceleration != SaAcceleration::kNone;
   const bool retain_isa =
       effective_acceleration == SaAcceleration::kLcpSuffixLink ||
@@ -4175,14 +4186,14 @@ SuffixArray SuffixArray::Build(const GenomeReference& reference,
                   "reference is too large for CaPS-SA uint32_t");
     }
     auto built =
-        detail::BuildCaps32(impl->text, options.threads, needs_raw_lcp);
+        detail::BuildCaps32(impl->text, options.threads, needs_raw_lcp, &options);
     built_sa = std::move(built.suffix_array);
     raw_lcp = CompactRawCoordinates(std::move(built.lcp), lcp_width,
                                     ErrorCode::kBuildFailure, "LCP");
     impl->backend = detail::StoredBackend::kCaps32;
   } else if (backend == SaBackend::kCaps && width == CoordinateWidth::kBits64) {
     auto built =
-        detail::BuildCaps64(impl->text, options.threads, needs_raw_lcp);
+        detail::BuildCaps64(impl->text, options.threads, needs_raw_lcp, &options);
     built_sa = std::move(built.suffix_array);
     raw_lcp = CompactRawCoordinates(std::move(built.lcp), lcp_width,
                                     ErrorCode::kBuildFailure, "LCP");
@@ -4239,6 +4250,7 @@ SuffixArray SuffixArray::Build(const GenomeReference& reference,
   }
 
   const auto storage_compaction_begin = BuildClock::now();
+  notify("index-storage-layout");
   impl->suffix_array = RepackSuffixArray(
       std::move(built_sa), stored_width, impl->text.size(),
       impl->sampling_rate);
@@ -4268,6 +4280,7 @@ SuffixArray SuffixArray::Build(const GenomeReference& reference,
   if ((retain_lcp || retain_isa || learned_enabled) &&
       CoordinatesEmpty(temporary_isa)) {
     const auto begin = BuildClock::now();
+    notify("index-isa");
     temporary_isa = BuildIsa(impl->suffix_array, impl->text.size(),
                              impl->sampling_rate, options.threads,
                              temporary_isa_width);
@@ -4302,9 +4315,14 @@ SuffixArray SuffixArray::Build(const GenomeReference& reference,
           options.statistics->child_seconds = BuildElapsed(child_begin);
         }
       }
+      notify("index-lcp-layout");
+      const auto finalize_begin = BuildClock::now();
       impl->lcp = FinalizeLcpStorage(
           std::move(raw_lcp), temporary_isa, impl->sampling_rate, lcp_width,
           impl->text.size(), !persist_raw_lcp, persist_raw_lcp);
+      if (options.statistics) {
+        options.statistics->lcp_finalize_seconds = BuildElapsed(finalize_begin);
+      }
     }
     if (retain_isa) {
       // LCP compression is the final temporary consumer. Move ISA into the
@@ -4360,7 +4378,14 @@ SuffixArray SuffixArray::Build(const GenomeReference& reference,
       impl->index_info.text_bytes + impl->index_info.sa_bytes +
       impl->index_info.isa_bytes + impl->index_info.lcp_bytes +
       impl->index_info.child_bytes + impl->learned.ResidentBytes();
-  impl->BuildFastPrefix();
+  notify("index-prefix-directory");
+  const auto prefix_begin = BuildClock::now();
+  impl->BuildFastPrefix(options.threads);
+  if (options.statistics) {
+    options.statistics->prefix_directory_seconds = BuildElapsed(prefix_begin);
+    options.statistics->total_seconds = BuildElapsed(total_begin);
+  }
+  notify("index-build-return");
   return SuffixArray(std::move(impl));
 }
 

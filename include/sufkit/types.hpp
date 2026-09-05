@@ -254,6 +254,13 @@ struct SuffixArrayBuildStatistics {
   double child_seconds = 0.0;
   /** Learned-model construction wall time in seconds. */
   double learned_index_seconds = 0.0;
+  /** Nested CaPS timings; sa_seconds retains its historical aggregate scope. */
+  double caps_construct_seconds = 0.0;
+  double caps_output_allocation_seconds = 0.0;
+  double text_prepare_seconds = 0.0;
+  double lcp_finalize_seconds = 0.0;
+  double prefix_directory_seconds = 0.0;
+  double total_seconds = 0.0;
 };
 
 /** Standalone suffix-array construction configuration. */
@@ -285,6 +292,11 @@ struct SuffixArrayBuildOptions {
    * acceleration/learned settings so only SA+LCP remains.
    */
   SaResourceProfile resource_profile = SaResourceProfile::kFast;
+  /** Optional synchronous calling-thread phase notification; null is silent.
+   * Callbacks must not throw. They do not cancel an active constructor.
+   */
+  void (*stage_callback)(const char* stage, void* context) = nullptr;
+  void* stage_context = nullptr;
 };
 
 /** @return The canonical complete-SA suffix-link/raw-LCP performance preset.
